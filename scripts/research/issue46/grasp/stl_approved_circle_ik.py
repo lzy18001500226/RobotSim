@@ -532,6 +532,7 @@ def main():
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--host-model-cache",type=Path)
     parser.add_argument("--warm-start-plan",type=Path)
+    parser.add_argument("--right-arm-seed",type=Path,help="initial guess only; current actual waist and all IK/contact gates remain authoritative")
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="measured functional-axis correction; 0.03rad orientation residual remains relative to the planned grasp frame")
     parser.add_argument("--inverted-bottle-axis",action="store_true",help="explicit opposite axial branch of the same cylindrical grasp, unchanged source geometry and limits")
@@ -654,6 +655,11 @@ def main():
         if args.waist_yaw_offset_rad or args.waist_pitch_offset_rad or not args.free_bottle_axis_roll:raise ValueError('coupled posture solve requires free axial roll and no separate waist offsets')
         q,upper_posture=solve_bounded_upper_posture(model,state,approach_start,center,object_center,bottle_axis,local_axis,command,old_q,full_source_diagnostic=args.full_source_posture_diagnostic);old_q=q.copy()
     azimuths=(float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),) if args.optimize_waist_posture else (float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),float(candidate["search"]["candidate"]["grasp_azimuth_rad"])-0.8,float(candidate["search"]["candidate"]["grasp_azimuth_rad"])+0.8)
+    if args.right_arm_seed:
+        seed=json.loads(args.right_arm_seed.read_text())
+        if seed.get("schema")!="robotsim.standing-grasp-posture.v1" or seed.get("roll_mode")!="RETAIN_MEASURED":raise ValueError("invalid torso turn/forward-bend seed")
+        old_q[2:]=[float(seed["right_arm_seed_rad"][n]) for n in ik.ARM]
+        if not np.isfinite(old_q).all():raise ValueError("nonfinite initial guess")
     warm=None
     if args.warm_start_plan:
         warm=json.loads(args.warm_start_plan.read_text())

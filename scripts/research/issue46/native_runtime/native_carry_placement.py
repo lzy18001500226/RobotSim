@@ -200,7 +200,7 @@ def extend_existing_owner(script):
 
 
 
-def verify_right_claw_pd_only(source, current, source_sha256):
+def verify_right_claw_pd_only(source, current, source_sha256, *, allow_episode_start=False):
     """Reuse a geometry-only screen only after exact compiled-model comparison."""
     import hashlib,mujoco,numpy as np
     from pathlib import Path
@@ -216,6 +216,10 @@ def verify_right_claw_pd_only(source, current, source_sha256):
     expected_gain=a.actuator_gainprm[i].copy();expected_gain[0]=b.actuator_gainprm[i,0]
     expected_bias=a.actuator_biasprm[i].copy();expected_bias[1]=-b.actuator_gainprm[i,0]
     if not np.array_equal(expected_gain,b.actuator_gainprm[i]) or not np.array_equal(expected_bias,b.actuator_biasprm[i]):raise ValueError("delta is not right-claw kp only")
+    if allow_episode_start:
+        joint=mujoco.mj_name2id(a,mujoco.mjtObj.mjOBJ_JOINT,"floating_base_joint");adr=int(a.jnt_qposadr[joint])
+        expected=a.key_qpos.copy();expected[:,adr:adr+2]=b.key_qpos[:,adr:adr+2];expected[:,adr+3:adr+7]=b.key_qpos[:,adr+3:adr+7]
+        allowed["key_qpos"]=expected
     checked=[]
     for name in dir(a):
         x=getattr(a,name)
@@ -226,7 +230,7 @@ def verify_right_claw_pd_only(source, current, source_sha256):
     return dict(scope="RIGHT_CLAW_KP_ONLY_GEOMETRY_CLEARANCE_REUSE_NOT_DYNAMICS",source=str(source),source_sha256=source_sha256,current=str(current),old_kp=float(a.actuator_gainprm[i,0]),new_kp=float(b.actuator_gainprm[i,0]),torque_cap_nm=2.,checked_array_count=len(checked),mj_step_calls=0)
 
 
-def prepare_delivery_scene(parent, config_path):
+def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
     """One actual-scene static screen; no mj_step and no source model edits."""
     import ast,copy,hashlib
     from pathlib import Path
@@ -243,8 +247,12 @@ def prepare_delivery_scene(parent, config_path):
     if float(cfg.get("delivery_forward_command_m_s",.20)) not in (.20,.30,.40,5./9.):raise ValueError("delivery forward response profile bound")
     if cfg.get("terminal_braking_aisle_reserve") and cfg["terminal_braking_aisle_reserve"]["scene_sha256"]!=record["generated"]["host_scene"]["sha256"]:
         ref=cfg["terminal_braking_aisle_reserve"]
-        record["terminal_aisle_control_equivalence"]=verify_right_claw_pd_only(ref["scene_path"],record["generated"]["host_scene"]["path"],ref["scene_sha256"])
-    model=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"]);data=mujoco.MjData(model);mujoco.mj_forward(model,data)
+        record["terminal_aisle_control_equivalence"]=verify_right_claw_pd_only(ref["scene_path"],record["generated"]["host_scene"]["path"],ref["scene_sha256"],allow_episode_start=bool(record.get("episode_start_navigation")))
+    if host_model_cache is not None:
+        from scripts.research.issue46.perception.native_rgbd_grasp import load_cached_model
+        model=load_cached_model(Path(record["generated"]["host_scene"]["path"]),Path(host_model_cache))
+    else:model=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"])
+    data=mujoco.MjData(model);mujoco.mj_forward(model,data)
     table=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"raicom_delivery_table")
     points=[]
     for g in range(model.ngeom):
@@ -274,6 +282,16 @@ def prepare_delivery_scene(parent, config_path):
             for target in n.targets:
                 if isinstance(target,ast.Name) and target.id in ("CIRCLE_CONTRACT","RIGHT","LIFT_CONTRACT"):constants[target.id]=ast.literal_eval(n.value)
     apply_recorded_native_frame(model,data,row)
+    if record.get("fixture_height_delta"):
+        # Static planning assumption only. Live pickup uses fresh RGB-D and
+        # actual measured contact; no runtime object-state write is generated.
+        hand_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"R_omnipicker_base_link")
+        object_adr=int(model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"test_cylinder_free")])
+        rotation=data.xmat[hand_id].reshape(3,3)
+        local=np.asarray(constants["CIRCLE_CONTRACT"]["circle_center_local_m"])
+        axis_local=np.asarray(constants["CIRCLE_CONTRACT"]["local_bottle_axis_in_hand"])
+        data.qpos[object_adr:object_adr+3]=data.xpos[hand_id]+rotation@(local-float(cfg["grasp_height_above_center_m"])*axis_local)
+        mujoco.mj_forward(model,data)
     stow_plan=None
     if cfg.get("carry_native_neutral_stow"):
         from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference,screen_native_stow
@@ -358,7 +376,7 @@ def prepare_delivery_scene(parent, config_path):
     qa=model.jnt_qposadr[ids];dof=model.jnt_dofadr[ids];qseed=data.qpos[qa].copy()
     bounds=np.asarray([constants["LIFT_CONTRACT"]["retract_preflight"]["source_motion_limits"][n][:2] for n in names])
     centre=np.asarray(constants["CIRCLE_CONTRACT"]["circle_center_local_m"]);axis=np.asarray(constants["CIRCLE_CONTRACT"]["local_bottle_axis_in_hand"])
-    section=np.asarray(cfg["placement_center_world_m"])+[0.,0.,.10]
+    section=np.asarray(cfg["placement_center_world_m"])+[0.,0.,float(cfg.get("grasp_height_above_center_m",.10))]
     start=data.xpos[hand]+data.xmat[hand].reshape(3,3)@centre
     start_axis=data.xmat[hand].reshape(3,3)@axis
     high=start.copy();high[2]=max(start[2],section[2]+.06)

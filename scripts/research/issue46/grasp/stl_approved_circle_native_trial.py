@@ -72,6 +72,11 @@ def runtime_plan_result(result, effective_dir):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
+    p.add_argument("--body-height-native-build",type=Path)
+    p.add_argument("--standing-grasp-posture",type=Path,help="bounded native lowering then torso yaw/pitch; measured roll retained")
+    p.add_argument("--execute-pickup-navigation",action="store_true",help="initialize aligned START keyframe then execute existing real table docking")
+    p.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30)
     p.add_argument("--baseline",type=Path,required=True)
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
@@ -153,7 +158,7 @@ def main():
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
-    if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
+    if args.right_claw_kp is not None and not args.physical_lift_test:
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
     source_step_all=bool(args.carry_delivery_config and json.loads(args.carry_delivery_config.read_text()).get("transit_motion_mode")=="LOCOMOTION_STEP")
@@ -219,7 +224,7 @@ def main():
                 from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate
                 perception_output=state.parent/'fresh_rgbd'
                 scene=json.loads(args.candidate.read_text())['scene']['path']
-                sensor_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(REPO/'scripts/research/issue46/perception/native_rgbd_grasp.py'),'--stream-scene',scene,'--native-latest',str(state.parent/'native_latest.json'),'--output-dir',str(perception_output)]
+                sensor_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(REPO/'scripts/research/issue46/perception/native_rgbd_grasp.py'),'--stream-scene',scene,'--native-latest',str(state.parent/'native_latest.json'),'--output-dir',str(perception_output),'--half-height-m',str(args.bottle_height_m/2.)]
                 if host_model_cache:sensor_command.extend(['--host-model-cache',str(host_model_cache)])
                 pg.write_new_text(state.parent/'fresh_rgbd_command.json',json.dumps(sensor_command)+'\n')
                 import os
@@ -239,7 +244,7 @@ def main():
                 else:raise RuntimeError('RGBD_SENSOR_READINESS_TIMEOUT')
                 synchronized['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
                 synchronized['perception']={'latest_path':str(latest),'source':'FRESH_SIMULATED_CALIBRATED_HEAD_RGBD','truth_not_control_target':True}
-            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
+            if args.physical_lift_test or (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 carry_source_limits,carry_source_provenance=native.native_leg_safety_contract(include_upper_body=True)
                 synchronized["runtime_source_motion_limits"]=carry_source_limits
                 synchronized["runtime_source_motion_provenance"]=carry_source_provenance
@@ -269,6 +274,7 @@ def main():
             if args.use_measured_load_frame:command.append('--use-measured-load-frame')
             if args.coordinated_waist_pitch_offset_rad:
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
+            if args.standing_grasp_posture:command.extend(["--right-arm-seed",str(args.standing_grasp_posture)])
             kwargs["timeout_s"]=45.
         result=original(command,**kwargs)
         if (any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command
@@ -308,7 +314,7 @@ def main():
                 pg.write_new_text(perception_output/'stop','snapshot acquired and reverified before arm execution\n')
                 perception_process.wait(timeout=3.)
                 if perception_process.returncode:raise RuntimeError('RGBD_SNAPSHOT_SENSOR_TEARDOWN_FAILED')
-            if args.reuse_verified_grasp_plan:
+            if args.reuse_verified_grasp_plan or args.standing_grasp_posture:
                 effective=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-cached-runtime-contract").native_path
                 pg.write_new_text(effective/"result.json",reference.read_text())
                 reference=effective/"result.json"
@@ -359,6 +365,21 @@ def main():
         from scripts.research.issue46.scene.delivery_table_overlay import build as scene_build
         layout=scene_build(claw,90.,.10,.10,.10)
         claw=Path(json.loads(Path(layout).read_text())["native_overlay_result"]["path"])
+    if args.bottle_height_m==.22:
+        if abs(args.grasp_height_above_center_m-.01)>1e-9:raise ValueError("H220 task requires section120mm above bottom")
+        from scripts.research.issue46.scene.bottle_height_overlay import build as height_build
+        claw=height_build(claw,.22)
+    if args.body_height_probe_drop_m is not None:
+        if args.execute_pickup_navigation or args.carry_away_1m or args.carry_goal_world_xy is not None or args.micro_base_probe or args.carry_delivery_config:
+            raise ValueError("native height compatibility probe cannot execute a locomotion route or grasp")
+        if args.body_height_native_build is None:
+            from scripts.research.issue46.native_runtime.native_body_height import prepare_publisher
+            args.body_height_native_build=prepare_publisher()
+    if args.execute_pickup_navigation:
+        if not args.fixed_reviewed_checkpoint or not args.approved_two_table_layout:raise ValueError("START execution requires approved native episode keyframe/room")
+        from scripts.research.issue46.scene.episode_start_overlay import build as start_build
+        claw=start_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
+        args.dock_world_xy=tuple(json.loads(claw.read_text())["episode_start_navigation"]["pickup_goal_world_xyz_m"][:2])
     if args.carry_delivery_config is not None:
         if not args.approved_two_table_layout:raise ValueError("delivery requires the exact approved two-table scene")
         from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene
@@ -373,7 +394,7 @@ def main():
         candidate['source_pad_collision_comparison']={'source_candidate':str(original_candidate),'source_candidate_sha256':native.sha256(original_candidate),'overlay':str(claw),'overlay_sha256':native.sha256(claw),'classification':'SIMULATION_ONLY_SOURCE_DERIVED_COLLISION_COMPARISON'}
         candidate_dir=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='source-pad-coacd-ik-input').native_path
         pg.write_new_text(candidate_dir/'candidate.json',json.dumps(candidate,indent=2)+'\n');pg.write_artifact_manifest(candidate_dir);args.candidate=candidate_dir/'candidate.json'
-    if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot'):
+    if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot') and args.body_height_probe_drop_m is None:
         from scripts.research.issue46.perception.native_rgbd_grasp import prepare_host_cache
         host_model_cache=prepare_host_cache(Path(json.loads(args.candidate.read_text())['scene']['path']))
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
@@ -394,6 +415,9 @@ def main():
     if args.capture_mc_rl_debug:argv.append("--capture-mc-rl-debug")
     if args.reviewed_foundationwalk_profile:argv.append("--reviewed-foundationwalk-profile")
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
+    if args.execute_pickup_navigation:argv.append("--execute-pickup-navigation")
+    if args.body_height_probe_drop_m is not None:
+        argv.extend(["--body-height-probe-drop-m",str(args.body_height_probe_drop_m),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
     if args.dock_angular_speed_cap is not None:argv.extend(["--dock-angular-speed-cap",str(args.dock_angular_speed_cap)])
     if args.dock_command_speed_cap is not None:argv.extend(["--dock-command-speed-cap",str(args.dock_command_speed_cap)])
     if args.verified_native_mouse_controls and not args.native_background_xvfb_tools:argv.append("--verified-native-mouse-controls")
@@ -444,7 +468,13 @@ def main():
     if args.open_hand_transit_park:argv.append("--open-hand-transit-park")
     if args.pause_for_human_review and not args.native_background_xvfb_tools:argv.append("--pause-on-claw-failure")
     if args.coordinated_waist_pitch_offset_rad and not args.native_physics_audit:raise ValueError("coordinated circle execution requires native TCP observation")
-    if args.coordinated_waist_pitch_offset_rad:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
+    if args.coordinated_waist_pitch_offset_rad or args.standing_grasp_posture:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
+    if args.standing_grasp_posture:
+        if not args.fixed_reviewed_checkpoint or args.carry_delivery_config or not args.physical_lift_test:raise ValueError("postured pickup is fixed-stance physical lift only until return-to-neutral is verified")
+        if args.body_height_native_build is None:
+            from scripts.research.issue46.native_runtime.native_body_height import prepare_publisher
+            args.body_height_native_build=prepare_publisher()
+        argv.extend(["--standing-grasp-posture",str(args.standing_grasp_posture.resolve()),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
     sys.argv=argv
     try:native.main()
     finally:

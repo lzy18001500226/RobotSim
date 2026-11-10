@@ -262,6 +262,7 @@ def locomotion_dock_script(
     command_speed_cap: float | None = None,
     angular_speed_cap: float | None = None,
     native_arm_relay: bool = False,
+    pickup_navigation: bool = False,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -290,6 +291,7 @@ def locomotion_dock_script(
             "command_speed_cap":command_speed_cap,
             "angular_speed_cap":angular_speed_cap,
             "native_arm_relay":native_arm_relay,
+            "pickup_navigation":pickup_navigation,
         }
     )
     import inspect
@@ -304,7 +306,9 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from aimdk_msgs.msg import McLocomotionVelocity, MessageHeader, McInputAction, RequestHeader, JointStateArray
-from aimdk_msgs.srv import GetCurrentInputSource, SetMcAction, SetMcInputSource
+from aimdk_msgs.srv import GetCurrentInputSource, GetMcAction, SetMcAction, SetMcInputSource
+from aimdk_msgs.msg import McCommonState
+from rosidl_runtime_py.convert import message_to_ordereddict
 from aimdk_msgs.msg import McActionCommand
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
@@ -349,6 +353,10 @@ class Dock(Node):
   self.pub=self.create_publisher(Twist,'/cmd_vel',10) if PLAN['use_cmd_vel_bridge'] else self.create_publisher(McLocomotionVelocity,'/aima/mc/locomotion/velocity',QOS)
   self.src=self.create_client(SetMcInputSource,'/aimdk_5Fmsgs/srv/SetMcInputSource')
   self.mode=self.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
+  self.mode_requests=[];self.get_mode_future=None;self.mode_observation=None;self.common_observation=None;self.next_mode_query=0.
+  if PLAN.get('pickup_navigation'):
+   self.get_mode=self.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')
+   self.mode_subscription=self.create_subscription(McCommonState,'/aima/mc/common/state',lambda m:setattr(self,'common_observation',(time.monotonic(),message_to_ordereddict(m))),QOS)
   self.current=self.create_client(GetCurrentInputSource,'/aimdk_5Fmsgs/srv/GetCurrentInputSource')
   self.pose=None;self.quat=None;self.max_tilt=0.;self.samples=[];self.seq=0;self.arm={};self.leg={};self.waist={}
   self.odom_stamp=None;self.odom_callbacks=0;self.odom_duplicates=0;self.odom_regressions=0;self.odom_last_unique_receipt=None;self.feedback_fault=None;self.command_publish_count=0
@@ -405,9 +413,9 @@ class Dock(Node):
   try:
    r=SetMcInputSource.Request();r.action=McInputAction();r.action.value=1003;r.input_source.name=SOURCE;r.input_source.priority=40;r.input_source.timeout=1000;call(self,self.src,r)
   except Exception:pass
- def stand(self):
-  r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc='STAND_DEFAULT';z=call(self,self.mode,r)
-  if int(z.response.status.value)!=1:raise RuntimeError('STAND_DEFAULT request rejected')
+ def stand(self,name="STAND_DEFAULT"):
+  r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc=name;z=call(self,self.mode,r);self.mode_requests.append({'name':name,'t':time.monotonic(),'raw':message_to_ordereddict(z)})
+  if int(z.response.status.value)!=1 or int(z.response.header.code)!=0:raise RuntimeError('MODE_REQUEST_REJECTED:'+json.dumps(self.mode_requests[-1]))
  def refresh_native_pose(self):
   if not PLAN.get('native_pose_feedback'):return
   with open('/workspace/evidence/native_latest.json','rb') as f:
@@ -429,7 +437,7 @@ class Dock(Node):
   if hasattr(self,'native_generation') and row['generation']!=self.native_generation:self.feedback_fault={'gate':'NATIVE_DOCK_RESET_GENERATION_CHANGED'};return
   p=row['bodies']['pelvis'];q=p['quaternion_wxyz'];R=p['rotation'];x,y,z=p['position_m']
   if PLAN.get('native_leg_limits'):
-   fault=physical_fault(row,native_pose(row),PLAN['native_leg_limits'])
+   fault=physical_fault(row,native_pose(row),PLAN['native_leg_limits'],planar_speed_limit=.60 if PLAN.get('pickup_navigation') else .20)
    if fault:self.feedback_fault=self.feedback_fault or {'gate':fault,'native_row_source_ns':stamp};return
   if not all(math.isfinite(v) for v in [x,y,z,*q]):self.feedback_fault={'gate':'NONFINITE_NATIVE_DOCK_POSE'};return
   self.native_generation=row['generation'];self.odom_stamp=stamp;self.odom_last_unique_receipt=stamp*1e-9
@@ -443,6 +451,12 @@ class Dock(Node):
   end=time.monotonic()+seconds
   while rclpy.ok() and time.monotonic()<end:
    rclpy.spin_once(self,timeout_sec=.005);self.refresh_native_pose()
+   if PLAN.get('pickup_navigation'):
+    if self.get_mode_future is not None and self.get_mode_future.done():
+     if self.get_mode_future.result() is not None:self.mode_observation=(time.monotonic(),message_to_ordereddict(self.get_mode_future.result()))
+     self.get_mode_future=None
+    if self.get_mode_future is None and time.monotonic()>=self.next_mode_query and self.get_mode.service_is_ready():
+     query=GetMcAction.Request();query.request.header.stamp=self.get_clock().now().to_msg();self.get_mode_future=self.get_mode.call_async(query);self.next_mode_query=time.monotonic()+.10
  def zero_hold(self,seconds):
   end=time.monotonic()+seconds
   while rclpy.ok() and time.monotonic()<end:
@@ -468,6 +482,8 @@ try:
  if PLAN['refine_world_xy'] is not None:goals.append(('LOCAL_REFINE',*odom_goal(PLAN['refine_world_xy'],PLAN['refine_world_yaw_rad']),PLAN['refine_position_only']))
  goal_index=0;goal_name,gx,gy,gyaw,position_only=goals[goal_index];milestones=[];arrival_latched=False
  source=n.register();registered=True
+ if PLAN.get("pickup_navigation"):n.stand("LOCOMOTION_STEP");n.spin(.2)
+ source_mode_confirmed=False
  started=time.monotonic(); stable_since=None; phase='ALIGN'; failure=None; last_sample_at=None
  while time.monotonic()-started < PLAN['timeout_s']:
   rclpy.spin_once(n,timeout_sec=.001);n.refresh_native_pose()
@@ -532,10 +548,17 @@ try:
   if phase!='HOLD':stable_since=None
   if PLAN.get('command_speed_cap') is not None:fwd=max(-PLAN['command_speed_cap'],min(PLAN['command_speed_cap'],fwd))
   if PLAN.get('angular_speed_cap') is not None:ang=max(-PLAN['angular_speed_cap'],min(PLAN['angular_speed_cap'],ang))
+  if PLAN.get('pickup_navigation') and not arrival_latched:
+   now=time.monotonic();gm=n.mode_observation;cm=n.common_observation
+   ready=bool(gm and cm and 0.<=now-gm[0]<=.20 and 0.<=now-cm[0]<=.20 and gm[1]['header']['code']==0 and gm[1]['info']['action_desc']=='LOCOMOTION_STEP' and gm[1]['info']['status']['value']==100 and cm[1]['action_info']['action_desc']=='LOCOMOTION_STEP' and cm[1]['action_info']['status']['value']==100 and cm[1]['input_source']['name']==('robotsim_official_cmd_vel' if PLAN['use_cmd_vel_bridge'] else SOURCE) and cm[1]['body_status']['value']==1)
+   source_mode_confirmed=source_mode_confirmed or ready
+   if now-started>1.5 and not ready:
+    n.publish();failure={'gate':'PICKUP_SOURCE_MODE_NOT_FRESH_OR_SELECTED','get_mode':gm,'common':cm};break
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
    entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'feedback_source':'NATIVE_MJDATA_TRUTH' if PLAN.get('native_pose_feedback') else 'ROS_ODOM','odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates,'odom_regressions':n.odom_regressions}
+   if PLAN.get('pickup_navigation'):entry.update(get_mode=n.mode_observation,common=n.common_observation)
    state=n.state_frame()
    if state is not None:entry['joint_state']=state
    n.samples.append(entry)
@@ -553,7 +576,7 @@ try:
  x,y,z,heading,_=n.pose;dist=math.hypot(gx-x,gy-y);yerr=wrap(gyaw-heading)
  if failure is None and not (stable_since is not None and time.monotonic()-stable_since>=1.5):failure={'gate':'TABLE_DOCK_ARRIVAL','distance_m':dist,'yaw_error_rad':yerr}
  frame_count=sum(1 for row in n.samples if 'joint_state' in row)
- print(json.dumps({'source':source,'active_source_before_stop':n.current_source(),'initial_odom_xyz_m':[sx,sy,sz],'initial_yaw_rad':syaw,'goals_odom':[{'name':name,'xy_m':[x,y],'yaw_rad':yaw,'position_only':position_only} for name,x,y,yaw,position_only in goals],'milestones':milestones,'final_odom_xyz_m':[x,y,z],'final_yaw_rad':heading,'final_distance_m':dist,'final_yaw_error_rad':yerr,'max_tilt_rad':n.max_tilt,'joint_state_frame_count':frame_count,'trace':n.samples,'failure':failure,'pass':failure is None and len(milestones)==len(goals) and frame_count>=2 and dist<= (PLAN['refine_position_tolerance_m'] if position_only else PLAN['dock_position_tolerance_m']) and (position_only or abs(yerr)<=.12) and n.max_tilt<=math.radians(15)}))
+ print(json.dumps({'mode_requests':n.mode_requests,'source_mode_confirmed':source_mode_confirmed,'source':source,'active_source_before_stop':n.current_source(),'initial_odom_xyz_m':[sx,sy,sz],'initial_yaw_rad':syaw,'goals_odom':[{'name':name,'xy_m':[x,y],'yaw_rad':yaw,'position_only':position_only} for name,x,y,yaw,position_only in goals],'milestones':milestones,'final_odom_xyz_m':[x,y,z],'final_yaw_rad':heading,'final_distance_m':dist,'final_yaw_error_rad':yerr,'max_tilt_rad':n.max_tilt,'joint_state_frame_count':frame_count,'trace':n.samples,'failure':failure,'pass':(not PLAN.get('pickup_navigation') or source_mode_confirmed) and failure is None and len(milestones)==len(goals) and frame_count>=2 and dist<= (PLAN['refine_position_tolerance_m'] if position_only else PLAN['dock_position_tolerance_m']) and (position_only or abs(yerr)<=.12) and n.max_tilt<=math.radians(15)}))
 finally:
  n.zero_hold(.5)
  if registered:n.disable()
@@ -1210,7 +1233,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         result["carry_route_profile"]["delivery_forward_cap_m_s"]=float(profile.get("delivery_forward_command_m_s",.20))
         result["carry_route_profile"]["active_transit_and_bounded_braking_root_cap_m_s"]=float(profile.get("transit_root_cap_m_s",.50))
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=json.loads(args.carry_delivery_config.read_text()) if getattr(args,"carry_delivery_config",None) is not None else None,vendor_transition_table=getattr(args,"carry_vendor_transition_table",False)))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=dict(json.loads(args.carry_delivery_config.read_text()),prepare_default_after_pickup=bool(args.execute_pickup_navigation)) if getattr(args,"carry_delivery_config",None) is not None else None,vendor_transition_table=getattr(args,"carry_vendor_transition_table",False)))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1272,7 +1295,27 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if getattr(args,"carry_delivery_config",None) is not None:
         result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="NOT_RUN"
         if nav.get("pass_result") and recorded.get("pass") and not review_prefix:
-            from scripts.research.issue46.native_runtime.native_carry_placement import placement_mode_observer_script
+            from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene,placement_mode_observer_script
+            # Screen the same Cartesian placement against the actual arrived
+            # state, not only the nominal navigation waypoint.
+            cfg=json.loads(args.carry_delivery_config.read_text())
+            snapshot=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+            snapdir=output/"actual_placement_snapshot";snapdir.mkdir()
+            pg.write_new_text(snapdir/"native_latest.json",json.dumps(snapshot))
+            pg.write_new_bytes(snapdir/"native_hal_bilateral_arm_pregrasp.py",(output/"native_hal_bilateral_arm_pregrasp.py").read_bytes())
+            measured_cfg=dict(cfg);measured_cfg.pop("carry_native_neutral_stow",None)
+            base=snapshot["bodies"]["pelvis"];rotation=base["rotation"]
+            measured_cfg["base_goal_world_xy"]=base["position_m"][:2]
+            measured_cfg["base_goal_world_yaw_rad"]=math.atan2(rotation[3],rotation[0])
+            measured_cfg["route_reference"]={"path":str(snapdir),"native_latest_sha256":sha256(snapdir/"native_latest.json")}
+            pg.write_new_text(snapdir/"config.json",json.dumps(measured_cfg,indent=2)+"\n")
+            cache=replan_record.get("host_model_cache")
+            cache=cache.get("path") if isinstance(cache,dict) else cache
+            live_plan=prepare_delivery_scene(args.claw_control_overlay_result,snapdir/"config.json",host_model_cache=cache)
+            live_plan_record=json.loads(live_plan.read_text())
+            result["actual_placement_preflight"]={"result":str(live_plan),"sha256":sha256(live_plan),"plan":live_plan_record["delivery_static_plan"],"native_snapshot_sha256":sha256(snapdir/"native_latest.json"),"legacy_base150mm_pass":nav["final_distance_m"]<=.15}
+            after=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+            if after["generation"]!=snapshot["generation"] or math.dist(after["bodies"]["pelvis"]["position_m"],base["position_m"])>.01:raise RuntimeError("PLACEMENT_POSE_CHANGED_AFTER_STATIC_SCREEN")
             pg.write_new_text(output/"native_placement_mode_observer.py",placement_mode_observer_script())
             mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 7s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=9.,check=False)
             pg.write_new_text(output/"placement_mode_readback.stdout",mode.stdout)
@@ -1320,6 +1363,11 @@ def main() -> None:
     parser.add_argument("--dock-angular-speed-cap",type=float,help="explicit <=0.075 rad/s external steering cap; bridge promotion also bounded")
     parser.add_argument("--dock-command-speed-cap",type=float,help="explicit smaller external bridge speed cap; MC/policy/model unchanged")
     parser.add_argument("--dock-braking-delay-s",type=float,help="explicit measured stop-tail predictor; final actual position/stop criteria remain unchanged")
+    parser.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
+    parser.add_argument("--body-height-native-build",type=Path)
+    parser.add_argument("--standing-grasp-posture",type=Path)
+    parser.add_argument("--body-height-native-build-sha256")
+    parser.add_argument("--execute-pickup-navigation",action="store_true",help="same native keyframe initialization at aligned START, followed by existing table navigation")
     parser.add_argument("--fixed-reviewed-checkpoint",action="store_true",help="native keyframe episode initialization; no navigation qualification")
     parser.add_argument("--startup-opening-diagnostic", action="store_true", help="8s no-locomotion native opening observation, then mandatory teardown")
     parser.add_argument("--initial-hands-fully-open", action="store_true", help="hold both hands open from bootstrap; require actual native opening before walking")
@@ -1442,7 +1490,7 @@ def main() -> None:
     if args.carry_transit_speed_policy_050 and not ((args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and args.claw_control_overlay_result is not None):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing and not (source_step_all and args.carry_vendor_transition_table):raise ValueError('native step diagnostic requires original validated table or explicit transition diagnostic')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):raise ValueError('SDK turn diagnostic requires carry route')
-    if args.capture_mc_rl_debug and not (args.micro_base_probe or (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False))):
+    if args.capture_mc_rl_debug and not (args.body_height_probe_drop_m is not None or args.micro_base_probe or (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False))):
         raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
@@ -1657,7 +1705,11 @@ def main() -> None:
             if args.coordinated_circle_waist:
                 split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
+                bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"])
+                if args.standing_grasp_posture:
+                    from scripts.research.issue46.native_runtime.standing_waist_preposition import extend_bootstrap
+                    bootstrap=extend_bootstrap(bootstrap)
+                pg.write_new_text(output/"native_arm_bootstrap_hold.py",bootstrap)
                 arm_bootstrap_enabled=True
             pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
@@ -1731,10 +1783,43 @@ def main() -> None:
             pg.write_new_text(output / "native_retarget_neutral.py", retarget_neutral_script())
         if args.preset_motion_id is not None:
             pg.write_new_text(output / "native_preset_motion_probe.py", preset_motion_probe_script(args.preset_motion_id, args.preset_motion_area))
+        if args.body_height_probe_drop_m is not None or args.standing_grasp_posture:
+            if args.execute_pickup_navigation or args.micro_base_probe or args.carry_delivery_config is not None or args.carry_away_1m:
+                raise ValueError("body-height-only diagnostic cannot execute navigation")
+            from scripts.research.issue46.native_runtime.native_body_height import build_script as body_script
+            from scripts.research.issue46.native_runtime import native_micro_stop_contract
+            build_path=require_hashed(args.body_height_native_build,args.body_height_native_build_sha256,label="native body publisher build")
+            built=json.loads(build_path.read_text())
+            if built.get("schema")!="robotsim.native-body-pose-build.v1" or not built.get("compiled_no_physics") or not built.get("marker_rejection_pass"):raise ValueError("body publisher compile/marker proof missing")
+            source=REPO/"scripts/research/issue46/native_runtime/native_body_pose_publisher.c"
+            if sha256(source)!=built["source"]["sha256"] or sha256(RUNTIME/"mc/lib/libaimdk_msgs__rosidl_typesupport_introspection_c.so")!=built["introspection_library"]["sha256"]:raise ValueError("body publisher source/native ABI changed")
+            binary=require_hashed(Path(built["binary"]["path"]),built["binary"]["sha256"],label="native body publisher binary")
+            pg.write_new_bytes(output/"native_body_pose_publisher",binary.read_bytes());(output/"native_body_pose_publisher").chmod(0o755)
+            import mujoco
+            model=mujoco.MjModel.from_xml_path(control_generated["host_scene"]["path"])
+            root_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"pelvis")
+            bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,i) for i in range(model.nbody) if model.body_rootid[i]==root_id]
+            limits,provenance=native_leg_safety_contract(include_upper_body=True)
+            if args.standing_grasp_posture:
+                from scripts.research.issue46.native_runtime.standing_waist_preposition import load_proposal
+                proposal=load_proposal(args.standing_grasp_posture,limits)
+                proposal["robot_bodies"]=bodies
+                if not args.coordinated_circle_waist or not args.fixed_reviewed_checkpoint or not args.physical_lift_test:raise ValueError("preposition requires exclusive waist and fixed-stance physical pickup")
+                pg.write_new_text(output/"standing_grasp_proposal.json",json.dumps(proposal,indent=2)+"\n")
+                pg.write_new_text(output/"body_crouch_pickup.py",body_script(limits,bodies,proposal["body_drop_m"],mode="lower_hold",label="body_crouch_pickup"))
+                pg.write_new_text(output/"body_posture_hold.py",body_script(limits,bodies,proposal["body_drop_m"],mode="observe",label="body_posture_hold"))
+            else:pg.write_new_text(output/"native_body_height_probe.py",body_script(limits,bodies,args.body_height_probe_drop_m))
+            pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
+            result["native_body_height_build"]={"path":str(build_path),"sha256":sha256(build_path),"source_motion_provenance":provenance}
         if args.dock_world_xy is not None:
             robot_start = overlay.get("robot_start", {})
             start_xyz = robot_start.get("xyz_m")
             start_yaw = robot_start.get("yaw_rad")
+            if args.execute_pickup_navigation:
+                initialization=(claw_control_overlay or {}).get("episode_start_navigation")
+                if initialization is None:raise ValueError("aligned START provenance missing")
+                start_xyz=[*initialization["start_xy_m"],checkpoint["initial_pelvis_pose"]["position_m"][2]]
+                start_yaw=initialization["start_yaw_rad"]
             if not isinstance(start_xyz, list) or len(start_xyz) != 3 or not isinstance(start_yaw, (int, float)):
                 raise ValueError("table overlay lacks a finite source-map robot start pose")
             pg.write_new_text(
@@ -1758,6 +1843,7 @@ def main() -> None:
                     command_speed_cap=args.dock_command_speed_cap,
                     angular_speed_cap=args.dock_angular_speed_cap,
                     native_arm_relay=args.native_arm_policy_relay,
+                    pickup_navigation=bool(args.execute_pickup_navigation),
                 ),
             )
         if args.capture_mc_rl_debug:
@@ -2304,7 +2390,16 @@ def main() -> None:
         if args.capture_mc_rl_debug and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):
             start_runtime_rl_debug_capture(container,environment,output,args,result)
 
-        if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
+        if args.body_height_probe_drop_m is not None:
+            observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 35s python3 /workspace/evidence/native_body_height_probe.py"],timeout_s=38.,check=False)
+            pg.write_new_text(output/"native_body_height_probe.stdout",observed.stdout)
+            path=output/"native_body_height_result.json";body_result=json.loads(path.read_text()) if path.exists() else {"pass_result":False,"failure":"BODY_HEIGHT_CHILD_NO_RESULT","stdout_tail":observed.stdout[-2000:]}
+            result["native_body_height"]=body_result
+            result["gates"]["NATIVE_BODY_HEIGHT_RESPONSE_AND_RESTORE"]="PASS" if observed.returncode==0 and body_result.get("pass_result") else "FAIL"
+            if result["gates"]["NATIVE_BODY_HEIGHT_RESPONSE_AND_RESTORE"]!="PASS":result["failure"]={"gate":"NATIVE_BODY_HEIGHT_RESPONSE_AND_RESTORE","detail":body_result}
+            raise MicroProbeComplete()
+        fixed_stance_only=args.fixed_reviewed_checkpoint and not args.execute_pickup_navigation
+        if args.use_official_cmd_vel_bridge and not fixed_stance_only:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
             lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else " -p min_forward_velocity:="+str(args.dock_command_speed_cap) if args.dock_command_speed_cap is not None else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
             if args.dock_angular_speed_cap is not None:lateral_parameter+=" -p min_angular_velocity:="+str(args.dock_angular_speed_cap)+" -p max_angular_velocity:="+str(args.dock_angular_speed_cap)
@@ -2318,6 +2413,11 @@ def main() -> None:
                 + lateral_parameter
                 + "> /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
             )
+            if args.execute_pickup_navigation:
+                from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+                source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
+                pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
+                bridge_command=environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.0 -p max_forward_velocity:=0.20 -p max_backward_velocity:=0.20 -p min_lateral_velocity:=0.0 -p max_lateral_velocity:=0.0 -p min_angular_velocity:=0.0 -p max_angular_velocity:=0.60 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
             run(["docker", "exec", "-d", container, "bash", "-lc", bridge_command], timeout_s=5.0)
             bridge_text = wait_for(bridge_log, "cmd_vel_bridge started.", timeout_s=10.0)
             if "state=0" not in bridge_text:
@@ -2360,14 +2460,15 @@ def main() -> None:
             preset_result = json.loads(preset.stdout.strip().splitlines()[-1]) if preset.returncode == 0 else {"returncode": preset.returncode, "stdout_tail": preset.stdout[-1200:]}
             result["native_preset_motion"] = {"requested": args.preset_motion_id, "area": args.preset_motion_area, "result": preset_result}
             result["gates"]["NATIVE_PRESET_MOTION_SERVICE"] = "PASS" if preset.returncode == 0 and preset_result.get("pass") else "FAIL"
-        if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint:
-            if args.fixed_reviewed_checkpoint:
+        if args.dock_world_xy is not None or fixed_stance_only:
+            if fixed_stance_only:
                 dock_pass=True
                 result['fixed_stance_diagnostic']={'navigation':'NOT_RUN','source_registration':'NOT_RUN','velocity_publishers_created':0}
             else:
                 dock = run(["docker", "exec", container, "bash", "-lc", environment + "timeout " + str(int(math.ceil(args.dock_timeout_s + 8.0))) + "s python3 /workspace/evidence/native_locomotion_dock.py"], timeout_s=float(args.dock_timeout_s + 12.0), check=False)
                 pg.write_new_text(output / "native_locomotion_dock.stdout", dock.stdout)
-                dock_result = json.loads(dock.stdout.strip().splitlines()[-1]) if dock.returncode == 0 else {"returncode": dock.returncode, "stdout_tail": dock.stdout[-1200:]}
+                try:dock_result=json.loads(dock.stdout.strip().splitlines()[-1])
+                except (ValueError,IndexError):dock_result={"returncode":dock.returncode,"stdout_tail":dock.stdout[-1200:]}
                 result["native_locomotion_dock"] = {"transport": "official_cmd_vel_bridge" if args.use_official_cmd_vel_bridge else "direct_mc_velocity_legacy", "world_goal_xy_m": [float(args.dock_world_xy[0]), float(args.dock_world_xy[1])], "world_goal_yaw_rad": float(args.dock_yaw_rad), "dock_position_only": bool(args.dock_position_only), "refine_world_xy_m": None if args.refine_world_xy is None else [float(args.refine_world_xy[0]), float(args.refine_world_xy[1])], "refine_world_yaw_rad": args.refine_yaw_rad, "refine_position_only": bool(args.refine_position_only), "dock_position_tolerance_m": float(args.dock_position_tolerance_m), "refine_position_tolerance_m": float(args.refine_position_tolerance_m), "returncode": dock.returncode, "result": dock_result}
                 result["commands_not_sent"].remove("locomotion velocity")
                 result["gates"]["NATIVE_TABLE_DOCK_SOURCE_REGISTRATION"] = "PASS" if dock.returncode == 0 and isinstance(dock_result.get("source"), dict) else "FAIL"
@@ -2376,7 +2477,7 @@ def main() -> None:
                 result["gates"]["NATIVE_TABLE_DOCK_STOP_HOLD"] = "PASS" if dock_pass else "FAIL"
                 if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure"),"child_returncode":dock.returncode}
             if dock_pass:
-                if not args.fixed_reviewed_checkpoint:
+                if not fixed_stance_only:
                     observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 12s python3 /workspace/evidence/native_postdock_stand_observer.py"],timeout_s=14.,check=False)
                     pg.write_new_text(output/'postdock_stand_observer.stdout',observed.stdout)
                     state=json.loads(observed.stdout.strip().splitlines()[-1]) if observed.returncode==0 else {'stdout_tail':observed.stdout[-1200:]}
@@ -2384,13 +2485,17 @@ def main() -> None:
                     ready=observed.returncode==0 and state.get('set_status') is None and state.get('mode_name')=='STAND_DEFAULT' and state.get('mode_status')==100 and state.get('stability',{}).get('pass') is True
                     result['gates']['POSTDOCK_READONLY_STAND']='PASS' if ready else 'FAIL'
                     if not ready:raise RuntimeError('postdock read-only standing qualification failed')
+                if args.standing_grasp_posture:
+                    from scripts.research.issue46.native_runtime.standing_waist_preposition import execute_preposition
+                    result["standing_grasp_posture"]=execute_preposition(run,container,environment,output,args.standing_grasp_posture)
+                    result["gates"]["POSTURED_PICKUP_READINESS"]="PASS"
                 dock_capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
                 pg.write_new_text(output / "native_dock_state_capture.stdout", dock_capture.stdout)
                 dock_state = json.loads(dock_capture.stdout.strip().splitlines()[-1]) if dock_capture.returncode == 0 else {"returncode": dock_capture.returncode, "stdout_tail": dock_capture.stdout[-1200:]}
                 result["native_dock_state_capture"] = dock_state
                 required_groups = ("base_pose_world", "leg_positions_rad", "waist_positions_rad", "arm_positions_rad")
                 state_ok = dock_capture.returncode == 0 and all(isinstance(dock_state.get(group), dict) for group in required_groups) and dock_state.get("motion_stability", {}).get("pass") is True
-                result["gates"]["NATIVE_FIXED_STANCE_STATE_HANDOFF" if args.fixed_reviewed_checkpoint else "NATIVE_TABLE_DOCK_STATE_HANDOFF"] = "PASS" if state_ok else "FAIL"
+                result["gates"]["NATIVE_FIXED_STANCE_STATE_HANDOFF" if fixed_stance_only else "NATIVE_TABLE_DOCK_STATE_HANDOFF"] = "PASS" if state_ok else "FAIL"
                 if hal_arm_candidate_path is not None:
                     pg.write_new_text(output / "native_dock_state.json", json.dumps(dock_state, ensure_ascii=False, indent=2) + "\n")
                     replan = run([
@@ -2434,12 +2539,19 @@ def main() -> None:
                                 waist_order=("waist_yaw_joint","waist_pitch_joint","waist_roll_joint")
                                 if any(n not in runtime_waist for n in waist_order):raise RuntimeError("replan lacks coordinated waist target")
                                 waist_target=[float(runtime_waist[n]) for n in waist_order]
-                                waist_commands=json.loads((output/"native_stand_command_capture.stdout").read_text().strip().splitlines()[-1])["waist_commands"]
+                                actual_limits,_=native_leg_safety_contract(include_upper_body=True)
+                                replan_record.setdefault("source_joint_limits_rad",{}).update({n:actual_limits[n] for n in waist_order})
+                                gain_source=output/"native_stand_command_capture.stdout"
+                                if args.standing_grasp_posture:
+                                    gain_source=output/"standing_waist_feedback.json";actual_source=json.loads(gain_source.read_text())
+                                    if actual_source["generation"]!=json.loads((output/"native_latest.json").read_text())["generation"] or not 0.<=(time.monotonic_ns()-actual_source["source_host_ns"])*1e-9<=.20:raise RuntimeError("STALE_POSTURED_MC_WAIST_GAINS")
+                                    waist_commands=actual_source["unchanged_mc_source_gains"]
+                                else:waist_commands=json.loads(gain_source.read_text().strip().splitlines()[-1])["waist_commands"]
                                 for n in waist_order:
                                     c=waist_commands[n];kp=float(c["stiffness"]);kd=float(c["damping"])
                                     if not math.isfinite(kp) or not math.isfinite(kd) or kp<=0 or kd<=0:raise RuntimeError("invalid captured active MC waist gains")
                                     arm_gains[n]=(kp,kd)
-                                result["coordinated_waist_gains_provenance"]={"source":"actual unchanged MC STAND command capture","values":{n:arm_gains[n] for n in waist_order},"capture_sha256":sha256(output/"native_stand_command_capture.stdout")}
+                                result["coordinated_waist_gains_provenance"]={"source":"actual unchanged MC STAND command capture","values":{n:arm_gains[n] for n in waist_order},"capture_path":str(gain_source),"capture_sha256":sha256(gain_source)}
                             elif replan_record.get("waist_actuation_required"):
                                 raise RuntimeError("waist target cannot execute on arm-only controller")
                             dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
@@ -2461,7 +2573,7 @@ def main() -> None:
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                                     replan_record['lift_preflight']['retract_preflight']['allow_carried_bottle_tilt']=args.allow_carried_bottle_tilt
                                     replan_record['lift_preflight']['retract_preflight']['carry_retention_only']=args.carry_retention_only
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist or args.standing_grasp_posture is not None,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:
@@ -2498,7 +2610,7 @@ def main() -> None:
             result["gates"]["HAL_ARM_PD_COMMAND_ROUNDTRIP"] = "PASS" if arm_probe.returncode == 0 and arm_probe_result.get("response_pass") else "FAIL"
             result["gates"]["HAL_ARM_PD_COMMAND_STAND_STABILITY"] = "PASS" if arm_probe.returncode == 0 and arm_probe_result.get("motion_stability", {}).get("pass") else "FAIL"
         if hal_arm_target_right is not None:
-            handoff_pass=(result["gates"].get("NATIVE_FIXED_STANCE_STATE_HANDOFF")=="PASS" if args.fixed_reviewed_checkpoint else result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"]=="PASS" and result["gates"]["NATIVE_TABLE_DOCK_STATE_HANDOFF"]=="PASS")
+            handoff_pass=(result["gates"].get("NATIVE_FIXED_STANCE_STATE_HANDOFF")=="PASS" if fixed_stance_only else result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"]=="PASS" and result["gates"]["NATIVE_TABLE_DOCK_STATE_HANDOFF"]=="PASS")
             if not handoff_pass or result["gates"]["HAL_ARM_RUNTIME_REPLAN"] != "PASS":
                 raise RuntimeError("arm-only HAL pregrasp is gated on successful native docking, state handoff, and runtime static replan")
             if arm_bootstrap_enabled:

@@ -356,7 +356,8 @@ class NativeLaunchTests(TestCase):
 
     def test_fixed_checkpoint_does_not_qualify_navigation(self):
         source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
-        self.assertIn('args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint',source)
+        self.assertIn('fixed_stance_only=args.fixed_reviewed_checkpoint and not args.execute_pickup_navigation',source)
+        self.assertIn('args.use_official_cmd_vel_bridge and not fixed_stance_only',source)
         self.assertIn("'navigation':'NOT_RUN'",source)
         self.assertIn('NATIVE_KEYFRAME_INITIAL_POSE_UNCONFIRMED',source)
         self.assertIn('NATIVE_FIXED_STANCE_STATE_HANDOFF',source)
@@ -971,3 +972,15 @@ class CarryContactPolicyConsistencyTests(unittest.TestCase):
         for other,depth,enabled in (("right_hip_roll_link",-.006,True),("raicom_table_table",-.001,True),
                                     ("right_hip_roll_link",-.001,False)):
             with self.assertRaisesRegex(RuntimeError,"CARRY_OBJECT_EXTERNAL_SUPPORT"):run(other,depth,enabled)
+
+class AlignedStartNavigationTests(unittest.TestCase):
+    def test_real_pickup_child_uses_bridge_source_and_explicit_step(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import locomotion_dock_script
+        args=dict(world_start_xy=[-1.5,-1.5],world_start_yaw_rad=0.,dock_world_xy=[.95,-1.5],dock_world_yaw_rad=0.,dock_position_only=True,refine_world_xy=None,refine_world_yaw_rad=None,refine_position_only=False,dock_position_tolerance_m=.1,refine_position_tolerance_m=.1,timeout_s=30.,use_cmd_vel_bridge=True,native_pose_feedback=True,pickup_navigation=True)
+        code=locomotion_dock_script(**args);compile(code,"actual_pickup_child","exec")
+        self.assertIn('n.stand("LOCOMOTION_STEP")',code)
+        self.assertIn("('robotsim_official_cmd_vel' if PLAN['use_cmd_vel_bridge'] else SOURCE)",code)
+        self.assertIn("source_mode_confirmed",code)
+        self.assertIn("get_mode=n.mode_observation",code)
+        self.assertIn("else .20",code)
+        self.assertNotIn("mj_step(",code)

@@ -46,7 +46,7 @@ The goal is to provide a reusable simulation and system-integration framework fo
 
 ## Current status
 
-As of 2026-11-08, X2 research has progressed into real MuJoCo/MC standing,
+As of 2026-11-10, X2 research has progressed into real MuJoCo/MC standing,
 bounded locomotion, table-approach and manipulation integration. These are
 experiment-specific capabilities, not a blanket qualification of navigation,
 perception, manipulation or hardware deployment. Unity remains the intended
@@ -70,8 +70,11 @@ The separately labeled functional table-transfer profile replans from actual
 stopped pose and keeps the physical/source-joint/contact/freshness/stop gates.
 It now includes an actual-scene-screened second-table target and existing-owner
 contact-transfer/release code; end-to-end dynamic qualification is in progress.
-No table-delivery, unknown-bottle stance-adjustment, short-bottle dynamics,
-LiDAR-based grasp or hardware acceptance is claimed from static screening.
+A complete H300 START-to-second-table physical transfer passed once in native
+MuJoCo/MC (episode20261109T221003Z); independent repeatability is still in
+progress. H220 modest-crouch/torso-turn standing has passed, but its grasp and
+transfer remain unqualified. Unknown-bottle stance-adjustment, LiDAR-based
+grasp and hardware acceptance are not established by these results.
 The older chair outline and platform P0–P7 labels are historical scope.
 
 Read the [X2 task workflow](docs/workflows/06_X2_AUTONOMY_TASK.md) for task-stage

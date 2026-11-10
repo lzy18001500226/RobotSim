@@ -1056,7 +1056,10 @@ class Plan(Node):
    if WAIST:
     w=JointCommandArray();w.header=m.header
     for name in WAIST:
-     x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);w.joints.append(x)
+     x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1])
+     if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK:
+      limits=SOURCE_LIMITS[name];j=self.native_row['joints'][name];x.position=position_mode_setpoint(float(target[name]),float(j['q']),float(j['qvel']),float(j['bias_force']),x.stiffness,x.damping,(*limits,13.088) if len(limits)==2 else limits,120. if name=='waist_yaw_joint' else 36.)
+     w.joints.append(x)
     self.waist_pub.publish(w)
    if hand_right is not None:
     # Match the pinned vendor example: activate only the right claw and leave
@@ -1243,6 +1246,10 @@ finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+    if waist_target is not None and use_native_joint_feedback:
+        import inspect
+        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint
+        script=inspect.getsource(position_mode_setpoint)+"\n"+script
     if lift_contract and lift_contract.get('retract_preflight'):
         script = _with_postlift_retract(script, lift_contract)
         if use_native_joint_feedback:

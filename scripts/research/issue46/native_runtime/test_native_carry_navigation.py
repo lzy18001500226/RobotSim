@@ -1413,3 +1413,12 @@ class NativeProgressSpeedTests(unittest.TestCase):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
         rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,pose=dict(x=i*.025,y=0.,vx=.45 if i%2 else .05,vy=0.)) for i in range(11)]
         self.assertAlmostEqual(task_along_speed(rows,dict(x=.25,y=0.,vx=.45,vy=0.),(1.,0.),1.),.25)
+
+class FunctionalTableHandoffTests(unittest.TestCase):
+    def test_precision_result_and_task_reach_candidate_are_separate(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import functional_approach_limit
+        self.assertEqual(functional_approach_limit({},dict(phase="DELIVERY")),.15)
+        cfg=dict(delivery=dict(approach_task_position_tolerance_m=.25))
+        self.assertEqual(functional_approach_limit(cfg,dict(phase="DELIVERY")),.25)
+        self.assertEqual(functional_approach_limit(cfg,dict(phase="FORWARD")),.15)
+        with self.assertRaises(ValueError):functional_approach_limit(dict(delivery=dict(approach_task_position_tolerance_m=.30)),dict(phase="DELIVERY"))

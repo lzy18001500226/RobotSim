@@ -12,6 +12,24 @@ from scripts.research.issue46.perception.native_rgbd_grasp import estimate,quali
 from scripts.research.issue46.grasp.stl_approved_circle_ik import circle_task_jacobian,axis_grasp_error
 from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
 
+class GravityComponentTest(unittest.TestCase):
+    def test_foreshortened_bottle_and_blue_floor_are_separated_by_depth(self):
+        from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
+        mask=np.zeros((50,60),dtype=bool);height=np.zeros(mask.shape)
+        mask[3:15,3:13]=True
+        height[3:15,3:13]=np.linspace(.55,.77,12)[:,None]
+        mask[25:49,1:59]=True
+        result=vertical_component(mask,world_height=height)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1]["bbox_xyxy"],[3,3,13,15])
+        self.assertIsNone(vertical_component(mask))
+        height[3:15,3:13]=.6
+        self.assertIsNone(vertical_component(mask,world_height=height))
+    def test_nonfinite_height_cannot_qualify(self):
+        from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
+        mask=np.ones((12,10),dtype=bool);height=np.linspace(0,.2,120).reshape(mask.shape);height[0,0]=np.nan
+        self.assertIsNone(vertical_component(mask,world_height=height))
+
 def synthetic_cylinder(radius):
     w,h=320,240;f=210.;K={'fx':f,'fy':f,'cx':(w-1)/2,'cy':(h-1)/2}
     a=.65;T=np.eye(4);T[:3,:3]=np.array([[0.,-math.sin(a),math.cos(a)],[-1.,0.,0.],[0.,-math.cos(a),-math.sin(a)]]);T[:3,3]=[0,0,.95]

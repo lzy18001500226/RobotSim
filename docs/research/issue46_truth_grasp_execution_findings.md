@@ -1,6 +1,51 @@
 # Truth grasp execution: opening and pose findings
 
-Status: incomplete physics qualification; no grasp or lift PASS. Model and source assets unchanged.
+Current checkpoint, 2026-11-10: H300 fresh simulated RGB-D grasp and a complete
+START-to-second-table transfer passed once in actual native MuJoCo/MC.
+Repeatability and the H220/120-mm grasp section remain in development.
+The older failures below are retained, not current blanket failure claims.
+
+| Actual native episode under reviews/issue-46 | Observed result |
+| --- | --- |
+| raicom-stl-xvfb-native-reset-stand-20261109T204903Z | Fixed-table RGB-D grasp, lift, retreat/turn, STEP carry, release/withdraw and independent table support passed. |
+| raicom-stl-xvfb-native-reset-stand-20261109T221003Z | Complete aligned START pickup navigation and the same physical transfer passed; minimum final table support force 1.9537 N, zero pad force for 2.0 simulated seconds. |
+| raicom-stl-xvfb-native-reset-stand-20261109T231915Z | Actual carry progressed 2.5368 m and composite stop passed, but the legacy 0.15 m approach gate failed at 0.1996 m; placement was NOT RUN. |
+| raicom-stl-xvfb-native-reset-stand-20261110T015906Z | H220 native lowering, torso yaw/forward bend and composite stand passed. RGB-D image-aspect heuristic rejected a visible bottle; no arm approach or closure. |
+
+The functional transfer profile now screens placement from the actual stopped
+pose, uses a 0.25 m approach allowance separately from the retained 0.15 m
+precision result, a 0.16 m retract and a delivery section nearer the table edge.
+Those changes do not establish a new full-flow repeatability result.
+
+For H220, the intended grasp section is 0.12 m above the bottom (0.01 m above
+COM). The maintainer clarified torso turning, not large lateral bending.
+The postured pickup path holds measured roll, uses the existing native body
+height command for modest crouch, and then requests yaw/pitch through the
+exclusive existing HAL waist relay. Native source limits and MC gains remain
+unchanged. No post-start root/joint teleportation or artificial support is used.
+
+The installed simulator configuration selects position control for the waist.
+In episode013548Z, held waist-pitch actuator torque matched
+40*(published_position-q)-5*qvel to within 0.0000012 Nm; the separately
+published effort did not appear in the measured torque. The scoped simulation
+adapter consequently encodes native gravity bias as a position setpoint
+correction, bias/kp, with unchanged gains and original source effort/range
+bounds. This is an installed-simulator observation, not a hardware contract.
+See that episode's waist_position_mode_audit.json and the
+[official joint interface](https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/joint_control.html).
+
+A torso bend can foreshorten an upright bottle in the image. The failed H220
+frame had aspect1.225, below the old1.25 image rule despite valid depth.
+The corrected proposal uses calibrated world-height support, then the existing
+cylinder surface, top-plane and fit-quality checks. Saved-frame replay located
+its centre within0.790 mm of evaluation-only truth; that is an offline
+estimator result, not a live grasp result.
+
+All these results retain the explicit SIMULATION_ONLY source-derived pad
+collision/control profile, right-claw kp6/original2Nm limit, local pad contact
+time constant0.002s, and the pre-existing FoundationWalk diagnostic overlay.
+They are not vendor-default or hardware qualification.
+
 
 **Authorization update, 2026-11-06:** the maintainer subsequently authorized
 bounded gripper gain and joint-internal friction/damping diagnostics that

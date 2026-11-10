@@ -714,17 +714,17 @@ def run_probe(smoke_only=False):
             self.source_requested_enabled=enabled
 
         def stand_once(self, requested="STAND_DEFAULT"):
-            if requested!="STAND_DEFAULT" and not (requested=="LOCOMOTION_STEP" and MICRO.get("carry",{}).get("motion_mode")==requested):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
+            if requested!="STAND_DEFAULT" and not (requested in ("LOCOMOTION_STEP","LOCOMOTION_DEFAULT") and MICRO.get("carry",{}).get("motion_mode")==requested):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
             self.publish()
             q=SetMcAction.Request();q.header.stamp=self.get_clock().now().to_msg()
             q.source=SOURCE;q.command.action_desc=requested
             if not self.mode.service_is_ready():raise RuntimeError("STAND_SERVICE_NOT_READY")
             f=self.mode.call_async(q);until=time.monotonic()+.75
-            self.events.append(dict(event="STAND_REQUEST" if requested=="STAND_DEFAULT" else "NATIVE_STEP_REQUEST",t=time.monotonic()))
+            self.events.append(dict(event="STAND_REQUEST" if requested=="STAND_DEFAULT" else "NATIVE_DEFAULT_REQUEST" if requested=="LOCOMOTION_DEFAULT" else "NATIVE_STEP_REQUEST",t=time.monotonic()))
             while not f.done() and time.monotonic()<until:
                 self.publish();self.pump();time.sleep(.015)
             response=raw(f.result()) if f.done() and f.result() is not None else None
-            self.events.append(dict(event="STAND_RESPONSE" if requested=="STAND_DEFAULT" else "NATIVE_STEP_RESPONSE",t=time.monotonic(),raw=response))
+            self.events.append(dict(event="STAND_RESPONSE" if requested=="STAND_DEFAULT" else "NATIVE_DEFAULT_RESPONSE" if requested=="LOCOMOTION_DEFAULT" else "NATIVE_STEP_RESPONSE",t=time.monotonic(),raw=response))
             if response is None or response["response"]["header"]["code"]!=0 or response["response"]["status"]["value"]!=1:
                 raise RuntimeError("STAND_REQUEST_REJECTED_OR_TIMEOUT")
 
@@ -1144,6 +1144,14 @@ def step_cruise_reference(trace, pose, goal_xy, stamp):
     return progress/span if progress>=.08 else None
 
 
+def functional_approach_limit(cfg, mission):
+    """Task arrival tolerance is separate from every physical-stop threshold."""
+    if mission is None or mission.get("phase")!="DELIVERY":return .15
+    value=float((cfg.get("delivery") or {}).get("approach_task_position_tolerance_m",.15))
+    if not .15<=value<=.25:raise ValueError("functional approach tolerance outside explicit task bound")
+    return value
+
+
 def task_along_speed(trace, pose, goal_xy, stamp):
     dx=goal_xy[0]-pose["x"];dy=goal_xy[1]-pose["y"];size=math.hypot(dx,dy)
     if size<1e-9:return 0.
@@ -1206,6 +1214,7 @@ def run_carry_navigation(n,contract):
 
     try:
         n.start_feedback();baseline=await_carry_initial_state(n)["body_status"]
+        if baseline!=1:raise RuntimeError("CARRY_NAVIGATION_REQUIRES_RESTORED_STAND_BODY")
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"]
@@ -1217,6 +1226,18 @@ def run_carry_navigation(n,contract):
             result["away_mission"]=mission
             bearing=away
         else:bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])
+        if cfg.get("motion_mode")=="LOCOMOTION_DEFAULT" and (cfg.get("delivery") or {}).get("prepare_default_after_pickup"):
+            # An earlier STEP navigation retains that speed/mode selection in
+            # the installed MC. Select the reviewed retreat/turn mode explicitly.
+            n.stand_once("LOCOMOTION_DEFAULT")
+            ready_until=time.monotonic()+.75;default_ready=False
+            while time.monotonic()<ready_until:
+                n.publish();n.pump();prepared=n.sample()
+                result.setdefault("native_default_preparation",[]).append({k:prepared[k] for k in ("sample_monotonic_s","get_mode_desc","common_mode_desc","raw_common")})
+                if prepared["body_status"]==baseline and prepared["get_mode_header_code"]==0 and prepared["get_mode_desc"] in ("STAND_DEFAULT","LOCOMOTION_DEFAULT") and prepared["get_mode_status_value"]==100 and prepared["common_mode_desc"] in ("STAND_DEFAULT","LOCOMOTION_DEFAULT") and prepared["common_mode_status_value"]==100:
+                    default_ready=True;break
+                time.sleep(.02)
+            if not default_ready:raise RuntimeError("NATIVE_DEFAULT_PREPARATION_UNCONFIRMED")
         if cfg.get("motion_mode")=="LOCOMOTION_STEP" and not cfg.get("native_step_all_transit"):
             n.stand_once("LOCOMOTION_STEP")
             step_until=time.monotonic()+.75;step_ready=False
@@ -1807,7 +1828,9 @@ def run_carry_navigation(n,contract):
         source_observed=bool(acquired or mission is not None and mission.get("delivery_source_and_mode_observed"))
         result["source_and_motion_mode_observed"]=source_observed
         if cfg.get("motion_mode","LOCOMOTION_DEFAULT")=="LOCOMOTION_DEFAULT":result["source_and_ld_observed"]=source_observed
-        result["pass_result"]=bool(result.get("goal_triggered_stop") and source_observed and result["post_stop_composite"]["pass"] and result["final_distance_m"]<=.15 and result["measured_distance_m"]>.005)
+        position_limit=functional_approach_limit(cfg,mission)
+        result["position_acceptance"]=dict(legacy_precision015_pass=result["final_distance_m"]<=.15,functional_approach_tolerance_m=position_limit,requires_actual_placement_ik_before_arm_motion=position_limit>.15)
+        result["pass_result"]=bool(result.get("goal_triggered_stop") and source_observed and result["post_stop_composite"]["pass"] and result["final_distance_m"]<=position_limit and result["measured_distance_m"]>.005)
         if mission is not None:
             if mission["phase"]=="DELIVERY":
                 yaw_error=(cfg["delivery"]["base_goal_world_yaw_rad"]-end["yaw"]+math.pi)%(2*math.pi)-math.pi

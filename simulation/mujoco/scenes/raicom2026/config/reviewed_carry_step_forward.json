@@ -10,7 +10,7 @@
   "base_goal_world_yaw_rad": 2.3,
   "placement_center_world_m": [
     0.2,
-    1.52,
+    1.44,
     0.6968309428515006
   ],
   "table_bounds_min_world_m": [
@@ -135,5 +135,8 @@
     1.85
   ],
   "workspace_scope": "BOUNDED_SIMULATION_TASK_ENVELOPE_NOT_A_WALL_CLEARANCE_CLAIM; actual full-model environment contact/source/stop checks unchanged. 191043Z rootY-1.7697 and radius.35427 had complete source audit/stop PASS; legacy shape results retained.",
-  "docking_pose_reason": "Actual curved approach192115Z stopped yaw2.231rad; choose nominal2.3 with unchanged.12rad gate after source-scene placementIK screen. XY goal/tolerance unchanged; no terminal turn required."
+  "docking_pose_reason": "Actual curved approach192115Z stopped yaw2.231rad; choose nominal2.3 with unchanged.12rad gate after source-scene placementIK screen. XY goal/tolerance unchanged; no terminal turn required.",
+  "placement_target_note": "Tabletop point moved80mm toward front after actual full-start repeat222022Z wrist limit at y1.52; full existing placement IK/collision screen and unchanged real support/release gates retained. Table geometry unchanged.",
+  "approach_task_position_tolerance_m": 0.25,
+  "approach_tolerance_scope": "FUNCTIONAL_TABLE_TRANSFER_ONLY; retain legacy150mm result separately; unchanged yaw120mrad, source/physical safety and composite stop; actual arrived-pose placement IK must pass before arm motion. No precision-docking claim."
 }

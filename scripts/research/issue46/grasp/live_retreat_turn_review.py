@@ -27,7 +27,7 @@ def matching_review_model(manifest, episode):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
     os.chdir(REPO)
     if args.right_claw_kp is None:args.right_claw_kp=6. if args.to_delivery_table else 4.
     if Path(subprocess.check_output(["git","rev-parse","--show-toplevel"],text=True).strip()).resolve()!=REPO:raise RuntimeError("wrong worktree")
@@ -38,12 +38,22 @@ def main():
     if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
     if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
     profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/(("reviewed_carry_step_forward.json" if args.delivery_mode=="step" else "reviewed_carry_table_delivery.json") if args.to_delivery_table else "retreat_turn_human_review.json")
+    if args.bottle_height_m==.22:
+        if not args.to_delivery_table or args.delivery_mode!="step":raise ValueError("H220 scope requires complete STEP-forward transfer")
+        profile=profile.with_name("reviewed_carry_step_h220_forward.json")
+        CMD.extend(["--bottle-height-m","0.22"])
+        CMD[CMD.index("--grasp-height-above-center-m")+1]="0.01"
+    if args.from_start:
+        if not args.to_delivery_table:raise ValueError("from START requires complete delivery mission")
+        CMD.extend(["--execute-pickup-navigation","--dock-command-speed-cap","0.20","--dock-braking-delay-s","0.80","--dock-position-tolerance-m","0.15"])
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
     CMD[CMD.index("--right-claw-kp")+1]=str(args.right_claw_kp)
     if args.to_delivery_table:
         CMD[CMD.index("--carry-compact-angular-cap")+1]="0.60"
-    if args.to_delivery_table:
+        CMD[CMD.index("--post-lift-retract-world-m")+1]="-0.16"
+    if args.to_delivery_table and args.bottle_height_m==.30:
         prior="raicom-stl-xvfb-native-reset-stand-20261109T150617Z" if args.right_claw_kp==4. else "raicom-stl-xvfb-native-reset-stand-20261109T201208Z"
+        if args.from_start:prior="raicom-stl-xvfb-native-reset-stand-20261109T221003Z"
         CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/prior)])
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
     if args.check_only:
@@ -101,7 +111,7 @@ def main():
         result=json.loads((episode/"result.json").read_text())
         failure=result.get("failure")
         if isinstance(failure,dict) and isinstance(failure.get("detail"),dict):
-            failure=dict(gate=failure.get("gate"),cause=failure["detail"].get("failure",failure["detail"].get("error")))
+            failure=dict(gate=failure.get("gate"),cause=failure["detail"].get("failure",failure["detail"].get("error",failure["detail"].get("gate"))))
         keys=("HAL_PHYSICAL_LIFT","POST_LIFT_RETRACT","LEAVE_TABLE_AND_TURN","SECOND_TABLE_BASE_ARRIVAL_AND_STOP","FINAL_COMPOSITE_STOP","PHYSICAL_TABLE_PLACEMENT","TWO_TABLE_TRANSFER_EXECUTION")
         print(json.dumps(dict(gates={k:result.get("gates",{}).get(k,"NOT_RUN") for k in keys},failure=failure,cleanup=result.get("cleanup"),full_result=str(episode/"result.json")),ensure_ascii=False),flush=True)
 if __name__=="__main__":main()

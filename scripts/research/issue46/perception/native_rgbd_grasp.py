@@ -93,19 +93,26 @@ def render(model,data,renderer,camera,row):
     f=HEIGHT/(2*math.tan(math.radians(FOVY)/2))
     return rgb,depth,{'fx':f,'fy':f,'cx':(WIDTH-1)/2,'cy':(HEIGHT-1)/2},T
 
-def vertical_component(mask):
-    """Retain the existing active-scan's 4-connected size/aspect/score rule.
+def vertical_component(mask, *, world_height=None):
+    """Select a 4-connected blue component with real upright height support.
 
-    Use SciPy's equivalent labelling so the live path need not import the
-    historical, untracked head-scan executable or its image dependencies.
+    A tilted camera can make an upright bottle appear squat or diagonal.
+    Calibrated depth therefore qualifies world height; the image-only fallback
+    retains the old aspect rule for callers without calibrated geometry.
     """
+
     from scipy.ndimage import label,find_objects
     labels,count=label(mask);sizes=np.bincount(labels.reshape(-1));best=None
     for index,bounds in enumerate(find_objects(labels),1):
         if bounds is None or sizes[index]<50:continue
         ys,xs=bounds;height=ys.stop-ys.start;width=xs.stop-xs.start;aspect=height/max(width,1)
-        if not 1.25<=aspect<=8.:continue
-        score=float(sizes[index])*min(aspect/3.5,3.5/aspect)
+        if world_height is None:
+            if not 1.25<=aspect<=8.:continue
+            score=float(sizes[index])*min(aspect/3.5,3.5/aspect)
+        else:
+            values=world_height[labels==index]
+            if not np.isfinite(values).all() or float(np.quantile(values,.98)-np.quantile(values,.02))<.06:continue
+            score=float(sizes[index])
         info={'pixel_count':float(sizes[index]),'bbox_xyxy':[xs.start,ys.start,xs.stop,ys.stop],'bbox_width_px':float(width),'bbox_height_px':float(height),'vertical_aspect':float(aspect),'score':score}
         if best is None or score>best[1]['score']:best=(labels==index,info)
     return best
@@ -114,7 +121,11 @@ def estimate(rgb,depth,K,T):
     """Task-blue, upright variable-radius cylinder. No ground-truth input."""
     red,green,blue=(rgb[...,i].astype(np.int16) for i in range(3))
     mask=(blue>=70)&(blue-red>=28)&(blue-green>=18)&np.isfinite(depth)&(depth>.08)&(depth<1.2)
-    component=vertical_component(mask)
+    ys,xs=np.indices(depth.shape)
+    proposal_depth=np.where(mask,depth,0.)
+    world_height=(T[2,0]*(xs-K["cx"])*proposal_depth/K["fx"]+
+                  T[2,1]*(ys-K["cy"])*proposal_depth/K["fy"]+T[2,2]*proposal_depth+T[2,3])
+    component=vertical_component(mask,world_height=world_height)
     if component is None:raise ValueError('NO_BLUE_CYLINDER_RGBD_COMPONENT')
     mask,info=component
     # RGB antialiasing and a foreground finger can mix colour/depth at a
@@ -216,7 +227,7 @@ def qualify_stationary_snapshot(record, *, generation,now_ns=None):
 def stream(scene,latest,output, *, half_height_m,cache=None):
     from PIL import Image
     from scripts.research.issue46.perception.rgbd_truth_capture import CAMERA_POS
-    if half_height_m not in (.075,.15):raise ValueError('explicit canonical height prior required')
+    if half_height_m not in (.075,.11,.15):raise ValueError('explicit canonical height prior required')
     output.mkdir(exist_ok=False);model,data,renderer,camera=build_sensor(scene,cache)
     backend=render_backend_info();requested=os.environ.get('MESA_D3D12_DEFAULT_ADAPTER_NAME')
     if requested and requested.lower() not in backend['renderer'].lower():raise RuntimeError('RGBD_RENDER_ADAPTER_SELECTION_NOT_CONFIRMED')
