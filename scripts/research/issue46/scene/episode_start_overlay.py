@@ -53,7 +53,7 @@ def build(parent, poses):
     pose["quaternion_wxyz"]=q.tolist();pose["rotation"]=rotation.as_matrix().reshape(-1).tolist()
     checkpoint["classification"]="SIMULATION_ONLY_ALIGNED_START_NATIVE_EPISODE_INITIALIZATION"
     checkpoint["physical_arrays_unchanged"]=checked
-    record["episode_start_navigation"]=dict(start_xy_m=xy.tolist(),start_yaw_rad=yaw,
+    record["episode_start_navigation"]=dict(parent_overlay=dict(path=str(parent),sha256=sha(parent)),start_xy_m=xy.tolist(),start_yaw_rad=yaw,
         pickup_goal_world_xyz_m=source_pose["position_m"],source_poses=dict(path=str(poses),sha256=sha(poses)),
         keyframe_only_before_stepping=True,physical_arrays_unchanged=True,mj_step_calls=0)
     record.pop("delivery_static_plan",None)

@@ -62,20 +62,39 @@ def verified_grasp_reuse(episode):
 
 
 def verified_claw_cycle_reuse(episode, current_overlay):
-    """Reuse actual gain-cycle proof only across the checked bottle-only fixture."""
+    """Reuse only actual same-control/same-algorithm no-contact calibration."""
     proof=verified_grasp_reuse(episode)
+    prior_result=json.loads((Path(episode)/"result.json").read_text())
+    prior=json.loads(Path(prior_result["claw_control_overlay"]["path"]).read_text())
     current=json.loads(Path(current_overlay).read_text())
-    current_scene=current["generated"]["host_scene"]
-    if current_scene["sha256"]!=proof["scene_sha256"]:
+    def flag(record):
+        return int(record.get("numeric_contact_manifold",{}).get("new_enableflags",0))
+    if flag(current)!=flag(prior):raise ValueError("changed contact algorithm needs its own verified gain-cycle combination")
+    if flag(prior) and prior_result.get("native_solver_options",{}).get("enableflags")!=flag(prior):raise ValueError("prior algorithm was not observed in native physics")
+    def read_parent(ref):
+        path=Path(ref["path"])
+        if native.sha256(path)!=ref["sha256"]:raise ValueError("fixture parent changed")
+        return json.loads(path.read_text())
+    def physical_source(record):
+        if record.get("numeric_contact_manifold"):
+            numeric=record["numeric_contact_manifold"]
+            required={"body_mass","body_inertia","jnt_range","jnt_axis","geom_size","actuator_forcerange","actuator_gainprm"}
+            if (numeric.get("old_enableflags"),numeric.get("new_enableflags"))!=(0,16) or not required.issubset(numeric.get("geometry_material_mass_gain_limit_arrays_unchanged",[])):raise ValueError("solver-only equivalence proof missing")
+            record=read_parent(numeric["parent"])
+        episode_start=record.get("episode_start_navigation")
+        if episode_start:
+            if episode_start.get("keyframe_only_before_stepping") is not True or episode_start.get("physical_arrays_unchanged") is not True:raise ValueError("episode relocation proof missing")
+            record=read_parent(episode_start["parent_overlay"])
+        return record
+    current=physical_source(current);prior=physical_source(prior)
+    if current["generated"]["host_scene"]["sha256"]!=prior["generated"]["host_scene"]["sha256"]:
         fixture=current.get("fixture_height_delta",{})
         if not fixture.get("robot_and_environment_unchanged") or fixture.get("mj_step_calls")!=0 or (fixture.get("source_height_m"),fixture.get("height_m"),fixture.get("diameter_m"),fixture.get("mass_kg"))!=(.30,.22,.07,.2):
-            raise ValueError("cycle reuse requires exact scene or verified bottle-only H220 fixture")
-        parent=fixture["parent"];path=Path(parent["path"])
-        if native.sha256(path)!=parent["sha256"]:raise ValueError("fixture parent changed")
-        original=json.loads(path.read_text())["generated"]["host_scene"]
-        if original["sha256"]!=proof["scene_sha256"] or native.sha256(Path(original["path"]))!=proof["scene_sha256"]:
-            raise ValueError("fixture original robot/control differs from verified gain cycle")
-    return {**proof,"scope":"ACTUAL_UNCHANGED_CLAW_GAIN_CYCLE_ONLY_NOT_IK_OR_GRASP_ACCEPTANCE"}
+            raise ValueError("cycle reuse requires exact source or verified bottle-only H220 fixture")
+        original=read_parent(fixture["parent"])["generated"]["host_scene"]
+        if original["sha256"]!=prior["generated"]["host_scene"]["sha256"] or native.sha256(Path(original["path"]))!=original["sha256"]:raise ValueError("fixture original robot/control differs from verified gain cycle")
+    return {**proof,"scope":"ACTUAL_UNCHANGED_CLAW_GAIN_CYCLE_ONLY_NOT_IK_OR_GRASP_ACCEPTANCE","active_native_enableflags":flag(json.loads(Path(current_overlay).read_text()))}
+
 
 def runtime_plan_result(result, effective_dir):
     """Make parent and tracker consume the identical effective plan artifact."""
@@ -219,6 +238,7 @@ def main():
     perception_process=None
     perception_output=None
     host_model_cache=None
+    gain_cycle_reuse=None
     def run(command,**kwargs):
         nonlocal tracking,tracking_output,perception_process,perception_output
         # The native parent now builds, launches and checks its required observer.
@@ -266,6 +286,11 @@ def main():
                 carry_source_limits,carry_source_provenance=native.native_leg_safety_contract(include_upper_body=True)
                 synchronized["runtime_source_motion_limits"]=carry_source_limits
                 synchronized["runtime_source_motion_provenance"]=carry_source_provenance
+            if gain_cycle_reuse is not None:
+                seed_plan=json.loads(Path(gain_cycle_reuse["plan"]).read_text())
+                names=("right_shoulder_pitch_joint","right_shoulder_roll_joint","right_shoulder_yaw_joint","right_elbow_joint","right_wrist_yaw_joint","right_wrist_pitch_joint","right_wrist_roll_joint")
+                synchronized["runtime_initial_arm_guess_rad"]={n:float(seed_plan["rows"][0]["q_rad"][n]) for n in names}
+                synchronized["runtime_initial_arm_guess_provenance"]={"source_plan":gain_cycle_reuse["plan"],"sha256":gain_cycle_reuse["plan_sha256"],"scope":"SEVEN_JOINT_INITIAL_GUESS_ONLY_CURRENT_CAMERA_ROBOT_STATE_AND_ALL_GATES_RECOMPUTED"}
             state=state.parent/"native_synchronized_dock_state.json"
             pg.write_new_text(state,json.dumps(synchronized,indent=2)+"\n")
             state=str(state)
@@ -316,7 +341,7 @@ def main():
             evidence=Path(command[command.index('--standing-state')+1]).parent
             if args.right_claw_kp is not None:
                 extended=json.loads(reference.read_text())
-                if args.reuse_verified_claw_cycle:extended["reused_gain_cycle"]=verified_claw_cycle_reuse(args.reuse_verified_claw_cycle,claw)
+                if args.reuse_verified_claw_cycle:extended["reused_gain_cycle"]=gain_cycle_reuse
                 elif args.reuse_verified_grasp_plan:extended["reused_gain_cycle"]=verified_grasp_reuse(args.reuse_verified_grasp_plan)
                 else:extended['native_no_contact_gain_cycle_budget_s']=9.
                 reference=evidence/'native_gain_cycle_tracking_reference.json'
@@ -400,7 +425,6 @@ def main():
         claw=start_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
         args.dock_world_xy=tuple(json.loads(claw.read_text())["episode_start_navigation"]["pickup_goal_world_xyz_m"][:2])
     if args.native_multiccd:
-        if args.reuse_verified_grasp_plan or args.reuse_verified_claw_cycle:raise ValueError("new contact algorithm needs one fresh no-contact/actual grasp verification, not old scene-cache acceptance")
         from scripts.research.issue46.scene.multiccd_solver_overlay import build as multiccd_build
         claw=multiccd_build(claw)
     if args.carry_delivery_config is not None:
@@ -420,6 +444,7 @@ def main():
     if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot') and args.body_height_probe_drop_m is None:
         from scripts.research.issue46.perception.native_rgbd_grasp import prepare_host_cache
         host_model_cache=prepare_host_cache(Path(json.loads(args.candidate.read_text())['scene']['path']))
+    if args.reuse_verified_claw_cycle:gain_cycle_reuse=verified_claw_cycle_reuse(args.reuse_verified_claw_cycle,claw)
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
     display=__import__("os").environ.get("DISPLAY")
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")

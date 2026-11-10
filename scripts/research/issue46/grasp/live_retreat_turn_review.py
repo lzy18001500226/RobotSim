@@ -51,7 +51,10 @@ def main():
     if args.to_delivery_table:
         CMD[CMD.index("--carry-compact-angular-cap")+1]="0.60"
         CMD[CMD.index("--post-lift-retract-world-m")+1]="-0.16"
-    if args.multiccd:CMD.append("--native-multiccd")
+    if args.multiccd:
+        CMD.append("--native-multiccd")
+        cycle=ROOT/"raicom-stl-xvfb-native-reset-stand-20261110T053739Z"
+        if args.to_delivery_table and args.bottle_height_m==.30 and (cycle/"result.json").exists():CMD.extend(["--reuse-verified-claw-cycle",str(cycle)])
     if args.to_delivery_table and args.bottle_height_m==.30 and not args.multiccd:
         prior="raicom-stl-xvfb-native-reset-stand-20261109T150617Z" if args.right_claw_kp==4. else "raicom-stl-xvfb-native-reset-stand-20261109T201208Z"
         if args.from_start:prior="raicom-stl-xvfb-native-reset-stand-20261109T221003Z"

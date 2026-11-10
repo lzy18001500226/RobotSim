@@ -747,6 +747,10 @@ def main():
     # arm. Test three rolls about the bottle axis without moving the base.
     old_q=np.array([candidate["search"]["candidate"]["upper_q_rad"][n] for n in ik.ACTIVE])
     old_q[:2]=q[:2]
+    if state.get("runtime_initial_arm_guess_rad"):
+        initial=state["runtime_initial_arm_guess_rad"]
+        if set(initial)!=set(ik.ARM) or not all(np.isfinite(float(initial[n])) for n in ik.ARM):raise ValueError("invalid source-only arm initial guess")
+        old_q[2:]=[float(initial[n]) for n in ik.ARM]
     upper_posture=None
     if args.optimize_waist_posture:
         if args.waist_yaw_offset_rad or args.waist_pitch_offset_rad or not args.free_bottle_axis_roll:raise ValueError('coupled posture solve requires free axial roll and no separate waist offsets')

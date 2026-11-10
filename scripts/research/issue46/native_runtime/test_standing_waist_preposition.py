@@ -85,6 +85,8 @@ class TorsoTurnTest(unittest.TestCase):
         from scripts.research.issue46.grasp import stl_approved_circle_native_trial as trial
         with tempfile.TemporaryDirectory() as t:
             p=Path(t)/"current.json";p.write_text(json.dumps(dict(generated=dict(host_scene=dict(sha256="changed")))))
+            prior=Path(t)/"prior.json";prior.write_text(json.dumps(dict(generated=dict(host_scene=dict(sha256="original")))))
+            (Path(t)/"result.json").write_text(json.dumps(dict(claw_control_overlay=dict(path=str(prior)))))
             with patch.object(trial,"verified_grasp_reuse",return_value=dict(scene_sha256="original")):
                 with self.assertRaisesRegex(ValueError,"bottle-only"):trial.verified_claw_cycle_reuse(Path(t),p)
     def test_gain_cycle_reuse_requires_exact_fixture_parent(self):
@@ -94,11 +96,21 @@ class TorsoTurnTest(unittest.TestCase):
             parent=root/"parent.json";parent.write_text(json.dumps(dict(generated=dict(host_scene=dict(path=str(scene),sha256=trial.native.sha256(scene))))))
             fixture=dict(robot_and_environment_unchanged=True,mj_step_calls=0,source_height_m=.30,height_m=.22,diameter_m=.07,mass_kg=.2,parent=dict(path=str(parent),sha256=trial.native.sha256(parent)))
             current=root/"current.json";current.write_text(json.dumps(dict(generated=dict(host_scene=dict(sha256="changed")),fixture_height_delta=fixture)))
+            prior=root/"prior.json";prior.write_text(json.dumps(dict(generated=dict(host_scene=dict(path=str(scene),sha256=trial.native.sha256(scene))))))
+            (root/"result.json").write_text(json.dumps(dict(claw_control_overlay=dict(path=str(prior)))))
             with patch.object(trial,"verified_grasp_reuse",return_value=dict(scene_sha256=trial.native.sha256(scene))):
                 result=trial.verified_claw_cycle_reuse(root,current)
                 self.assertIn("NOT_IK",result["scope"])
                 parent.write_text("{}")
                 with self.assertRaisesRegex(ValueError,"parent changed"):trial.verified_claw_cycle_reuse(root,current)
+    def test_cycle_cannot_be_reused_across_different_contact_algorithms(self):
+        from scripts.research.issue46.grasp import stl_approved_circle_native_trial as trial
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);prior=root/"prior.json";prior.write_text(json.dumps(dict(generated=dict(host_scene=dict(sha256="original")))))
+            current=root/"current.json";current.write_text(json.dumps(dict(numeric_contact_manifold=dict(new_enableflags=16))))
+            (root/"result.json").write_text(json.dumps(dict(claw_control_overlay=dict(path=str(prior)))))
+            with patch.object(trial,"verified_grasp_reuse",return_value=dict(scene_sha256="original")):
+                with self.assertRaisesRegex(ValueError,"changed contact algorithm"):trial.verified_claw_cycle_reuse(root,current)
     def test_generated_relay_retains_single_owner(self):
         gains=native.stl_hand_startup.load_animation_player_arm_pd_parameters()
         script=w.extend_bootstrap(native.arm_bootstrap_hold_script(gains,relay_waist=True))
