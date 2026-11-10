@@ -1050,8 +1050,15 @@ class Plan(Node):
    bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())
    if USE_NATIVE_BIAS and any(name not in bias for name in RIGHT):raise RuntimeError('INCOMPLETE_NATIVE_BIAS_SAMPLE')
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
+   published_positions=dict(target)
    for name in LEFT+RIGHT:
-    x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=float(bias.get(name,0.));x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
+    x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=float(bias.get(name,0.));x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1])
+    staged=(CIRCLE_CONTRACT or {}).get("approach_staging")
+    if staged and name in RIGHT:
+     if not USE_NATIVE_FEEDBACK or not staged.get("pass_result"):raise RuntimeError("POSITION_MODE_ARM_REQUIRES_VERIFIED_STAGED_NATIVE_PATH")
+     j=self.native_row["joints"][name]
+     x.position=position_mode_setpoint(float(target[name]),float(j["q"]),float(j["qvel"]),float(j["bias_force"]),x.stiffness,x.damping,staged["source_motion_limits"][name],staged["source_effort_limits_nm"][name]);x.effort=0.
+    published_positions[name]=float(x.position);m.joints.append(x)
    self.pub.publish(m)
    if WAIST:
     w=JointCommandArray();w.header=m.header
@@ -1059,7 +1066,7 @@ class Plan(Node):
      x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1])
      if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK:
       limits=SOURCE_LIMITS[name];j=self.native_row['joints'][name];x.position=position_mode_setpoint(float(target[name]),float(j['q']),float(j['qvel']),float(j['bias_force']),x.stiffness,x.damping,(*limits,13.088) if len(limits)==2 else limits,120. if name=='waist_yaw_joint' else 36.)
-     w.joints.append(x)
+     published_positions[name]=float(x.position);w.joints.append(x)
     self.waist_pub.publish(w)
    if hand_right is not None:
     # Match the pinned vendor example: activate only the right claw and leave
@@ -1082,7 +1089,7 @@ class Plan(Node):
    if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
     err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
     self.last_trace_at=time.monotonic()
-    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'published_right_hand_command':commanded_hand if hand_right is not None else None,'arm_fresh':self.arm_fresh(),'feedback_source':'NATIVE_MJDATA' if USE_NATIVE_FEEDBACK else 'ROS_ARM_STATE','native_feedback_host_ns':self.native_receipt_ns,'ros_arm_state_rad':dict(self.ros_arm),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'published_right_hand_command':commanded_hand if hand_right is not None else None,'arm_fresh':self.arm_fresh(),'feedback_source':'NATIVE_MJDATA' if USE_NATIVE_FEEDBACK else 'ROS_ARM_STATE','native_feedback_host_ns':self.native_receipt_ns,'ros_arm_state_rad':dict(self.ros_arm),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'desired_target_rad':dict(target),'published_target_rad':published_positions,'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
    # Drain feedback during the remainder of the 50Hz period. Sleeping here
    # starved callbacks from 1000Hz arm + 500Hz IMU/odom subscriptions.
    next_tick+=.02
@@ -1265,7 +1272,7 @@ finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
-    if waist_target is not None and use_native_joint_feedback:
+    if (waist_target is not None or (circle_contract or {}).get("approach_staging")) and use_native_joint_feedback:
         import inspect
         from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint
         script=inspect.getsource(position_mode_setpoint)+"\n"+script

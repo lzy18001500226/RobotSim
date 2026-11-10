@@ -43,6 +43,9 @@ class TorsoTurnTest(unittest.TestCase):
         self.assertLess(script.index('measured_clearance_waypoint'),script.index('n.approach_start=dict(start)'))
         self.assertIn("'PREGRASP_CLEARANCE',HAND_OPEN",script)
         self.assertIn("preclose_waist_error<=.05",script)
+        self.assertIn("source_effort_limits_nm",script)
+        self.assertIn("'desired_target_rad':dict(target)",script)
+        self.assertIn("'published_target_rad':published_positions",script)
     def test_gain_cycle_reuse_rejects_unproven_model_change(self):
         from scripts.research.issue46.grasp import stl_approved_circle_native_trial as trial
         with tempfile.TemporaryDirectory() as t:

@@ -559,7 +559,13 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
             d=mujoco.MjData(model);ik.set_pose(model,d,state,a+u*(b-a),np.zeros(3),0.,opening,np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             if pads or bad or robot_table:violations.append(dict(segment=segment,fraction=float(u),pads=pads,forbidden_object=bad,robot_table=robot_table))
-    return dict(pass_result=not violations,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
+    import xml.etree.ElementTree as ET
+    provenance=state["runtime_source_motion_provenance"];source=Path(provenance["urdf"])
+    if hashlib.sha256(source.read_bytes()).hexdigest()!=provenance["sha256"]:raise RuntimeError("APPROACH_SOURCE_URDF_CHANGED")
+    joints={j.attrib["name"]:j for j in ET.parse(source).getroot().findall("joint")}
+    efforts={n:float(joints[n].find("limit").attrib["effort"]) for n in ik.ARM}
+    motion={n:state["runtime_source_motion_limits"][n] for n in ik.ARM}
+    return dict(pass_result=not violations,source_effort_limits_nm=efforts,source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
