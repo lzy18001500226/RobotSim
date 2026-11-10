@@ -24,6 +24,18 @@ class TorsoTurnTest(unittest.TestCase):
         self.assertIn("time.monotonic() + 2.5",script)
         self.assertIn("math.radians(15.0)",script)
         self.assertIn("planar_drift <= 0.05",script)
+    def test_live_ik_reserves_both_anatomical_and_compensated_command_limits(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import position_mode_tracking_bounds
+        source=np.array([[-.523599,.523599],[-.724,1.50971]])
+        bias=np.array([-.7,.1]);kp=np.array([30.,30.])
+        bounded=position_mode_tracking_bounds(source,bias,kp)
+        self.assertGreater(bounded[0,0],-.4984746128846975)
+        for target in (bounded[:,0],bounded[:,1]):
+            command=target+bias/kp
+            self.assertTrue(np.all(command>=source[:,0]+.01-1e-12))
+            self.assertTrue(np.all(command<=source[:,1]-.01+1e-12))
+        with self.assertRaises(ValueError):position_mode_tracking_bounds(source,bias,[0.,30.])
     def test_position_mode_compensation_preserves_source_gains(self):
         desired=.175;actual=.175;bias=-8.2;kp=40.;kd=5.
         command=w.position_mode_setpoint(desired,actual,0.,bias,kp,kd,(-.314,.314,13.088),36.)

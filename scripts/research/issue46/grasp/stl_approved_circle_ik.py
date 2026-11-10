@@ -369,6 +369,15 @@ def carry_posture_nullspace_direction(jacobian, q, nominal):
     return toward-J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),J@toward)
 
 
+def position_mode_tracking_bounds(source, bias, kp, margin=.01):
+    source=np.asarray(source,dtype=float);bias=np.asarray(bias,dtype=float);kp=np.asarray(kp,dtype=float)
+    if not np.isfinite(source).all() or not np.isfinite(bias).all() or not np.isfinite(kp).all() or np.any(kp<=0.):raise ValueError("invalid position-mode planning inputs")
+    offset=bias/kp
+    result=np.column_stack((np.maximum(source[:,0]+margin,source[:,0]+margin-offset),
+                            np.minimum(source[:,1]-margin,source[:,1]-margin-offset)))
+    if np.any(result[:,1]<=result[:,0]+.002):raise RuntimeError("NO_SOURCE_POSITION_MODE_TRACKING_MARGIN")
+    return result
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -390,6 +399,10 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
         mujoco.mj_jac(model,data,linear,angular,point,hand)
         return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
+    if reference.get("approach_staging"):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import load_animation_player_arm_pd_parameters
+        gain=load_animation_player_arm_pd_parameters()
+        bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],[gain[n][0] for n in ik.ARM])
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
@@ -524,6 +537,33 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
         if candidate_row['pass']:break
 
 
+
+def refine_position_mode_margin(model,state,seed,center,target,local_axis):
+    """Maximize source/servo setpoint margin for the same five-constraint task."""
+    from scipy.optimize import minimize
+    from scripts.research.issue46.native_runtime.stl_hand_startup import load_animation_player_arm_pd_parameters
+    data=mujoco.MjData(model);ik.set_pose(model,data,state,seed,np.zeros(3),0.,100,np.zeros(3),0.,None)
+    qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
+    dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
+    hand=ik.native.bid(model,"R_omnipicker_base_link");source=joint_planning_bounds(model,ik.ARM,state["runtime_source_motion_limits"])
+    kp=np.array([load_animation_player_arm_pd_parameters()[n][0] for n in ik.ARM])
+    def evaluate(x):
+        data.qpos[qa]=x[:7];mujoco.mj_forward(model,data)
+        error=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,np.array([0.,0.,1.]),local_axis)
+        # For desired +Z, the third cross-product component is redundant.
+        equality=np.r_[error[:3],error[3:5]]
+        command=x[:7]+data.qfrc_bias[dofs]/kp
+        inequalities=np.r_[x[:7]-source[:,0]-x[7],source[:,1]-x[:7]-x[7],command-source[:,0]-x[7],source[:,1]-command-x[7]]
+        return equality,inequalities
+    x=np.r_[np.clip(seed[2:],source[:,0]+.001,source[:,1]-.001),.001]
+    fit=minimize(lambda q:-q[7],x,method="SLSQP",bounds=[*map(tuple,source),(.001,.15)],
+                 constraints=[dict(type="eq",fun=lambda q:evaluate(q)[0]),dict(type="ineq",fun=lambda q:evaluate(q)[1])],
+                 options=dict(maxiter=90,ftol=1e-10))
+    equality,inequality=evaluate(fit.x)
+    directed=data.xmat[hand].reshape(3,3)@local_axis
+    if np.linalg.norm(equality[:3])>1e-4 or np.linalg.norm(equality[3:])>1e-4 or directed[2]<=0. or min(inequality)<-1e-5 or fit.x[7]<.01:
+        raise RuntimeError("SOURCE_AND_POSITION_MODE_MARGIN_UNQUALIFIED:"+str((fit.message,float(fit.x[7]),equality.tolist())))
+    return np.r_[seed[:2],fit.x[:7]],dict(solver="SLSQP_SAME_TASK_MAXIMUM_MINIMUM_POSITION_MODE_MARGIN",margin_rad=float(fit.x[7]),gain_source="UNCHANGED_ANIMATION_PLAYER",status=str(fit.message),mj_step_calls=0)
 
 def staged_clear_approach(model,state,start,finish,opening,center,object_center,local_axis):
     """Reuse bounded circle IK for a table-outside lift, then a high approach."""
@@ -768,6 +808,13 @@ def main():
                 solved=np.r_[q[:2],opt.x]
                 angle=float(2*np.arcsin(np.clip(np.linalg.norm(e[3:])/.2,0,1))) if args.free_bottle_axis_roll else float(np.linalg.norm(e[3:])/.1)
                 metrics={**metrics,"solver":"bounded_least_squares_directed_axis" if args.free_bottle_axis_roll else "bounded_least_squares_SO3","hand_position_error_m":float(np.linalg.norm(e[:3])),"hand_orientation_error_rad":angle,"orientation_constraint":"directed_bottle_axis_free_axial_roll" if args.free_bottle_axis_roll else "full_rotation","minimum_joint_margin_rad":float(np.min(np.minimum(opt.x-source_bounds[:,0],source_bounds[:,1]-opt.x)))}
+        position_mode_margin=None
+        if args.right_arm_seed and metrics["hand_position_error_m"]<=1e-4 and metrics["hand_orientation_error_rad"]<=1e-3:
+            try:
+                solved,position_mode_margin=refine_position_mode_margin(model,state,solved,center,object_center,local_axis)
+                error=residual(solved[2:])
+                metrics.update(solver="bounded_directed_axis_with_position_mode_margin",hand_position_error_m=float(np.linalg.norm(error[:3])),hand_orientation_error_rad=float(2*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0,1))),minimum_joint_margin_rad=position_mode_margin["margin_rad"])
+            except RuntimeError as exc:position_mode_margin=dict(pass_result=False,failure=str(exc));metrics["minimum_joint_margin_rad"]=0.
         checked={}
         for opening in (open_command,command,max(command-1,0)):
             d=mujoco.MjData(model)
@@ -794,7 +841,7 @@ def main():
                 if approach_staging["pass_result"]:sweep=[]
             except RuntimeError as exc:approach_staging=dict(pass_result=False,failure=str(exc))
         row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
-        rows.append({"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
+        rows.append({"position_mode_margin":position_mode_margin,"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
     # Arrival alone is insufficient: qualify the whole already requested
     # lift/retract on each existing grasp branch before selecting its winner.
     if args.physical_lift_test:
