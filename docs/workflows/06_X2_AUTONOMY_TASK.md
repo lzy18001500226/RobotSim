@@ -3,6 +3,9 @@
 This workflow defines the handoff contracts for the RAICOM-style task. It does
 not authorize physics stepping, mechanical-model changes, or hardware motion.
 
+> Latest continuation checkpoint: [Local02 handoff, 2026-11-10](X2_TRANSFER_HANDOFF.md).
+> It records the later explicit profiles; older numbers below remain historical scope.
+
 ## Current scope and accepted review (2026-11-08)
 
 On 2026-11-09 the maintainer explicitly resumed an autonomous simulation Goal:
