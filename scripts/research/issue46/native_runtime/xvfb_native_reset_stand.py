@@ -2073,6 +2073,9 @@ def main() -> None:
             if delta.get('numerical_solver') and actual_solver.get('noslip_iterations')!=2:raise RuntimeError('NATIVE_NOSLIP_OPTION_NOT_APPLIED')
             if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=delta['elliptic_solver'].get('impratio_to',10.)):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
             result['native_solver_options']=actual_solver
+            if (claw_control_overlay or {}).get("numeric_contact_manifold"):
+                if actual_solver.get("enableflags")!=16 or actual_solver.get("disableflags")!=0:raise RuntimeError("NATIVE_MULTICCD_COMPARISON_NOT_APPLIED")
+                result["numeric_contact_manifold"]={"classification":"SIMULATION_ONLY_NATIVE337_MULTICCD_NOT_VENDOR_DEFAULT","actual_native_solver_options":actual_solver,"source_overlay":claw_control_overlay["numeric_contact_manifold"]}
             local_friction=(claw_control_overlay or {}).get('approved_local_pad_friction_reference')
             if local_friction:
                 actual_pairs=current.get('contact_pair_parameters',{})

@@ -154,7 +154,7 @@ void mj_step(const mjModel* m,mjData* d) {
   if(!sink){sink=logfile;return;}
   long long started=mono_ns();
   fprintf(sink,"{\"host_monotonic_ns\":%lld,\"process_pid\":%ld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(long)getpid(),(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
-  fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
+  fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d,\"enableflags\":%d,\"disableflags\":%d,\"integrator\":%d},",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations,m->opt.enableflags,m->opt.disableflags,m->opt.integrator);
   int pair_count=0;
   mjtNum tangent_min=0,tangent_max=0;
   int object_id=id_real(m,mjOBJ_BODY,"test_cylinder");

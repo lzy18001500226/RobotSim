@@ -27,7 +27,7 @@ def matching_review_model(manifest, episode):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
     os.chdir(REPO)
     if args.right_claw_kp is None:args.right_claw_kp=6. if args.to_delivery_table else 4.
     if Path(subprocess.check_output(["git","rev-parse","--show-toplevel"],text=True).strip()).resolve()!=REPO:raise RuntimeError("wrong worktree")
@@ -51,7 +51,8 @@ def main():
     if args.to_delivery_table:
         CMD[CMD.index("--carry-compact-angular-cap")+1]="0.60"
         CMD[CMD.index("--post-lift-retract-world-m")+1]="-0.16"
-    if args.to_delivery_table and args.bottle_height_m==.30:
+    if args.multiccd:CMD.append("--native-multiccd")
+    if args.to_delivery_table and args.bottle_height_m==.30 and not args.multiccd:
         prior="raicom-stl-xvfb-native-reset-stand-20261109T150617Z" if args.right_claw_kp==4. else "raicom-stl-xvfb-native-reset-stand-20261109T201208Z"
         if args.from_start:prior="raicom-stl-xvfb-native-reset-stand-20261109T221003Z"
         CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/prior)])

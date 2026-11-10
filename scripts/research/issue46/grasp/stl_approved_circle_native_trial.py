@@ -88,6 +88,7 @@ def runtime_plan_result(result, effective_dir):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--native-multiccd",action="store_true",help="separate SIMULATION_ONLY native337 contact-manifold comparison; no geometry/material/gain change")
     p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
     p.add_argument("--body-height-native-build",type=Path)
     p.add_argument("--standing-grasp-posture",type=Path,help="bounded native lowering then torso yaw/pitch; measured roll retained")
@@ -398,6 +399,10 @@ def main():
         from scripts.research.issue46.scene.episode_start_overlay import build as start_build
         claw=start_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
         args.dock_world_xy=tuple(json.loads(claw.read_text())["episode_start_navigation"]["pickup_goal_world_xyz_m"][:2])
+    if args.native_multiccd:
+        if args.reuse_verified_grasp_plan or args.reuse_verified_claw_cycle:raise ValueError("new contact algorithm needs one fresh no-contact/actual grasp verification, not old scene-cache acceptance")
+        from scripts.research.issue46.scene.multiccd_solver_overlay import build as multiccd_build
+        claw=multiccd_build(claw)
     if args.carry_delivery_config is not None:
         if not args.approved_two_table_layout:raise ValueError("delivery requires the exact approved two-table scene")
         from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene

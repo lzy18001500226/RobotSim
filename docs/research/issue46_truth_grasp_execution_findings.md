@@ -1268,3 +1268,53 @@ carry-away1m-real-entry-offline-preflight-20261108T082323Z。
 掉落/外部支撑/碰撞、机器人姿态与源限制及完整停止门均保留。
 初始相机的竖直物体假设与闭合前目标检查不变。
 审批口径：carry-away1m-empty-bottle-clarification-20261108T085656Z。
+
+
+## 2026-11-10: H220 lift and released-table manifold diagnosis
+
+Actual episode035240Z completed H220 fresh RGB-D postured grasp/lift:
+1.263mm circle arrival error, minimum58.770mm lift,1.0 simulated second
+unsupported hold, zero table force, minimum pad normals15.121/14.695N.
+The controlled4027-frame source/posture audit passed, maximum root planar
+speed0.072675m/s and claw torque1.86373Nm. This does not qualify H220 transfer.
+
+H300 full START episode041253Z physically completed both-table transfer and
+independent table support2.0s. Its original overall failure,
+CARRY_OWNER_TERMINATION_UNCONFIRMED, is preserved: the owner exit0 appeared
+after the bounded parent closeout. The postmortem physical result is separate.
+Carry stdout now contains a bounded preview while the complete trace remains
+in native_hal_pregrasp_trace.json; no shutdown success is inferred from a marker.
+
+Episodes042535Z and044427Z again arrived/released, but did not pass the
+unchanged continuous2-second support stability gate. The former recorded only
+1.94s after angular speed finally fell below0.1rad/s; the latter still rocked
+above0.1 within the original35s total placement budget. Merely waiting longer
+was not established as a fix. Their failures remain unchanged.
+
+All1105 post-placement native samples in044427Z had exactly ONE
+bottle/delivery-table contact. Contact location moved around the bottle rim;
+the base speed approximately matched angular speed times the0.15m COM height.
+This supports contact-manifold rocking as a specific numerical hypothesis,
+not a gain or geometry diagnosis.
+[MuJoCo3.3.7 documents](https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option-flag-multiccd)
+single-point flat-contact instability and the optional multiccd algorithm.
+
+An isolated real-physics comparison used the EXACT installed3.3.7 library
+SHA25696af6d24fe6d75ce16377bf4da7a8d7481274e0f86d4278ef6b6e0cb61d54eb4,
+verified as the sole loaded MuJoCo library. It used the same full scene and
+pre-step bottle initialization above the second table, no MC and no robot
+control. Five simulated seconds per case changed only enableflags0->16.
+Contact count changed1->5; last-two-second maximum angular speed changed
+0.061382->0.002464rad/s, planar speed0.009128->0.000369m/s. No other bottle
+interaction occurred. Both isolated cases passed; this comparison does NOT
+prove the full MC release sequence or authorize a task PASS.
+Evidence: reviews/issue-46/native337-bottle-table-multiccd-comparison-20261110T050856Z/.
+
+The new --native-multiccd / review-driver --multiccd is a separately labeled
+SIMULATION_ONLY numerical comparison. It preserves the old default profile,
+all427 compiled arrays, mesh/assembly/material/mass/inertia/gains and source
+joint/actuator limits. Actual loaded native flags must be observed, and a new
+contact-free/opening/grasp validation runs once for this changed collision
+algorithm. No old cached grasp acceptance is reused. No geometry/support is
+added, and the original material,2Nm limit and stop criteria remain unchanged.
+Full MC dynamics under that opt-in profile are still pending.
