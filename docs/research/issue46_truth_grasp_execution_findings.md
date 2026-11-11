@@ -132,6 +132,47 @@ Position and angle samples remain8cm/15degrees; no interpolated state is labeled
 verified. Both presentations reuse the same175-case dataset and387 source images.
 
 
+## Unloaded motion calibration (2026-11-11): partial, not precision-qualified
+
+A bounded full-X2, empty-hand measurement used center-area initialization and
+the unchanged mechanical/contact/MC configuration. It acquired four completed
+single responses; lateral-left aborted on an active clock-generation change,
+lateral-right and repeats were NOT RUN. The safe-stop/clock fault was not bypassed.
+
+| Request | Mode | Settled pelvis-origin response | Cross-coupling / XY drift |
+| --- | --- | --- | --- |
+| forward5cm | STEP | +29.535cm forward | -14.212cm left |
+| backward5cm | STEP | -5.859cm forward | -7.692cm left |
+| left turn15deg | DEFAULT | +35.445deg | 5.574cm XY |
+| right turn15deg | DEFAULT | -47.838deg | 4.173cm XY |
+
+These are responses of this new diagnostic harness, NOT minimum hardware
+resolution or the accuracy of every existing navigation implementation. Its
+0.6s progress average, >=1s motion and bilateral dominant-support requirement
+lagged small-goal stopping. Forward was already10.704cm at zero request, then
+added18.831cm before settling. Neither raw responses nor ACKs qualify a5cm API.
+
+The active wall/monotonic mapping jump was -0.790737777s. A zero bridge message
+was DDS-observed4.140ms later, but the original controller-target composite stop
+remained unqualified. Native simulation time stayed monotonic. Offline native
+checks found no source limit/effort/contact failure in the measured windows;
+that cannot upgrade the abort-stop result or the incomplete calibration.
+
+Software-only setup/recording defects are retained separately: the former
+startup path coupled unloaded motion to grasp-candidate setup; a progress writer
+refused its second immutable milestone; the continuation prearm response wait
+was too short. Calibration now has an isolated hashed input, per-action records,
+and an explicitly scoped single-request wait. Default prearm generation is
+byte-identical to the old caller. Active clock faults cannot use logger recovery.
+No gain/friction/limit/solver/transmission changes or infrastructure clock edits.
+
+Evidence and measured-state review video:
+`reviews/issue-46/native-motion-capability-review-20261111T123841Z/`.
+Sources120712Z and122716Z are preserved as separate native episodes. The video
+is an explicitly labeled reconstruction of actual states, not a new physics run.
+Disposition: RETAIN_RESEARCH_DIAGNOSTIC, unqualified as production motion API.
+Next work requires method/time-boundary review before any further movement.
+
 ## Earlier checkpoints (historical)
 
 | Actual native episode under reviews/issue-46 | Observed result |

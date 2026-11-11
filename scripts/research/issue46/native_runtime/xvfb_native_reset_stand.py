@@ -102,8 +102,8 @@ def wrapped_angle_error(actual: float, expected: float) -> float:
     return math.atan2(math.sin(actual - expected), math.cos(actual - expected))
 
 
-def prearm_script() -> str:
-    return """#!/usr/bin/env python3
+def prearm_script(single_request_wait_s=.25) -> str:
+    script = """#!/usr/bin/env python3
 import json
 import time
 import rclpy
@@ -118,7 +118,7 @@ def call(node, client, request, attempts=8):
     # existing stand client instead of treating a first missed readback as a
     # robot-control failure.
     for _ in range(attempts):
-        future=client.call_async(request); rclpy.spin_until_future_complete(node,future,timeout_sec=.25)
+        future=client.call_async(request); rclpy.spin_until_future_complete(node,future,timeout_sec=2.0 if attempts==1 else .25)
         if future.done() and future.result() is not None: return future.result()
         time.sleep(.05)
     raise RuntimeError('service call timed out after 8 bounded retries')
@@ -149,6 +149,7 @@ try:
 finally:
     node.destroy_node(); rclpy.shutdown()
 """
+    return script.replace("timeout_sec=2.0 if attempts==1 else .25", "timeout_sec=.25" if single_request_wait_s==.25 else "timeout_sec=2.0 if attempts==1 else .25")
 
 
 def preset_motion_probe_script(motion_id: int, area_id: int) -> str:
@@ -1468,7 +1469,21 @@ def main() -> None:
     parser.add_argument("--run-vr-right-controller-x-probe", action="store_true", help="SIMULATION_ONLY: one bounded +10 mm right VR-controller x probe; no joystick, hand, or object command")
     parser.add_argument("--preset-motion-id", type=int, help="one built-in animation-player motion ID used only to verify the delivered native upper-body service")
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
+    parser.add_argument('--motion-calibration-input',type=Path,help='isolated unloaded motion calibration; no grasp execution')
+    parser.add_argument('--motion-calibration-input-sha256')
     args = parser.parse_args()
+    motion_calibration=None
+    if args.motion_calibration_input is not None:
+        path=require_hashed(args.motion_calibration_input,args.motion_calibration_input_sha256 or '',label='unloaded calibration input')
+        motion_calibration=json.loads(path.read_text())
+        if (motion_calibration.get('schema')!='robotsim.unloaded-motion-calibration-input.v1' or not args.micro_base_probe
+                or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher or not args.initial_hands_fully_open
+                or args.hal_arm_candidate is not None or args.hal_grasp_candidate is not None or args.hal_right_hand_command is not None
+                or args.native_arm_policy_relay or args.fixed_reviewed_checkpoint or args.physical_lift_test):
+            raise ValueError('isolated empty-hand motion calibration scope')
+        selected=json.loads(args.claw_control_overlay_result.read_text())['generated']['host_scene']
+        if selected!=motion_calibration['scene']:raise ValueError('calibration model identity')
+
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
     source_step_all=bool(args.carry_delivery_config and json.loads(args.carry_delivery_config.read_text()).get("transit_motion_mode")=="LOCOMOTION_STEP")
     if args.carry_vendor_transition_table and (args.carry_delivery_config is None or args.carry_native_action_smoothing or args.carry_native_step_mode and not source_step_all):raise ValueError("vendor transition comparison scope")
@@ -1570,7 +1585,7 @@ def main() -> None:
         raise ValueError("a right-hand command requires the bounded arm-only candidate path")
     if args.hal_right_hand_command is not None and not args.disable_mc_hand_publisher:
         raise ValueError("a bounded external hand command requires exclusive hand publisher ownership")
-    if args.disable_mc_hand_publisher and args.hal_right_hand_command is None:
+    if args.disable_mc_hand_publisher and args.hal_right_hand_command is None and motion_calibration is None:
         raise ValueError("disabling MC hand publisher requires one bounded external hand command")
     if args.hal_right_hand_command is not None and args.hal_arm_plan_mode != "pregrasp-hold":
         raise ValueError("a right-hand command requires the continuous pregrasp-hold mode")
@@ -1580,7 +1595,7 @@ def main() -> None:
         raise ValueError("pause-on-claw-failure requires a visible X11 display and a bounded hand command")
     if args.hal_right_hand_command is not None and not 0.5 <= args.hal_hand_close_hold_s <= 5.0:
         raise ValueError("right-hand close hold must lie in 0.5..5 seconds")
-    if args.disable_mc_arm_publisher and args.arm_ik_result is None and args.hal_grasp_candidate is None and args.hal_arm_candidate is None and not args.run_hal_arm_pd_probe:
+    if args.disable_mc_arm_publisher and args.arm_ik_result is None and args.hal_grasp_candidate is None and args.hal_arm_candidate is None and not args.run_hal_arm_pd_probe and motion_calibration is None:
         raise ValueError("disabling the MC arm publisher requires a bounded HAL arm plan or probe")
     if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher and args.hal_grasp_candidate is None and not args.coordinated_circle_waist:
         raise ValueError("the combined arm/waist split requires a bounded HAL grasp candidate")
@@ -1637,10 +1652,10 @@ def main() -> None:
     if args.preset_motion_area not in (0, 1, 2, 3, 4, 8, 11):
         raise ValueError("preset motion area must be an official control-area value")
 
-    if args.native_dock_truth_feedback and args.hal_arm_candidate is None:raise ValueError("native truth docking requires the observed arm-candidate path")
+    if args.native_dock_truth_feedback and args.hal_arm_candidate is None and motion_calibration is None:raise ValueError("native truth docking requires the observed arm-candidate path")
     if args.startup_opening_diagnostic and not args.initial_hands_fully_open:
         raise ValueError("opening diagnostic requires initial hands open")
-    if args.initial_hands_fully_open and not (args.hal_arm_candidate is not None and args.disable_mc_arm_publisher and args.disable_mc_hand_publisher):
+    if args.initial_hands_fully_open and not ((args.hal_arm_candidate is not None or motion_calibration is not None) and args.disable_mc_arm_publisher and args.disable_mc_hand_publisher):
         raise ValueError("startup hand command requires exclusive arm/hand candidate path")
     table_result = require_hashed(args.table_overlay_result, args.table_overlay_result_sha256, label="table overlay result")
     reset_helper = require_hashed(args.reset_helper, args.reset_helper_sha256, label="native reset helper")
@@ -1692,7 +1707,7 @@ def main() -> None:
     # Build before container creation; every arm-candidate entry point owns this
     # dependency, including direct human-review invocations.
     native_observer = None
-    if args.hal_arm_candidate is not None:
+    if args.hal_arm_candidate is not None or args.native_dock_truth_feedback:
         from scripts.research.issue46.native_runtime import native_grasp_audit
         native_observer = native_grasp_audit.build(output, RUNTIME / "sim_mujoco/lib/libmujoco.so.3.3.7")
     container = "robotsim-i46-xvfb-" + output.name[-15:].lower().replace("_", "-")
@@ -1727,7 +1742,7 @@ def main() -> None:
             arm_split_config = output / "mc_sim_arm_waist_split.yaml"
             split = stl_hand_startup.build_arm_waist_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
             if args.coordinated_circle_waist:
-                split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))
+                split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(motion_calibration is not None or args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
                 bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else dict(checkpoint["initial_arm_command_rad"],**({"left_shoulder_roll_joint":.15} if args.standing_grasp_posture else {})),initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"],max_hold_s=300. if args.standing_grasp_posture else 90.)
                 if args.standing_grasp_posture:
@@ -1743,16 +1758,16 @@ def main() -> None:
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_hand=native_left_follow) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))), allow_unicode=True, sort_keys=False))
+            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_hand=native_left_follow) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(motion_calibration is not None or args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=motion_calibration["fixed_arm_targets_rad"] if motion_calibration else None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=motion_calibration["fixed_arm_effort_nm"] if motion_calibration else None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
         elif args.disable_mc_arm_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=motion_calibration["fixed_arm_targets_rad"] if motion_calibration else None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=motion_calibration["fixed_arm_effort_nm"] if motion_calibration else None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
         elif args.disable_mc_waist_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
@@ -1781,7 +1796,7 @@ def main() -> None:
             result['carry_native_action_smoothing']={'classification':'SIMULATION_ONLY_NATIVE_ACTIONSELECTOR_RULE_DIAGNOSTIC_NOT_VENDOR_DEFAULT','source':str(action_source),'source_sha256':sha256(action_source),'action_library_sha256':sha256(action_library),'derived':str(derived_setting),'derived_sha256':sha256(derived_setting),'sim_seed_sha256':sha256(seed_path),'added_rules':seed_cfg['smooth_transitions'][-2:],'unchanged':['runners','gains','ONNX','model','joint limits','source files'],'runtime_rule_count_verified':False}
 
         pg.write_new_bytes(output / "native_mujoco_reset.py", reset_helper.read_bytes())
-        pg.write_new_text(output / "native_prearm.py", prearm_script())
+        pg.write_new_text(output / "native_prearm.py", prearm_script(single_request_wait_s=2.0 if motion_calibration else .25))
         pg.write_new_text(output / "native_stand_sample.py", stl_hand_startup.build_stand_client_script())
         pg.write_new_text(output / "native_postdock_stand_observer.py", stl_hand_startup.build_stand_client_script(observe_only=True))
         pg.write_new_text(output / "native_arm_state_capture.py", stl_hand_startup.build_arm_state_capture_script())
@@ -1888,14 +1903,19 @@ def main() -> None:
         if args.micro_base_probe:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
-            limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
+            limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay or motion_calibration is not None)
             robot_bodies=None
-            if args.native_arm_policy_relay:
+            if args.native_arm_policy_relay or motion_calibration is not None:
                 import mujoco
                 source_model=mujoco.MjModel.from_xml_path((claw_control_overlay or overlay)["generated"]["host_scene"]["path"])
                 source_root=source_model.body_rootid[mujoco.mj_name2id(source_model,mujoco.mjtObj.mjOBJ_BODY,"pelvis")]
                 robot_bodies=[mujoco.mj_id2name(source_model,mujoco.mjtObj.mjOBJ_BODY,i) for i in range(source_model.nbody) if source_model.body_rootid[i]==source_root]
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold,target_distance_m=args.micro_target_distance_m,observe_native_arm_policy=args.observe_native_arm_policy,robot_bodies=robot_bodies))
+            if motion_calibration is not None:
+                from scripts.research.issue46.native_runtime.native_motion_calibration import build_script as calibration_script
+                micro_code=calibration_script(limits,robot_bodies,motion_calibration['actuator_caps_nm'],motion_calibration.get('resume'))
+            else:
+                micro_code=build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold,target_distance_m=args.micro_target_distance_m,observe_native_arm_policy=args.observe_native_arm_policy,robot_bodies=robot_bodies)
+            pg.write_new_text(output/'native_micro_probe.py',micro_code)
             bridge_runtime=output/"steady_cmd_vel_bridge.py"
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_steady_bridge_source
             pg.write_new_text(bridge_runtime,build_steady_bridge_source(bridge_source.read_text()))
@@ -2469,6 +2489,8 @@ def main() -> None:
                 source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
                 pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
                 bridge_command=environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.0 -p max_forward_velocity:=0.20 -p max_backward_velocity:=0.20 -p min_lateral_velocity:=0.0 -p max_lateral_velocity:=0.0 -p min_angular_velocity:=0.0 -p max_angular_velocity:=0.60 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
+            if motion_calibration is not None:
+                bridge_command=environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.0 -p max_forward_velocity:=0.20 -p max_backward_velocity:=0.20 -p min_lateral_velocity:=0.0 -p max_lateral_velocity:=0.60 -p min_angular_velocity:=0.0 -p max_angular_velocity:=0.60 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
             run(["docker", "exec", "-d", container, "bash", "-lc", bridge_command], timeout_s=5.0)
             bridge_text = wait_for(bridge_log, "cmd_vel_bridge started.", timeout_s=10.0)
             if "state=0" not in bridge_text:
@@ -2477,7 +2499,7 @@ def main() -> None:
             result['official_cmd_vel_bridge']['registration_task_completion']='UNCONFIRMED; live source/mode gates remain mandatory'
             result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"] = "PASS"
         if args.micro_base_probe:
-            micro=run(["docker","exec",container,"bash","-lc",environment+"timeout 30s python3 /workspace/evidence/native_micro_probe.py"],timeout_s=33.,check=False)
+            micro=run(["docker","exec",container,"bash","-lc",environment+("timeout 175s" if motion_calibration else "timeout 30s")+" python3 /workspace/evidence/native_micro_probe.py"],timeout_s=178. if motion_calibration else 33.,check=False)
             pg.write_new_text(output/"native_micro_probe.stdout",micro.stdout)
             path=output/"native_micro_probe_result.json"
             micro_result=json.loads(path.read_text()) if path.is_file() else {"failure":"CHILD_NO_RESULT","stdout_tail":micro.stdout[-1600:]}
@@ -2487,6 +2509,10 @@ def main() -> None:
             result["gates"]["NATIVE_MICRO_COMPOSITE_STOP"]="NOT_RUN" if not micro_result.get("nonzero_started") else "PASS" if micro_result.get("post_stop_composite",{}).get("pass") else "FAIL"
             if micro_result.get("nonzero_started") and "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
             if micro.returncode or not micro_result.get("pass_result"):result["failure"]={"gate":"NATIVE_MICRO_PROBE","detail":micro_result.get("failure")}
+            if motion_calibration is not None:
+                result['gates']['NATIVE_MICRO_SIGNED_DISPLACEMENT']='NOT_APPLICABLE_MEASUREMENT_ONLY'
+                result['gates']['MOTION_CALIBRATION_COMPLETION']='PASS' if micro_result.get('measurement_completed') else 'BLOCKED'
+                result['gates']['MOTION_CALIBRATION_FINAL_STOP']='PASS' if micro_result.get('measurement_completed') and micro_result.get('post_stop_composite',{}).get('pass') else 'BLOCKED'
             raise MicroProbeComplete()
         if args.lateral_probe_mps is not None:
             lateral = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_lateral_probe.py"], timeout_s=14.0, check=False)
