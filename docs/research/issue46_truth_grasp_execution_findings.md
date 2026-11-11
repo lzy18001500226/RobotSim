@@ -95,6 +95,35 @@ Stop at human review. Keep PR #106 Draft and Issue #46 open. No new dynamic test
 main merge, model promotion, vendor edit or local cleanup is authorized by this result.
 The research implementation remains isolated and has disposition **PORT-TO-C++**.
 
+## H220 fixed-bottle stance review (2026-11-11, static only)
+
+The bounded source-preserving study sampled175 support-anchor/yaw combinations
+at the original pickup table, with D70/H220mm/0.200kg bottle pose fixed.53 have
+saved sampled static preparation/reach/approach/closure/60mm-lift witnesses;
+43 have endpoint IK but a checked path/contact obstruction, and79 remain
+solver-unresolved. These are not global infeasibility or physical-grasp results.
+All positive witnesses use the existing pre-raised/crouched posture family.
+
+At yaw offsets -30/-15/0/+15/+30 degrees the positive counts are1/12/14/15/11
+of35 samples. The zero-offset positive envelope has holes; it is not a certified
+rectangle or a continuous tolerance region. A small gripper-linkage/bottle gap
+must not be misrepresented as a required base-position accuracy.
+
+The final static states evaluate the unchanged frozen MJCF joint polynomials,
+not the helper CSV interpolation. Independent readback checked4280 positive
+path frames: no limited-joint violation, maximum equality residual2.776e-16rad,
+source XML/model arrays unchanged. No mj_step, MC, walking or dynamic grasp ran.
+COM support stability, visibility and continuous swept clearance are not certified.
+
+Review evidence: `reviews/issue-46/h220-stance-region-static-exact-coupling-20261111T084002Z/`;
+interactive `index.html` includes yaw/endpoint-versus-path selection and exact
+pose renders. Summary and artifact hashes are in
+`h220-stance-region-review-closeout-20261111T085745Z/` under the same evidence root.
+Reproduce with `stance_region_static_review.py`, `render_stance_region_review.py`,
+and `verify_stance_region_static.py` under `scripts/research/issue46/grasp/`.
+Disposition: RETAIN_RESEARCH for human review; not a production dependency or a
+promotion of the frozen SIMULATION_ONLY hand. PR106 remains Draft; no main merge.
+
 ## Earlier checkpoints (historical)
 
 | Actual native episode under reviews/issue-46 | Observed result |
