@@ -138,7 +138,8 @@ void mj_step(const mjModel* m,mjData* d) {
   long long physics_end=mono_ns();
   if(physics_end-begin>max_step_duration_ns)max_step_duration_ns=physics_end-begin;
   last_step_end_ns=physics_end;
-  if (!sink || count>=12000) return;
+  /* Observation lasts as long as this bounded runtime; motion limits belong to the controller. */
+  if (!sink) return;
   if (d->time<previous) {generation++;next_time=-1;memset(peak_qvel,0,sizeof(peak_qvel));qvel_window_start=d->time;}
   if(m->njnt>4096){fprintf(stderr,"NATIVE_AUDIT_JOINT_WINDOW_CAPACITY\n");return;}
   for(int j=0;j<m->njnt;j++) {
