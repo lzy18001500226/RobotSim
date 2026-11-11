@@ -292,11 +292,17 @@ def pre_raise_forearm(output, proposal, limits, effort_cap):
         time.sleep(.02)
     raise RuntimeError('PRE_RAISE_ACTUAL_ELBOW_NOT_REACHED')
 
-def execute_preposition(run,container,environment,output,proposal_path):
+def load_runtime_proposal(output, runtime_proposal_path=None):
+    """Select the exact staged task proposal without changing its source limits."""
+    effective_path=Path(runtime_proposal_path) if runtime_proposal_path is not None else output/"standing_grasp_proposal.json"
+    return effective_path,json.loads(effective_path.read_text())
+
+
+def execute_preposition(run,container,environment,output,proposal_path, *, runtime_proposal_path=None):
     import xml.etree.ElementTree as ET
     from scripts.agent import path_governance as pg
     from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import native_leg_safety_contract
-    proposal=json.loads((output/"standing_grasp_proposal.json").read_text())
+    effective_path,proposal=load_runtime_proposal(output,runtime_proposal_path)
     import yaml
     config=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/default.yaml")
     native=yaml.safe_load(config.read_text())["actual"]
@@ -323,4 +329,4 @@ def execute_preposition(run,container,environment,output,proposal_path):
     observed=json.loads(record.read_text()) if record.exists() else {}
     if child.returncode or not observed.get("pass_result"):raise RuntimeError("TURN_FORWARD_BEND_COMPOSITE_HOLD_NOT_QUALIFIED:"+str(observed.get("failure",child.stdout[-1000:])))
     return dict(classification="SIMULATION_ONLY_NATIVE_CROUCH_TORSO_TURN_FORWARD_BEND",roll_policy="RETAIN_MEASURED_NO_ACTIVE_SIDE_BEND",
-                pre_raise_forearm=pre_raise,initial_waist_hold=initial_waist_hold,body_crouch=result,waist=hold,posture_stop=observed,proposal_path=str(proposal_path))
+                pre_raise_forearm=pre_raise,initial_waist_hold=initial_waist_hold,body_crouch=result,waist=hold,posture_stop=observed,proposal_path=str(proposal_path),effective_runtime_proposal_path=str(effective_path))

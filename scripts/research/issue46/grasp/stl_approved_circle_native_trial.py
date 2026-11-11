@@ -85,6 +85,10 @@ def verified_claw_cycle_reuse(episode, current_overlay):
         if episode_start:
             if episode_start.get("keyframe_only_before_stepping") is not True or episode_start.get("physical_arrays_unchanged") is not True:raise ValueError("episode relocation proof missing")
             record=read_parent(episode_start["parent_overlay"])
+        initial=record.get('initial_object_placement')
+        if initial:
+            if initial.get('physical_properties_and_robot_unchanged') is not True or initial.get('mj_step_calls')!=0 or initial.get('controller_knows_object_pose') is not False:raise ValueError('initial free-object pose proof missing')
+            record=read_parent(initial['parent'])
         return record
     current=physical_source(current);prior=physical_source(prior)
     if current["generated"]["host_scene"]["sha256"]!=prior["generated"]["host_scene"]["sha256"]:
@@ -107,6 +111,8 @@ def runtime_plan_result(result, effective_dir):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--task-grasp-region",action="store_true")
+    p.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.))
     p.add_argument("--native-multiccd",action="store_true",help="separate SIMULATION_ONLY native337 contact-manifold comparison; no geometry/material/gain change")
     p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
     p.add_argument("--body-height-native-build",type=Path)
@@ -420,6 +426,10 @@ def main():
         if abs(args.grasp_height_above_center_m-.01)>1e-9:raise ValueError("H220 task requires section120mm above bottom")
         from scripts.research.issue46.scene.bottle_height_overlay import build as height_build
         claw=height_build(claw,.22)
+    if any(args.task_bottle_offset_xy_m):
+        if not args.task_grasp_region:raise ValueError("task object initialization requires sensor-directed task")
+        from scripts.research.issue46.scene.bottle_initial_pose_overlay import build as initial_pose_build
+        claw=initial_pose_build(claw,args.task_bottle_offset_xy_m)
     if args.body_height_probe_drop_m is not None:
         if args.execute_pickup_navigation or args.carry_away_1m or args.carry_goal_world_xy is not None or args.micro_base_probe or args.carry_delivery_config:
             raise ValueError("native height compatibility probe cannot execute a locomotion route or grasp")
@@ -511,6 +521,14 @@ def main():
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
+    if args.task_grasp_region:
+        if not args.execute_pickup_navigation or host_model_cache is None or args.target_source!="fresh-rgbd-snapshot":
+            raise ValueError("task region requires START, fresh RGBD and matched camera cache")
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import reference_contract
+        reference_dir=pg.create_unique_output_directory("/home/lzy18001500226/projects/RobotSim/reviews/issue-46",prefix="rgbd-task-grasp-control-reference").native_path
+        pg.write_new_text(reference_dir/"reference.json",json.dumps(reference_contract(),indent=2)+"\n")
+        pg.write_artifact_manifest(reference_dir)
+        argv.extend(["--task-grasp-region","--task-region-host-cache",str(host_model_cache),"--task-region-reference",str(reference_dir/"reference.json")])
     argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])
     if not .03<=args.refine_position_tolerance_m<=(.25 if restoring_carry else .15):raise ValueError("bounded position-only docking tolerance")
     argv.extend(["--refine-position-tolerance-m",str(args.refine_position_tolerance_m)])

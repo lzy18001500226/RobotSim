@@ -45,7 +45,15 @@ def review_source_ready(episode):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));args=parser.parse_args()
+    if any(args.task_bottle_offset_xy_m) and not args.task_grasp_region:
+        raise ValueError("task initialization offset needs RGBD task scope")
+    if args.task_grasp_region:
+        if not args.from_start or not args.to_delivery_table or args.bottle_height_m!=.22 or args.carry_angular_cap!=.60:
+            raise ValueError("task region is the complete H220 START transfer")
+        CMD.append("--task-grasp-region")
+        if any(args.task_bottle_offset_xy_m):
+            CMD.extend(["--task-bottle-offset-xy-m",*map(str,args.task_bottle_offset_xy_m)])
     host_threads={name:"1" for name in ("OPENBLAS_NUM_THREADS","OMP_NUM_THREADS","MKL_NUM_THREADS")}
     os.environ.update(host_threads)
     os.chdir(REPO)
@@ -72,6 +80,11 @@ def main():
     if args.from_start:
         if not args.to_delivery_table:raise ValueError("from START requires complete delivery mission")
         CMD.extend(["--execute-pickup-navigation","--dock-command-speed-cap","0.20","--dock-braking-delay-s","0.80","--dock-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06"),"--refine-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06")])
+    if args.task_grasp_region:
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        task_profile=pg.create_unique_output_directory(ROOT,prefix="rgbd-task-short-turn-route").native_path
+        pg.write_new_text(task_profile/"config.json",json.dumps(task_route_profile(json.loads(profile.read_text())),indent=2)+"\n")
+        profile=task_profile/"config.json"
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
     CMD[CMD.index("--right-claw-kp")+1]=str(args.right_claw_kp)
     if args.to_delivery_table:

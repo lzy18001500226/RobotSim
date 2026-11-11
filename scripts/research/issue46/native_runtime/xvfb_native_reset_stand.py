@@ -1471,6 +1471,9 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     parser.add_argument('--motion-calibration-input',type=Path,help='isolated unloaded motion calibration; no grasp execution')
     parser.add_argument('--motion-calibration-input-sha256')
+    parser.add_argument("--task-grasp-region",action="store_true")
+    parser.add_argument("--task-region-host-cache",type=Path)
+    parser.add_argument("--task-region-reference",type=Path)
     args = parser.parse_args()
     motion_calibration=None
     if args.motion_calibration_input is not None:
@@ -2562,12 +2565,24 @@ def main() -> None:
                     ready=observed.returncode==0 and state.get('set_status') is None and state.get('mode_name')=='STAND_DEFAULT' and state.get('mode_status')==100 and state.get('stability',{}).get('pass') is True
                     result['gates']['POSTDOCK_READONLY_STAND']='PASS' if ready else 'FAIL'
                     if not ready:raise RuntimeError('postdock read-only standing qualification failed')
+                if args.task_grasp_region:
+                    from scripts.research.issue46.native_runtime.native_task_grasp_region import execute as execute_task_region
+                    if args.task_region_host_cache is None or args.task_region_reference is None:
+                        raise ValueError("task region requires calibrated RGBD/model and owned reference")
+                    reference=json.loads(args.task_region_reference.read_text())
+                    result["task_grasp_region"]=execute_task_region(run,container,environment,output,control_generated["host_scene"]["path"],args.task_region_host_cache,reference,limits,bodies)
+                    args.standing_grasp_posture=Path(result["task_grasp_region"]["posture_config"])
+                    result["gates"]["RGBD_TASK_GRASP_REGION"]="PASS"
                 if args.standing_grasp_posture and args.execute_pickup_navigation:
                     from scripts.research.issue46.native_runtime.native_grasp_stand_restore import retire_owned_zero_bridge
                     result["pickup_bridge_retirement"]=retire_owned_zero_bridge(run,container,output,"pickup")
                 if args.standing_grasp_posture:
                     from scripts.research.issue46.native_runtime.standing_waist_preposition import execute_preposition
-                    result["standing_grasp_posture"]=execute_preposition(run,container,environment,output,args.standing_grasp_posture)
+                    task_runtime_proposal=None
+                    if args.task_grasp_region:
+                        from scripts.research.issue46.native_runtime.native_task_grasp_region import stage_runtime_posture
+                        task_runtime_proposal=stage_runtime_posture(output,args.standing_grasp_posture)
+                    result["standing_grasp_posture"]=execute_preposition(run,container,environment,output,args.standing_grasp_posture,runtime_proposal_path=task_runtime_proposal)
                     result["gates"]["POSTURED_PICKUP_READINESS"]="PASS"
                 dock_capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
                 pg.write_new_text(output / "native_dock_state_capture.stdout", dock_capture.stdout)

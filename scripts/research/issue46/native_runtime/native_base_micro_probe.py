@@ -21,6 +21,37 @@ def advancing_stamp(store, name, stamp, now):
     return True
 
 
+def discover_mc_processes(proc_root=Path("/proc")):
+    """Inspect every executable; read argv only for matching MC executables."""
+    import os
+    candidates = []
+    for directory in Path(proc_root).iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            executable = os.readlink(directory/"exe")
+            if Path(executable).name != "aima-mc-app-main":
+                continue
+            command = (directory/"cmdline").read_bytes().replace(bytes([0]), b" ").decode()
+        except (OSError, UnicodeError):
+            continue
+        candidates.append((int(directory.name), executable, command))
+    return candidates
+
+
+def planned_turn_forward(cfg, angular, previous):
+    """Task arc geometry only; native gait, bounds and angular ramp are unchanged."""
+    delivery = cfg.get("delivery") or {}
+    if delivery.get("turn_translation_strategy") != "FORWARD_ARC":
+        return previous
+    forward_cap = float(delivery["delivery_forward_command_m_s"])
+    angular_cap = float(cfg["angular_command_cap"])
+    if (forward_cap != .20 or angular_cap != .60 or not math.isfinite(angular)
+            or abs(angular) > angular_cap+1e-9):
+        raise ValueError("forward arc differs from checked input curvature")
+    return forward_cap*abs(angular)/angular_cap
+
+
 def drain_ready_callbacks(node, rclpy_module, *, budget_s=.004, max_callbacks=128):
     """Drain queued state callbacks within a bounded CPU slice, without sleeping."""
     began=time.monotonic();count=0
@@ -600,15 +631,10 @@ def run_probe(smoke_only=False):
             if pubs[0].node_name!="cmd_vel_bridge" or rawpubs[0].node_name!=self.get_name():
                 raise RuntimeError("VELOCITY_GRAPH_NOT_UNIQUE:"+str(([p.node_name for p in pubs],[s.node_name for s in subs],[p.node_name for p in rawpubs])))
             # Exact configured-name + process PID contract from reviewed Issue80.
-            candidates=[]
-            for d in Path("/proc").iterdir():
-                if d.name.isdigit():
-                    try:
-                        exe=os.readlink(d/"exe")
-                        cmd=(d/"cmdline").read_bytes().replace(bytes([0]),b" ").decode()
-                    except (OSError,UnicodeError):continue
-                    if Path(exe).name=="aima-mc-app-main":
-                        candidates.append((int(d.name),exe,cmd))
+            identity_started=time.monotonic()
+            candidates=discover_mc_processes()
+            self.events.append(dict(event="MC_IDENTITY_SCAN_TIMING",started=identity_started,
+                duration_s=time.monotonic()-identity_started,candidate_count=len(candidates)))
             if len(candidates)!=1:
                 raise RuntimeError("MC_PROCESS_NOT_UNIQUE")
             mcsubs=[q for q in subs if q.node_name=="mc_ros2_node"+str(candidates[0][0])]
@@ -1506,7 +1532,7 @@ def run_carry_navigation(n,contract):
                         if abs(turn_error)>(2.*math.pi if (cfg.get("delivery") or {}).get("delivery_turn_direction")=="CLOCKWISE" else math.pi)+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=control_turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(control_turn_error)<float((cfg.get("delivery") or {}).get("turn_terminal_angular_taper_angle_rad",.60)) else cfg["angular_command_cap"],control_turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
-                        if cfg.get("compact_centre_feedback") and not (cfg.get("delivery") or {}).get("turn_translation_strategy")=="PURE_YAW":
+                        if cfg.get("compact_centre_feedback") and (cfg.get("delivery") or {}).get("turn_translation_strategy") not in ("PURE_YAW","FORWARD_ARC"):
                             terminal_angle=float((cfg.get("delivery") or {}).get("turn_terminal_translation_free_angle_rad",0.))
                             if abs(turn_error)<terminal_angle:
                                 output.linear_x=0.;output.lateral_y=0.
@@ -1520,6 +1546,9 @@ def run_carry_navigation(n,contract):
                                 output.linear_x,output.lateral_y=inplace_recovery_command(p,mission["turn_origin_pose"],cfg.get("turn_recovery_speed",.12))
                                 output.angular_z=0.;output.state=NavState.DRIVE;output.distance_m=centre_error
                                 mission["centre_recovery_ticks"]=mission.get("centre_recovery_ticks",0)+1
+                        if (cfg.get("delivery") or {}).get("turn_translation_strategy")=="FORWARD_ARC":
+                            output.linear_x=planned_turn_forward(cfg,output.angular_z,output.linear_x)
+                            output.lateral_y=0.
                     else:
                         recovery_stop=recovered_turn_stop(mission,row,n.command_log,time.monotonic(),
                             float((cfg.get("delivery") or {}).get("intermediate_turn_heading_tolerance_rad",.12)))
