@@ -102,14 +102,15 @@ class AgentMailStopHookTests(unittest.TestCase):
         self.assertIn("email delivery skipped", output.getvalue())
         self.assertNotIn("AGENTMAIL_API_KEY", run.call_args.kwargs["env"])
 
-    def test_ordinary_stop_does_not_load_credentials_even_when_opted_in(self) -> None:
-        with patch.object(agentmail_stop_hook, "_read_bundle") as load, patch.object(
-            agentmail_stop_hook.subprocess, "run"
-        ) as run, patch("sys.stdin", io.StringIO(stop_payload(closeout=False))):
-            result = agentmail_stop_hook.main([], environ={"ROBOTSIM_LOCAL_STOP_HOOK": "1"})
-        self.assertEqual(result, 0)
-        load.assert_not_called()
-        self.assertNotIn("AGENTMAIL_API_KEY", run.call_args.kwargs["env"])
+    def test_ordinary_stop_does_not_spawn_or_load_credentials(self) -> None:
+        for enabled in ("", "1"):
+            with self.subTest(enabled=enabled), patch.object(agentmail_stop_hook, "_read_bundle") as load, patch.object(
+                agentmail_stop_hook.subprocess, "run"
+            ) as run, patch("sys.stdin", io.StringIO(stop_payload(closeout=False))):
+                result = agentmail_stop_hook.main([], environ={"ROBOTSIM_LOCAL_STOP_HOOK": enabled})
+            self.assertEqual(result, 0)
+            load.assert_not_called()
+            run.assert_not_called()
 
     def test_malformed_and_recursive_closeouts_do_not_load_credentials(self) -> None:
         recursive = json.loads(stop_payload())
