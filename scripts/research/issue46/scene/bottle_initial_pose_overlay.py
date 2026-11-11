@@ -9,7 +9,7 @@ def digest(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 def build(parent, offset_xy):
     offset=np.asarray(offset_xy,dtype=float)
-    if offset.shape!=(2,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.45:raise ValueError('bounded initial tabletop scenario offset')
+    if offset.shape!=(2,) or not np.isfinite(offset).all():raise ValueError('finite initial tabletop scenario offset; supported inset checked below')
     parent=Path(parent);record=copy.deepcopy(json.loads(parent.read_text()))
     model=mujoco.MjModel.from_xml_path(record['generated']['host_scene']['path'])
     b=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,'test_cylinder');j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,'test_cylinder_free')

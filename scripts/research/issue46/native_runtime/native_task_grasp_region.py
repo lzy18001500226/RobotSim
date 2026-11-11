@@ -40,6 +40,11 @@ def task_route_profile(profile):
         raise ValueError("unexpected frozen task route profile")
     result["delivery_turn_direction"] = "SHORTEST"
     result["turn_translation_strategy"] = "FORWARD_ARC"
+    # The previous 250mm early stop left the actual arm outside its placement
+    # region. Reuse the existing measured-braking predictor; actual-pose
+    # placement IK, 12deg tilt and all physical stop gates remain mandatory.
+    result["stop_inside_functional_arrival_region"] = False
+
     result["task_turn_selection"] = {
         "classification": "TASK_COLLISION_CHECKED_FORWARD_ARC_NOT_MC_RETUNING",
         "evidence": "reviews/issue-46/x2-table-edge-task-20261111T145311Z/carry_radius333_arc_static.json",
@@ -67,11 +72,12 @@ def stage_runtime_posture(output, selected_path):
 
 
 def reference_contract():
-    return {"schema": "robotsim.rgbd-task-grasp-region.v1",
+    return {"schema": "robotsim.rgbd-task-grasp-region.v2",
             "control_object_source": "FRESH_RGBD_ONLY",
             "existing_navigation_controller": "PointGoalController",
             "maximum_stance_adjustments": 2,
             "posture_reference": str(Path(__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_h220_turn_forward_bend_pickup_functional.json"),
+            "maximum_candidate_shift_m": .80, "maximum_navigation_excursion_m": .90,
             "mechanical_changes": False}
 
 
@@ -151,6 +157,7 @@ def run_region_navigation(node, contract):
         watchdog.start()
         last_progress = time.monotonic()
         best = math.inf
+        last_nav_state = None
         while time.monotonic() < until:
             tick = time.monotonic()
             try:
@@ -174,7 +181,7 @@ def run_region_navigation(node, contract):
             if not node.moving or row["body_status"] != baseline:
                 raise RuntimeError("TASK_REGION_WATCHDOG_OR_BODY_STATUS")
             pose = row["pose"]
-            if math.hypot(pose["x"]-origin["x"], pose["y"]-origin["y"]) > .45:
+            if math.hypot(pose["x"]-origin["x"], pose["y"]-origin["y"]) > cfg["maximum_excursion_m"]:
                 raise RuntimeError("TASK_REGION_EXCURSION")
             for name, cap in cfg["effort_caps"].items():
                 actual = node.latest_row["actuators"].get(name)
@@ -189,6 +196,9 @@ def run_region_navigation(node, contract):
                 if output.state == NavState.ARRIVED:
                     break
             elif output.state in (NavState.ALIGN, NavState.DRIVE, NavState.FINAL_ALIGN):
+                if output.state != last_nav_state:
+                    best, last_progress = math.inf, tick
+                    last_nav_state = output.state
                 metric = output.distance_m if output.state == NavState.DRIVE else abs(output.yaw_error_rad)
                 if metric < best-.01:
                     best, last_progress = metric, tick
@@ -255,7 +265,7 @@ def build_motion_script(goal, limits, bodies, caps, label):
     for function in (recover_clock_at_stop, run_region_navigation):
         code += "\n"+inspect.getsource(function)+"\n"
     code += "MICRO.update("+repr({"task_region": {
-        "goal": list(goal), "effort_caps": caps, "label": label},
+        "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90},
         "graph_startup_timeout_s": 5.0})+")\nrun_probe()\n"
     compile(code, "task_region_navigation", "exec")
     return code
@@ -353,7 +363,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
     rows = []
     try:
         for candidate_anchor, label in candidates:
-            if np.linalg.norm(candidate_anchor-anchor) > .40:
+            if np.linalg.norm(candidate_anchor-anchor) > .80:
                 continue
             root_goal = candidate_anchor-(anchor-root_xy)
             heading, correction = torso_heading_for_target(center, root_goal, ref_root, ref_object, reference_heading)

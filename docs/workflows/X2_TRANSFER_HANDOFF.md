@@ -2,6 +2,45 @@
 
 更新：2026-11-11，22cm完整START物理验收已通过。本页是当前任务记录，旧失败保留在原reviews，不改写历史结果。
 
+## 当前Goal：桌边8cm网格与实时相机（2026-11-12，本地时间）
+
+沿用同一工作树、分支；输入HEAD f31b231。用户明确授权新Goal，不再使用上一轮5点/随机点计划。
+D70/H220mm/0.200kg、原STL手爪/源限制/材料/求解配置冻结。表长约901.8mm，
+中心留55mm桌边余量，世界Y从-1.787376734到-0.995593627，10个80mm常规点加远端，共11点。
+位置只用于物理开始前初始化和评估；控制不得读取初始化编号/偏移。
+
+- 默认观察位由桌子网格几何计算：pelvis XY[0.821382333,-1.391485180]、yaw0，
+  距近侧长边500mm。37cm候选仅覆盖9/11；50cm离线RGB-D覆盖11/11。
+- 全部11点：完整RGB-D XYZ估计→当前站位检查→现有少量备用站位→准备/伸手/靠近/
+  闭合/抬升静态见证及33点导航几何采样通过。APPROACH最小约21mm，
+  闭合/抬升的wide_loop到瓶体最小约1.48mm。不是连续步态或真实抓放PASS。
+  新流程实际换位、抓取、第二桌放置11点全为NOT RUN。
+- 新任务只扩展桌边搜索/行程范围（候选<=0.80m、导航根部位移<=0.90m），
+  不提高物理速度/effort/关节门限。保留停稳后重新RGB-D判定、最多两次换站位。
+- 第二桌此前实际停姿的朝向不变，向世界+Y推进80/140mm的独立离线放置计划通过，
+  计划轴倾角约9deg、原12deg上限不变。任务路线关闭过早250mm停车触发，
+  复用原实测刹停预测；实际放置IK、接触/卸载/独立支撑仍必须实测。
+- 独立第一视角H.264连续视频流已实现，并以旧真实轨迹通过Edge解码（2.51s/25帧）；
+  页面明确REPLAY / NO PHYSICS，尚未验证新实况直播。独立只读渲染、不发MC/ROS命令，
+  不调用mj_step，最新单帧缓冲，不阻塞控制。任务可见运行会启动相机观察进程。
+- 实况仿真环境BLOCKED：Ubuntu普通wsl --exec退出1，Docker日志E_UNEXPECTED/发行版挂载服务缺失。
+  Docker Desktop29.8.1正常且无运行容器；现有SSH可进入相同Ubuntu、uid1000与此工作树，
+  已实际WSL写入/Windows UNC读回PASS。尚未重启Ubuntu：已有其他SSH/终端可能被中断，
+  正等待用户确认安全维护窗口。不得以Windows Docker误传Linux路径或权限绕过代替修复。
+- 离线focused tests145 PASS；远端初始化/模型数组不变/START叠加PASS，check-only无Docker也PASS。
+  本轮代码以本分支checkpoint为准；其他既有dirty/untracked均保留。物理未运行，不宣称任务完成。
+
+证据/滑块审核页：
+reviews/issue-46/table-edge-8cm-grid-20261111T181355Z/index.html；
+完整说明REPORT_ZH.md、all11_static_rgbd_summary.json、first_person_stream_replay_current/browser_decode_result.json。
+attempt_id 1f9167c0-7cc2-4a57-89ad-0179fc6d413f。
+
+恢复环境后先运行中点5，再近端0/远端10真实完整START代表点；相同版本验证后再其余8点。
+已有table_edge_grid_trials.py prepare/execute入口：冻结源代码与实际资产哈希，按5/0/10/其余点执行，
+缺测量不补零、首失败停止、旧固定站位PASS不能替代新中线观察流程。提交后须重新prepare，旧manifest不会静默混用HEAD。
+精确命令在本轮REPORT_ZH.md。PR106 Draft、Issue46 Open，不merge、不新建工作树、不清理文件。
+生产化处置PORT-TO-C++，离线网格/观察工具KEEP-AS-TOOL；当前不开展雷达/SLAM替换。
+
 ## 后续空手运动标定：当前停在审核（2026-11-11）
 
 新增有界标定没有取得最小精度资格：前后与左右转向各一条停稳响应；左移

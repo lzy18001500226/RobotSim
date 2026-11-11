@@ -44,6 +44,26 @@ def review_source_ready(episode):
     except (OSError,ValueError,TypeError):return False
 
 
+
+def launch_first_person_observer(episode):
+    """Start a disposable read-only RGB stream, never another physics owner."""
+    invocation=json.loads((episode/"invocation.json").read_text())["argv"]
+    flag="--task-region-host-cache"
+    if flag not in invocation:raise RuntimeError("exact task camera cache absent")
+    cache=Path(invocation[invocation.index(flag)+1]);record=json.loads(cache.read_text())
+    destination=episode/"first_person_video";destination.mkdir()
+    script=REPO/"scripts/research/issue46/perception/native_rgb_video_stream.py"
+    command=[sys.executable,"-B",str(script),"--scene",record["source"],"--cache",str(cache),
+             "--run",str(episode),"--output-dir",str(destination),"--port","8793"]
+    with (destination/"observer.stdout").open("x") as log:
+        observer=subprocess.Popen(command,cwd=REPO,stdout=log,stderr=subprocess.STDOUT,
+            env={**os.environ,"MUJOCO_GL":"egl","MESA_D3D12_DEFAULT_ADAPTER_NAME":"NVIDIA",
+                 "OPENBLAS_NUM_THREADS":"1","OMP_NUM_THREADS":"1"})
+    (destination/"observer_process.json").write_text(json.dumps({
+        "pid":observer.pid,"command":command,"role":"READ_ONLY_SAME_NATIVE_STATE_H264",
+        "url":"http://localhost:8793/","physics_owner":False},indent=2))
+    return observer
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));args=parser.parse_args()
     if any(args.task_bottle_offset_xy_m) and not args.task_grasp_region:
@@ -62,9 +82,6 @@ def main():
     if not args.no_viewer and (not CACHE.is_file() or not WINPY.is_file()):raise RuntimeError("review renderer dependency missing")
     installed=Path("/mnt/c/Users/HP/.codex/visualizations/2026/10/03/01a1014f-2b35-7fe2-b6f6-a934b993405b/mujoco336-review-runtime/packages/mujoco")
     if not args.no_viewer and not installed.is_dir():raise RuntimeError("isolated Windows renderer missing")
-    status=subprocess.run(["docker","info","--format","{{.ServerVersion}}"],text=True,capture_output=True,timeout=8)
-    if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
-    if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
     profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/(("reviewed_carry_step_forward.json" if args.delivery_mode=="step" else "reviewed_carry_table_delivery.json") if args.to_delivery_table else "retreat_turn_human_review.json")
     if args.higher_carry_clearance:
         if not args.to_delivery_table or args.bottle_height_m!=.30:raise ValueError("higher carry pose scope is H300 transfer")
@@ -105,8 +122,11 @@ def main():
         compile(route_check,'prephysics_route_configuration','exec')
     if args.check_only:
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return
+    status=subprocess.run(["docker","info","--format","{{.ServerVersion}}"],text=True,capture_output=True,timeout=8)
+    if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
+    if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
-    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False
+    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False
     (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
     print("ATTEMPT",attempt,"LOG",out,flush=True)
     try:
@@ -119,6 +139,15 @@ def main():
                 if len(owned)>1:raise RuntimeError("ambiguous live episode")
                 if owned:episode=next(iter(owned))
                 copy_readonly_view_state(episode)
+                if args.task_grasp_region and not args.no_viewer and episode and not camera_started and (episode/"invocation.json").exists() and review_source_ready(episode):
+                    camera_started=True
+                    try:
+                        launch_first_person_observer(episode)
+                        print("FIRST_PERSON_RGB_VIDEO http://localhost:8793/",flush=True)
+                    except Exception as camera_error:
+                        # Observer failure cannot command or abort the physical owner.
+                        (episode/"first_person_observer_start_failure.json").write_text(json.dumps({"failure":str(camera_error),"physical_controller_unchanged":True}))
+                        print("FIRST_PERSON_OBSERVER_FAILED",str(camera_error),flush=True)
                 if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and review_source_ready(episode):
                     manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
                     def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()

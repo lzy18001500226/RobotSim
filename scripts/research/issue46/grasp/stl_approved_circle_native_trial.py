@@ -441,6 +441,15 @@ def main():
         from scripts.research.issue46.scene.episode_start_overlay import build as start_build
         claw=start_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
         args.dock_world_xy=tuple(json.loads(claw.read_text())["episode_start_navigation"]["pickup_goal_world_xyz_m"][:2])
+        if args.task_grasp_region:
+            import mujoco
+            from scripts.research.issue46.scene.table_edge_grid import table_bounds, observation_goal
+            record=json.loads(claw.read_text())
+            m=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"])
+            d=mujoco.MjData(m);mujoco.mj_resetDataKeyframe(m,d,0);mujoco.mj_forward(m,d)
+            task_observation=observation_goal(table_bounds(m,d))
+            args.dock_world_xy=tuple(task_observation["xy_m"])
+
     if args.native_multiccd:
         from scripts.research.issue46.scene.multiccd_solver_overlay import build as multiccd_build
         claw=multiccd_build(claw)
@@ -467,6 +476,8 @@ def main():
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")
     dock_xy=args.dock_world_xy or (0.74+args.base_offset_xyz_m[0],-1.44+args.base_offset_xyz_m[1])
     argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
+    if args.task_grasp_region:
+        argv[argv.index("--dock-yaw-rad")+1]="0.0"
     if args.micro_base_probe:
         if args.target_source!="truth-diagnostic" or args.physical_lift_test or args.pause_for_human_review or args.fixed_reviewed_checkpoint or not args.initial_hands_fully_open:
             raise ValueError("isolated micro capability diagnostic cannot execute grasp")

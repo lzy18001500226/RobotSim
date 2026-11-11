@@ -94,7 +94,8 @@ class ClockRecoveryTests(unittest.TestCase):
         result = task.task_route_profile(profile)
         self.assertEqual(before, json.dumps(profile, sort_keys=True))
         changed = {k for k in result if result[k] != profile.get(k)}
-        self.assertEqual(changed, {"delivery_turn_direction", "turn_translation_strategy", "task_turn_selection"})
+        self.assertEqual(changed, {"delivery_turn_direction", "turn_translation_strategy", "task_turn_selection", "stop_inside_functional_arrival_region"})
+        self.assertIs(result["stop_inside_functional_arrival_region"], False)
         self.assertEqual(result["delivery_turn_direction"], "SHORTEST")
 
     def test_selected_posture_reaches_the_actual_consumer_before_any_motion(self):
