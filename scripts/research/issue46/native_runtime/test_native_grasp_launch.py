@@ -249,7 +249,7 @@ class NativeLaunchTests(TestCase):
         self.assertIn('BILATERAL_CONTACT_LOST_DURING_LIFT',code)
         self.assertIn("'bottle_center_world_m':grasped_position",code)
         self.assertIn("'preclose_bottle_center_world_m':phase['bottle_center_world_m']",code)
-        self.assertIn("n.send(goal,1.5,'LIFT_HOLD'",code)
+        self.assertIn("hold_native_simulation(n,goal,'LIFT_HOLD'",code)
         self.assertIn('probe_deadline=time.monotonic()+2.',code)
         self.assertIn('if probe_rise>=.005 and table_force<=.1:break',code)
         self.assertIn("if probe_rise<.005 or table_force>.1:raise RuntimeError('LOAD_TRANSFER_PROBE_FAILED')",code)

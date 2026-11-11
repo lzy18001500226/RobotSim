@@ -44,12 +44,12 @@ def atomic(path,value):
 try:
     while not glfw.window_should_close(window):
         began=time.monotonic()
-        if ended:glfw.wait_events_timeout(.10)
+        if ended:glfw.wait_events()
         else:glfw.poll_events()
         before_stamp=stamp
         try:
-            fresh=row if ended else json.loads((ROOT/"native_latest.json").read_text())
-            if fresh["generation"]>=1 and (stamp is None or fresh["host_monotonic_ns"]>stamp):
+            fresh=row if ended else json.loads((ROOT/"live_view_latest.json").read_text())
+            if fresh is not None and fresh["generation"]>=1 and (stamp is None or fresh["host_monotonic_ns"]>stamp):
                 row=fresh;stamp=fresh["host_monotonic_ns"];receipt=time.monotonic()
         except (OSError,ValueError,KeyError):pass
         ended=(ROOT/"live_review_finished.json").exists()

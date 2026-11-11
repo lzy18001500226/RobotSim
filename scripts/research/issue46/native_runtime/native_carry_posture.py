@@ -6,9 +6,22 @@ import math
 import json
 import time
 
-def native_stand_arm_reference(profile="FULL_SOURCE"):
+def native_stand_arm_reference(profile="FULL_SOURCE", pose_correction=None):
     from pathlib import Path
     import hashlib,yaml
+    if pose_correction is not None:
+        source=Path(pose_correction['path'])
+        if hashlib.sha256(source.read_bytes()).hexdigest()!=pose_correction['sha256']:raise ValueError('carry task pose proof changed')
+        proof=json.loads(source.read_text())
+        if proof.get('classification')!='ONE_ARM_TASK_POSE_CORRECTION_STATIC_ONLY_NO_MODEL_CHANGE' or proof.get('wrist_world_translation_m')!=[0,0,.06] or not proof['static_stow_screen']['pass_static'] or proof['minimum_recorded_gait_clearance']['clearance_m']<0.:raise ValueError('carry clearance task proof invalid')
+        settings=native_stand_arm_reference(profile)
+        expected={n for n in settings['arm_target_rad'] if n.startswith('right_')}
+        if set(proof['right_arm_rad'])!=expected:raise ValueError('carry clearance joint group changed')
+        settings['arm_target_rad']=dict(settings['arm_target_rad'],**proof['right_arm_rad'])
+        settings['pose_correction']=dict(pose_correction)
+        settings['physical_validation']='NOT_RUN'
+        return settings
+
     if profile in ("FIXED_CARRY_CPG_STEP","REVIEWED_UPRIGHT_CARRY","REVIEWED_UPRIGHT_CARRY_LEFT_MARGIN"):
         source=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json")
         if hashlib.sha256(source.read_bytes()).hexdigest()!="6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5":raise ValueError("fixed carry reference changed")

@@ -115,7 +115,7 @@ class TorsoTurnTest(unittest.TestCase):
         gains=native.stl_hand_startup.load_animation_player_arm_pd_parameters()
         script=w.extend_bootstrap(native.arm_bootstrap_hold_script(gains,relay_waist=True))
         self.assertEqual(script.count("self.waist_pub.publish(m)"),1)
-        self.assertIn("m=override_waist(self,m)",script)
+        self.assertIn("emit_manual_waist(n)",script)
         self.assertIn("STALE_MC_WAIST_RELAY",script)
         compile(script,"waist_owner","exec")
     def test_stale_native_sample_never_publishes(self):
@@ -129,3 +129,72 @@ class TorsoTurnTest(unittest.TestCase):
         self.assertLess(script.index('if mode=="observe":'),script.index('if mode!="restore":request_source(1001)'))
         compile(script,"observer","exec")
 if __name__=="__main__":unittest.main()
+
+
+class WaistCallbackMemoryBoundaryTests(unittest.TestCase):
+    def state(self, source_ns):
+        names=w.WAIST
+        request=dict(schema='robotsim.waist-preposition.v1',duration_s=4.,lease_s=300.,generation=1,created_host_ns=9000000000,source_limits={n:(-.3,.3,3.) for n in names},target_rad={n:.1 for n in names},start_rad={n:0. for n in names},effort_caps_nm={n:36. for n in names})
+        owner=SimpleNamespace(waist_request=request,waist_report_at=0.,waist_native=dict(generation=1,host_monotonic_ns=source_ns,joints={n:dict(q=0.,qvel=0.,bias_force=0.) for n in names}),get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(to_msg=lambda:SimpleNamespace(sec=10,nanosec=0))))
+        msg=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=10,nanosec=0)),joints=[SimpleNamespace(name=n,position=0.,velocity=0.,effort=0.,stiffness=40.,damping=5.) for n in names])
+        return owner,msg
+    def test_callback_operates_with_filesystem_unavailable(self):
+        owner,msg=self.state(10000000000)
+        with patch('builtins.open',side_effect=AssertionError('no disk I/O in MC callback')),patch('os.path.exists',side_effect=AssertionError('no stat in MC callback')),patch('time.monotonic',return_value=10.),patch('time.monotonic_ns',return_value=10000000000):
+            self.assertIs(w.override_waist(owner,msg),msg)
+        self.assertAlmostEqual(msg.joints[0].position,.015625)
+        self.assertEqual(owner.waist_pending_feedback['generation'],1)
+    def test_cached_source_freshness_limit_is_unchanged(self):
+        owner,msg=self.state(9790000000)
+        with patch('time.monotonic',return_value=10.),patch('time.monotonic_ns',return_value=10000000000):
+            with self.assertRaisesRegex(RuntimeError,'NATIVE_STATE_NOT_FRESH'):w.override_waist(owner,msg)
+
+
+class DiagnosticLoggingOverlayTests(unittest.TestCase):
+    def test_logging_overlay_leaves_all_control_fields_intact(self):
+        source={'aimrt':{'log':{'core_lvl':'Info','default_module_lvl':'Info'},'channel':{'topics':['a','b']}},'controller':{'gain':40.,'range':[-.314,.314]}}
+        original=copy.deepcopy(source);out=w.bounded_logging_overlay(source)
+        self.assertEqual(source,original)
+        self.assertEqual(out['controller'],source['controller'])
+        self.assertEqual(out['aimrt']['channel'],source['aimrt']['channel'])
+        self.assertEqual(out['aimrt']['log'],{'core_lvl':'Info','default_module_lvl':'Warn'})
+
+
+class CompiledTorqueBoundedCarryTests(unittest.TestCase):
+    def test_frozen_wrist_cap_bounds_command_without_qpos_clamp(self):
+        desired=-.171;actual=-.138;velocity=2.035;bias=-.761;kp=30.;kd=1.;limits=(-.523599,.523599,10.472)
+        command=w.position_mode_setpoint(desired,actual,velocity,bias,kp,kd,limits,2.2,bound_effort=True)
+        self.assertLessEqual(abs(kp*(command-actual)-kd*velocity),2.2)
+        self.assertGreater(command,limits[0]);self.assertLess(command,limits[1])
+        self.assertEqual(actual,-.138)
+        with self.assertRaises(RuntimeError):w.position_mode_setpoint(.31,-.30,10.,-30.,40.,5.,(-.314,.314,13.088),36.)
+    def test_infeasible_effort_and_source_position_intersection_stops(self):
+        with self.assertRaises(RuntimeError):w.position_mode_setpoint(.5,.52,10.,0.,30.,1.,(-.523599,.523599,10.472),2.2,bound_effort=True)
+
+
+class ManualWaistCycleTests(unittest.TestCase):
+    def test_manual_cycle_uses_captured_gains_and_fresh_actual_state(self):
+        owner,msg=WaistCallbackMemoryBoundaryTests().state(10000000000)
+        owner.waist_manual_template=copy.deepcopy(msg);owner.waist_last_receipt=0.
+        sent=[];owner.waist_pub=SimpleNamespace(publish=sent.append)
+        with patch('time.monotonic',return_value=10.),patch('time.monotonic_ns',return_value=10000000000):w.emit_manual_waist(owner)
+        self.assertEqual(len(sent),1);self.assertEqual(sent[0].joints[0].stiffness,40.)
+        self.assertAlmostEqual(sent[0].joints[0].position,.015625)
+        self.assertEqual(owner.waist_manual_template.joints[0].position,0.)
+        owner.waist_request=None;w.emit_manual_waist(owner);self.assertEqual(len(sent),1)
+
+class UnownedWaistInputPauseTests(unittest.TestCase):
+    def test_old_input_is_not_ready_but_fresh_input_resumes_before_deadline(self):
+        n=SimpleNamespace(waist_request=None,waist_last_receipt=0.)
+        with patch('time.monotonic',return_value=.21):self.assertFalse(w.bootstrap_unowned_waist_ready(n))
+        self.assertTrue(n.waist_relay_paused)
+        n.waist_last_receipt=.20
+        with patch('time.monotonic',return_value=.22):self.assertTrue(w.bootstrap_unowned_waist_ready(n))
+        self.assertFalse(n.waist_relay_paused)
+    def test_persistent_gap_or_active_forearm_without_manual_owner_still_fails(self):
+        for age,forearm in [(1.01,None),(.21,{})]:
+            n=SimpleNamespace(waist_request=None,waist_last_receipt=0.,forearm_request=forearm)
+            with patch('time.monotonic',return_value=age):
+                with self.assertRaisesRegex(RuntimeError,'STALE_MC_WAIST_RELAY'):w.bootstrap_unowned_waist_ready(n)
+        n=SimpleNamespace(waist_request={'captured':True},waist_last_receipt=0.)
+        with patch('time.monotonic',return_value=2.):self.assertTrue(w.bootstrap_unowned_waist_ready(n))

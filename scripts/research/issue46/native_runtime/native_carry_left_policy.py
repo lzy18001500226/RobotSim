@@ -113,14 +113,16 @@ def extend_unloaded_arm_follow(script):
             continue
         if in_send and line.strip().startswith("if TRACK_NATIVE_CIRCLE and stage not in "):
             line=line[:-1]+" and not (native_left and set(native_left)==set(LEFT+RIGHT)):"
-        if in_send and line.strip().startswith("x=JointCommand();x.name=name;") and line.rstrip().endswith(";m.joints.append(x)"):
+        if in_send and line.rstrip().endswith(";m.joints.append(x)"):
             indent=" "*(len(line)-len(line.lstrip()))
             line=line.rsplit(";m.joints.append(x)",1)[0]
-            out.append(line)
+            metadata=line.strip().startswith("published_positions[name]=")
+            if not metadata:out.append(line)
             out.extend([indent+"if native_left and name in native_left:",
                         indent+" for field,value in native_left[name].items():setattr(x,field,float(value))",
-                        indent+" target[name]=float(x.position)",
-                        indent+"m.joints.append(x)"])
+                        indent+" target[name]=float(x.position)"])
+            if metadata:out.append(line)
+            out.append(indent+"m.joints.append(x)")
             replaced+=1
         else:out.append(line)
     if replaced!=1:raise ValueError("native left command ownership anchor:"+str(replaced))

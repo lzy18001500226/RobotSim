@@ -1,127 +1,115 @@
-# Local03 → Local02：X2 两桌搬运交接
+# X2 两桌搬运：当前接续点
 
-更新：2026-11-10。只需先读本页，不用加载旧聊天/session。
-交接检查点已保存；随后按用户要求合并两个旧文档任务并清理冗余工作树。
-旧 Goal 已清除，本次只做 Git 整理，不启动仿真。
+更新：2026-11-11，22cm完整START物理验收已通过。本页是当前任务记录，旧失败保留在原reviews，不改写历史结果。
 
-## 分支与工作树
+## 目标、工作树和边界
 
-- 工作树：/home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030
-- 分支：codex/x2-autonomy-task-20261031
-- 交接前实现 HEAD：f43a6da2649dc93f9124ff576281c64269269877
-- [PR #106](https://github.com/lzy18001500226/RobotSim/pull/106) 保持 OPEN / Draft；
-  [Issue #46](https://github.com/lzy18001500226/RobotSim/issues/46) 保持 Open。
-- #80/#81 是历史导航任务，不要切回旧导航工作树。
-- 当前仅2个工作树：项目根目录 main，以及上述X2工作树。
-  项目根目录保存 .git、reference/、reviews/ 和仿真运行包，不能当作多余实验目录删除。
-- 旧资料清单 PR #107 已合并为 5081d0c25a5abe9307542ed7e5ece5433aa7cac6；
-  技能规则 PR #109 已合并为 9cd0e2a5f822a09c95fa70fdbe8a96b8df72872f。
-  agents-skill-routing 工作树及两个旧文档本地分支已清理，未新建工作树。
-- 清理恢复包和前后清单：
-  reviews/issue-46/worktree-consolidation-20261110T095433Z/。
-  X2的43个原有未提交文件逐个哈希一致，未修改或删除。
-- X2尚不合并 main 的原因：22厘米整段未完成，当前配置的 START 复现未收尾，
-  PR 的 Agent infrastructure checks 仍有失败。新线程可以直接复用本工作树。
-- Git 操作不用于修改/删除旧 session；会话卡顿原因本次未作性能诊断。
+- 工作树 `/home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030`
+- 分支 `codex/x2-autonomy-task-20261031`；本轮开始HEAD `03c3f15a6dcbc3a3171dce944704f9c2dc46d3c1`。
+- Issue #46保持Open；PR #106保持Draft。不得合并main、新建工作树或清理现有文件。
+- 完成D70/H220mm/0.200kg圆柱：START→取瓶桌→新鲜RGB-D抓取→>=50mm真实抬升→收臂
+  →恢复站姿→退开转身→第二桌→实际落桌→松爪撤手→独立支撑>=2秒，随后交人工审核。
+- 沿用用户已审核X2+OmniPicker STL、source关节/effort/速度、碰撞、摩擦、质量、机构和安装。
+  没有改手、被动连杆、耦合或厂商资产。无瓶子qpos写入、焊接、隐藏支撑或左手辅助。
+- 真实物理为原Docker内厂商MC+MuJoCo3.3.7；host3.3.6用于静态IK和复核渲染。
+  本地只读Windows viewer不发物理/运动命令。优先终端和后台渲染，不使用桌面Computer Use。
 
-## 已验证的实际进度
+## 已测结果
 
-证据根目录：/home/lzy18001500226/projects/RobotSim/reviews/issue-46/
+证据根 `/home/lzy18001500226/projects/RobotSim/reviews/issue-46/`。
 
-| 目录 | 实际结论 |
+| 运行目录 | 结果 |
 | --- | --- |
-| raicom-stl-xvfb-native-reset-stand-20261110T053739Z | 30厘米固定桌前开始：真实相机抓取、抬升、收臂、后退/转向、走到第二桌、完整停稳、松爪撤手及桌面独立支撑2秒全部 PASS。failure=null、清理确认成功。采用明确标记的 MULTICCD 数值配置。START→取瓶桌为 NOT_RUN。 |
-| raicom-stl-xvfb-native-reset-stand-20261110T035240Z | 22厘米真实相机抓取/抬升 PASS：圆心误差1.263毫米，最小抬升58.770毫米，悬空保持1秒，桌面力0；独立4027帧源关节/姿态审计 PASS，右爪最大1.864Nm。尚无22厘米恢复正常站姿、搬运或第二桌放置通过结果。 |
-| raicom-stl-xvfb-native-reset-stand-20261110T060108Z | 当前配置最后一次从 START 复现被中断：有MC/native日志，但没有 result.json，不能报 PASS 或已清理。外层目录为 live-retreat-turn-human-review-command-20261110T060002Z。 |
-| raicom-stl-xvfb-native-reset-stand-20261109T221003Z | 较早配置完成过一次从 START 到第二桌；不能代替当前 MULTICCD 配置的完整复现。 |
+| raicom-stl-xvfb-native-reset-stand-20261110T110500Z | 30cm完整START→第二桌释放放稳PASS；不重复。视频native-transfer-recorded-review-20261110T111339Z/full_x2_actual_transfer_review.mp4。 |
+| raicom-stl-xvfb-native-reset-stand-20261110T235520Z | 22cm固定桌前完整搬运/放置PASS，failure=null；HAL_PHYSICAL_LIFT、POST_LIFT_RETRACT、站姿恢复、LEAVE_TABLE_AND_TURN、SECOND_TABLE_BASE_ARRIVAL_AND_STOP、FINAL_COMPOSITE_STOP、PHYSICAL_TABLE_PLACEMENT、TWO_TABLE_TRANSFER_EXECUTION均PASS。START到取瓶桌NOT_RUN。 |
+| raicom-stl-xvfb-native-reset-stand-20261111T004845Z | 22cm完整START走近/停稳、相机抓取、>=50mm抬升、收臂、恢复站姿、持瓶搬运、第二桌松爪撤手/独立支撑全部PASS；failure无，容器退出确认。 |
 
-041253Z实际物理放置通过但父进程结束确认超时；042535Z、044427Z放置稳定门失败，
-历史结果保留。不要把它们改写成完整运行 PASS。
-详细原因见[现有执行报告](../research/issue46_truth_grasp_execution_findings.md)。
+22cm235520Z：实际trace13332条，已越过旧12000条截断；第二桌独立支撑2.000000s，
+最小桌面上向力1.961801N（物体重1.962N），最大手爪接触法向力0；实际开爪q=-0.99894，
+撤手80mm。最终COM[.06745386,1.38316052,.65672510]，轴倾角0.01679deg，容器清理确认成功。
+末帧后台复核 `native-run-end-capture-20261111T000011Z/overview.png`，不是新物理。
 
-## 当前配置，别重新发明
+当前没有物理运行，停止新试验，交人工审核。22cm完整START证据004845Z已核对首帧实际base
+[-1.5,-1.5,.65192435]。初次抬升最小59.003mm（最大60.837mm），上下向手部支持均值1.962279N，
+取瓶桌力0，双pad最小约14N；恢复站姿后的全程COM峰值升高208.951mm。
+持瓶底盘净位移2.56845m，到第二桌XY误差107.48mm、朝向误差0.26789rad；不为凑朝向额外转动。
+松爪撤手80mm后桌面独立支持2.02秒，桌面最小上向力1.961884N、pad力0，最终瓶身倾角0.03736deg。
 
-- 已审核X2/OmniPicker STL、装配、开合机构不变。真实厂商MC和MuJoCo3.3.7，
-  x86 Humble/AimDK通信；不是硬件验证，也不宣称未修改厂商默认资格。
-- 22厘米抓取截面为距瓶底12厘米，即COM上方1厘米。
-- 侧身是转腰yaw，不是左右侧弯。用转腰＋前弯＋必要的小幅原生下蹲，
-  roll保留小幅实测平衡值。
-- 沿用kp6、原2Nm夹爪上限、内部frictionloss0、既有22块源派生包胶代理、
-  elliptic/impratio10、NoSlip0及局部摩擦参考0.002s。
-- 力控目标参数必须沿用 --carry-grip-force-margin 15.0，不是“15%力度”；
-  H220曾误用默认1.5，导致承重不足。
-- --multiccd 是单独的数值对比配置：enableflags0→16。427项编译数组保持一致；
-  不改网格、质量、材料、增益、源关节/执行器限制或停止阈值，不添加支撑。
-  native必须实测加载16。053739Z已通过该配置整段固定桌前搬运。
-- 相机是任务蓝色、竖直圆柱RGB-D几何估计，不能称为已完成通用YOLO/6D识别，
-  光学标定也不能当作厂商真机标定。
-- 22厘米用桌外抬手＋高位接近。中间姿态按当前pelvis相对坐标检查；
-  最终抓取仍对齐新鲜相机的世界坐标瓶心。冗余IK须预留控制补偿余量。
-- 安装仿真位置模式的effort前馈行为有实测差异，22厘米分段路径用了受限
-  bias/kp适配；不得直接当真实硬件接口合同。冻结增益不能在实时tick重复解析YAML。
-- read_fresh_native_row返回完整状态；require_fresh_sample只返回新鲜度判定。
-- 复用已验证配置的开合证据和IK初值，实际相机、姿态、到位、承重和停止门仍重算。
-- 参数以现有 reviewed_carry_step_forward.json 为准：departure0.12、
-  STEP直行SDK目标0.20m/s、compact turn上限0.60rad/s、独立导航/制动根部上限0.60，
-  站立仍0.20。这些是现有实验配置，不是厂家源限制或继续提速授权。
+最终完整START视频：
+`native-transfer-recorded-review-20261111T005652Z/full_x2_actual_transfer_review.mp4`，
+SHA256 `43fc26622df7880672599401653eaca73f519ad9d8efba8af41b9830efb43fd3`。
+它是原生3.3.7真实物理轨迹在同一完整模型上的复核渲染，不是新物理；1495帧/5fps，已完整解码。
+原始trace SHA256 `e18e8081bbeb8a557e4316419ddac292cd2833fb5d423dbc7ac840a4dc96d8eb`。
+测量汇总 `h220-full-start-transfer-closeout-20261111T010140Z/measured_result.json`，
+SHA256 `acbd3c6cb14971c1f09c95f530c5a48eee9f168b28e9d96b347bc7b8d9beeb85`；Linux及Windows UNC读回一致。
 
-## 下一步
+## 复现命令
 
-1. 恢复Docker连接后先核对旧容器及进程，不从中断最后一帧接续控制。
-2. 收尾当前MULTICCD配置的完整START复现；固定桌前整段已PASS，不重做CAD、
-   圆拟合、同样库存审计或无变化的开合测试。
-3. 22厘米：抓起/收臂后保持夹持，原生恢复身高，将腰部交回实际MC输出，
-   完整站稳后才接回既有搬运与第二桌释放流程。
-   不能直接删协调腰carry禁止门，也不能让机器人带未验证的低姿态直接走。
-4. 前两阶段收敛后，做“只知桌位→相机找未知瓶→可达则抓→必要时有限站位调整
-   →停稳重新观察→抓取搬运”。不开展语音、新Nav2/SLAM或新本体。
+PowerShell（真实物理+只读实时GUI，004845Z已实际完成的完整START入口）：
 
-沿用原route manager、point-goal、M1桥、AimDK/ROS与原MC，不建第二套框架。
-核心入口为 scripts/research/issue46/ 下的 grasp/live_retreat_turn_review.py、
-stl_approved_circle_native_trial.py、stl_approved_circle_ik.py，
-以及 native_runtime/xvfb_native_reset_stand.py、stl_hand_startup.py、
-native_body_height.py、native_carry_placement.py。
+    wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -B scripts/research/issue46/grasp/live_retreat_turn_review.py --to-delivery-table --from-start --bottle-height-m .22 --multiccd
 
-native_runtime/native_grasp_stand_restore.py 是保留下来的未接入草稿：
-当前无运行调用者，只做过Python/生成脚本语法检查，没有真实ROS/持瓶恢复验证，
-所需子脚本尚未接线，不能当成已实现功能调用。
-处置为 PORT-TO-C++：先保留隔离研究原型，实际流程合格后再迁移生产，不被生产包导入。
+不加`--from-start`是235520Z通过的固定桌前范围；004845Z则独立完成了完整START。
+WSL终端用相同worktree、env和python参数，不再套wsl.exe。
+`--check-only`在物理之前执行现有route codegen/compile，不启动额外MC。
+输出由path_governance分配到canonical reviews，禁止写Desktop Robot或C:/home。
 
-## 复现入口与环境
+## 当前任务配置及实际控制
 
-以下命令本次未执行。是待确认的完整START入口，不是当前配置已稳定复现声明。
-WSL终端：
+- H220配置 `simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json`
+  和`reviewed_h220_turn_forward_bend_pickup_functional.json`。
+- 先实际抬小臂，再原生下蹲/腰姿，再前送。保留收臂，取消额外预设内旋stow；
+  IK仍可做维持抓取方向所需的小幅关节补偿。
+- kP6、2Nm爪源cap、既有材料和22块源派生包胶代理、源关节/effort不变。
+  必须保留`--carry-grip-force-margin 15.0`，不是15%位置或电流。
+- 保留已审核MULTICCD数值配置；不是新几何。冻结host scene SHA
+  `404fad116e3432000709e4b0d899603c16a4b68f91548ea6252ee0ec94f6a030`。
+- 持瓶先PELVIS_RIGID恢复native站高/MC腰；完整停稳后同一owner将实际TCP重表达为TORSO_RIGID。
+  指令采用编译模型真实effort cap（腕2.2Nm等），不提高cap，不夹qpos。
+- 直接后退，不做转角预热；中间朝向0.40rad内由后续行走修正。进入250mm任务区域先停，
+  然后完整实测停稳及实际放置IK；不单独追末端角度。旧150mm/120mrad诊断保留。
+- 90s导航deadline、原非零指令/速度/源限制、15s BRAKING上限不变；零指令停稳最多等12s。
+- 第二桌原生降身30mm。放置采用实际FK工具截面向桌面投影，再一次有界桌面XY/手臂IK，
+  调整<=150mm，保留桌边半径/倾斜几何余量。实际plan.config传给原owner；不载回旧固定目标。
+  初始预选机器人右向50mm只是IK参考，不是每轮强制同一世界落点。
+- 允许源范围内小角度倾斜接桌（最大计划12deg），实际力接触后才松爪，最终独立放稳仍实测。
+  235520Z实际松手后自行竖稳到0.01679deg，不据倾角几何推理宣称物理PASS。
+- 误差单位修正：axis_grasp_error后三维是0.1*(axis-goal)，真实角度为
+  `2*asin(norm(e_axis)/.2)`；旧scaled .001约0.573deg。放置相对选定轴误差<=1deg、XYZ<=5mm。
+  抓取/抬升/搬运旧数值门不变。旧“1mrad/1deg”部分注释换算有误，旧证据不改写，
+  旧H220失败运行不能因此升级。新static plan和实际控制用一致真实单位。
 
-    cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030
-    DISPLAY=:0 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/grasp/live_retreat_turn_review.py --to-delivery-table --from-start --multiccd
+## 已确认的观测截断根因
 
-不加 --from-start 为053739Z通过的固定桌前范围。
-默认显示Windows只读实时MuJoCo视图；真实物理/MC在WSL容器。
---no-viewer只供无人审核诊断，不能冒充可视入口；--check-only仍依赖Docker。
+`native_grasp_audit.c`旧代码在累计12000条时继续真实mj_step但静默停止写trace/latest。
+231041Z、232044Z、233127Z均精确12000条；30cm成功110500Z为11500条。
+移除观测条数截断，仅保留sink检查；观测寿命由已有bounded运行进程决定。
+不延长任何动作预算，不改变物理，不放宽200ms新鲜度。临时late-snapshot等待wrapper已撤掉。
 
-PowerShell直接传参数，避免嵌套bash引号：
+`native-observer-12000-frame-regression-20261110T234818Z`以相同337头文件和C stub做对照：
+旧12020次调用仅12000输出，新12020次调用全部输出，实际引擎调用次数相同；这是无物理回归。
+235520Z真实13332条及004845Z真实15203条、两次完整放置PASS独立验证修复。新C源码SHA
+`c450cff4c4c06f84e048fa7b5788c538ecb4cc20bfba80272965cdf4b9766f01`。
+不能把这类截断报告当MuJoCo物理冻结或vendor缺陷。
 
-    wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/grasp/live_retreat_turn_review.py --to-delivery-table --from-start --multiccd
+## 源码、证据和收尾
 
-22厘米成功诊断准确命令见证据根目录下
-h220-command-margin-grip-lift-live-20261110T035154Z/command.json；
-它是后台Xvfb诊断，不是22厘米整段可视入口。
+- 现有脚本仍属隔离研究原型，处置PORT-TO-C++；生产代码不依赖scripts/research。
+- 相机是任务蓝色竖圆柱的RGB-D几何估计，不是已验证通用YOLO/6D或真机标定。
+- 原4个tracked及40个untracked文件快照/哈希在
+  `local03-to-local02-handoff-20261110T085712Z/local_worktree_inventory.json`，未删除。
+  同工作树另有Local03/人工infra/docs改动；提交前精确分离，禁止broad add/reset/clean。
+- 观察截断修复已提交caf0e225167b02454003943f888db0c4598c07dc。完整任务Git/PR收尾以当前HEAD和PR106结构化closeout为准。物理验收已完成；人工审核PENDING，不merge。
+- 部分失败片段 `native-transfer-recorded-review-20261110T232729Z/full_x2_actual_transfer_review.mp4`
+  明标PARTIAL/SOURCE FAILED，不能替代最终完整视频。
+- Windows证据UNC根：
+  `\\wsl.localhost\Ubuntu-22.04\home\lzy18001500226\projects\RobotSim\reviews\issue-46`。
 
-暂停后的最后检查：WSL Docker集成不可用，Windows LinuxEngine管道未找到，
-没有本任务的WSL启动器进程。旧容器名由真实启动记录确认：
-robotsim-i46-xvfb-0261110t060108z。守护进程不可达时不能确认它已被移除；
-本次不启动Docker服务或新仿真。接手时重新检查。
+## START前置控制器生命周期
 
-## 保留本地状态
-
-交接前4个tracked修改及40个untracked文件已逐个备份并记录哈希到：
-reviews/issue-46/local03-to-local02-handoff-20261110T085712Z/
-其中 local_worktree_inventory.json、preexisting_tracked_changes.patch、
-local_worktree_backup/ 可恢复检查点；站姿恢复草稿随交接提交保留，
-其余原有文件不被本次提交打包，也没有删除。
-
-部分未跟踪历史助手是本地研究入口依赖。仅clone远端分支不等于复现本机；
-Local02应复用同一工作树，不能运行git clean/reset去“整理”。
-实验输出保留canonical reviews/issue-46，不写Desktop Robot。
-Windows证据入口：
-\\wsl.localhost\Ubuntu-22.04\home\lzy18001500226\projects\RobotSim\reviews\issue-46
+004845Z完整运行采用同一个bootstrap腰/臂owner：先接管并保持当前腰姿（零目标位移），再抬小臂，
+再下蹲和弯腰。未接管阶段若MC腰输入年龄>200ms，暂停新发布，消息恢复到<=200ms后继续；
+持续缺失>1s或存在未获腰owner的前臂请求仍失败。手臂轨迹不会用旧MC输入推进。
+手动owner的目标/增益在新鲜源输入时捕获，后续依赖新鲜native物理反馈；未增改执行器/gain或源限制。
+新建只读body observer在原5s准备窗口等待首次有效native状态，不能以ROS端点已发现代替数据新鲜。
+所有实际物理、限位、速度、effort、碰撞、停止和200ms状态验收门保持。

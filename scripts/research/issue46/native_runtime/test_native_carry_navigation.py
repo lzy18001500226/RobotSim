@@ -696,7 +696,7 @@ class CarryTurnCapTests(unittest.TestCase):
             tree=ast.parse(code)
             assignment=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='output' for t in n.targets) and isinstance(n.value,ast.Call) and 'turn_error' in ast.unparse(n.value))
             for error in (-3.,3.,-.01):
-                ns={'cfg':{'angular_command_cap':cap},'turn_error':error,'SimpleNamespace':SimpleNamespace,'NavState':SimpleNamespace(ALIGN='align')}
+                ns={'cfg':{'angular_command_cap':cap},'turn_error':error,'control_turn_error':error,'SimpleNamespace':SimpleNamespace,'NavState':SimpleNamespace(ALIGN='align')}
                 exec(compile(ast.Module(body=[assignment],type_ignores=[]),'actual_away_turn','exec'),ns)
                 self.assertLessEqual(abs(ns['output'].angular_z),cap)
                 self.assertEqual(ns['output'].linear_x,-.12)
@@ -979,7 +979,7 @@ class PreMotionReadinessTests(unittest.TestCase):
         exec(compile(ast.Module(body=[assign],type_ignores=[]),'zero_only','exec'),ns)
         self.assertFalse(ns['initial_zero_only'])
         self.assertIn('str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")',code)
-        self.assertIn('min(3.,seconds)',code)
+        self.assertIn('hard_until=until+10.',code)
         self.assertIn('qualified=None',code)
 
 class StraightRetreatInplaceTests(unittest.TestCase):
@@ -1098,7 +1098,7 @@ class CompactClockRecoveryTests(unittest.TestCase):
         self.assertIn('CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT',code)
         self.assertIn('CARRY_POLICY_DEADLINE_RESET',code)
         self.assertIn('CLOCK_RECOVERY_REARM_NOT_QUALIFIED',code)
-        self.assertLess(code.index('stopped=n.observe(8.,baseline=baseline,require_stop=True)'),code.index('cfg["clock_stop_pass"]=bool(stopped["pass"])'))
+        self.assertLess(code.index('stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)'),code.index('cfg["clock_stop_pass"]=bool(stopped["pass"])'))
 
 class RealCompactBridgeArgumentTests(unittest.TestCase):
     def test_complete_actual_bridge_argument_path_does_not_overwrite_yaw_cap(self):
@@ -1148,7 +1148,45 @@ class SourceReleaseProtocolTests(unittest.TestCase):
         self.assertEqual([q.input_source.name for q in requests],['robotsim_official_cmd_vel']*2)
         self.assertEqual(node.events[0]['meaning'],'SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT')
         self.assertIn('n.source_enabled(False) if cfg.get("release_source_on_stop") else None',code)
-        self.assertIn('n.observe(1.05,baseline=baseline);n.stand_once()',code)
+        transition=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=='stand_transition')
+        calls=[]
+        node=NS(observe=lambda *a,**k:calls.append('zero_window'),source_enabled=lambda x:calls.append('disable'),stand_once=lambda:calls.append('stand'))
+        context=dict(cfg={'release_source_on_stop':True,'delivery':{'release_source_after_zero_window':True}},result={},n=node,baseline=1)
+        exec(compile(ast.Module(body=[transition],type_ignores=[]),'actual_stop_transition','exec'),context)
+        context['stand_transition']()
+        self.assertEqual(calls,['zero_window','disable','stand'])
+
+    def test_completed_turn_keeps_actual_source_history_but_requires_fresh_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        guard=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and isinstance(n.body[0],ast.Raise) and any(isinstance(x,ast.Constant) and x.value=='AWAY_TURN_SOURCE_NOT_CONFIRMED' for x in ast.walk(n.body[0])))
+        condition=compile(ast.Expression(body=guard.test),'actual_turn_source_guard','eval')
+        for acquired,recovery,observed,blocked in [(False,None,False,True),(False,None,True,False),(True,None,False,False)]:
+            self.assertEqual(eval(condition,dict(acquired=acquired,recovery_stop=recovery,mission={'turn_source_and_mode_observed':observed})),blocked)
+        completion=code[code.index('recovery_stop=recovered_turn_stop'):code.index('if cfg.get("review_prefix_only"):',code.index('recovery_stop=recovered_turn_stop'))]
+        self.assertTrue('n.observe(stop_wait_s,baseline=baseline,require_stop=True)' in completion)
+        self.assertTrue('AWAY_TURN_STOP_NOT_QUALIFIED' in completion)
+
+class FunctionalDockHeadingTests(unittest.TestCase):
+    def test_task_heading_retains_legacy_diagnostic_and_physical_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(code)
+        statement=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='yaw_limit')
+        expr=compile(ast.Expression(body=statement.value),'actual_task_heading','eval')
+        self.assertEqual(eval(expr,{'cfg':{'delivery':{}}}),.12)
+        self.assertEqual(eval(expr,{'cfg':{'delivery':{'approach_task_yaw_tolerance_rad':.30}}}),.30)
+        self.assertTrue('requires_actual_placement_ik_before_arm_motion=yaw_limit>.12' in code)
+        self.assertTrue('result["post_stop_composite"]["pass"]' in code)
+
+class DirectRetreatSupportEvidenceTests(unittest.TestCase):
+    def test_delivery_records_actual_feet_without_gait_preparation(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        block=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and isinstance(n.body[0],ast.Assign) and any(isinstance(x,ast.Name) and x.id=='foot_forces' for x in ast.walk(n.body[0])))
+        mission={};row={'host_monotonic_ns':123,'contacts':[]}
+        ns=dict(cfg={'gait_prepare':False,'delivery':{'enabled':True}},mission=mission,n=NS(latest_row=row),tick=1.,native_foot_loads=lambda row:({'left':400.,'right':0.},'left'))
+        exec(compile(ast.Module(body=[block],type_ignores=[]),'actual_foot_evidence','exec'),ns)
+        self.assertEqual(mission['observed_support_changes'][0]['side'],'left')
+        self.assertEqual(mission['observed_support_changes'][0]['source_host_ns'],123)
 
 class CombinedCompactCentreTests(unittest.TestCase):
     def test_bounded_feedback_is_world_fixed_and_preserves_default(self):
@@ -1215,7 +1253,7 @@ class DeliveryTurnStopGoTests(unittest.TestCase):
             cfg=dict(release_source_on_stop=True,permit_filename="delivery.json")
             ns=dict(stand_transition=lambda:(n.observe(1.05,baseline={}),n.stand_once()),n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
                     baseline={},result={},transit_permit={},closed_permits=[],carry_transit_phase=lambda old,phase,c,row:{"phase":phase},
-                    time=time,until=1e99,controller=NS(reset=lambda:events.append("controller_reset")))
+                    time=time,until=1e99,stop_wait_s=8.,controller=NS(reset=lambda:events.append("controller_reset")))
             exec(compile(wrapper,"actual_delivery_handoff","exec"),ns)
             if passed:
                 ns["actual_handoff"]();self.assertEqual(events,["zero","disable","stand","controller_reset","enable"])
@@ -1353,7 +1391,7 @@ class OutwardEgressHandoffTests(unittest.TestCase):
             scope=dict(n=n,cfg=config,mission={"egress_origin_pose":{"x":0.,"y":0.},"egress_heading_rad":math.pi},
                 p={"x":-1.01,"y":0.},math=math,result={},transit_permit={"old":True},closed_permits=[],baseline={},
                 stand_transition=lambda:events.append("stand"),carry_transit_phase=lambda rec,phase,*a:events.append(phase) or {"phase":phase},
-                Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.)
+                Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.,stop_wait_s=8.)
             if passed:exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
             else:
                 with self.assertRaisesRegex(RuntimeError,"OUTWARD_EGRESS_STOP_NOT_QUALIFIED"):
@@ -1431,9 +1469,11 @@ class StepCalibrationEpochTests(unittest.TestCase):
     def test_contiguous_measured_progress_qualifies_calibration(self):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import step_cruise_reference
         rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=i*.02,y=0.),native_generation=1,source_clock_generation=1) for i in range(10)]
-        self.assertAlmostEqual(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9),.2)
-        rows[-2]["source_clock_generation"]=2
         self.assertIsNone(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9))
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=i*.02,y=0.),native_generation=1,source_clock_generation=1) for i in range(26)]
+        self.assertAlmostEqual(step_cruise_reference(rows,dict(x=.5,y=0.),(1.,0.),2.5),.2)
+        rows[-2]["source_clock_generation"]=2
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.5,y=0.),(1.,0.),2.5))
 
 class NativeProgressSpeedTests(unittest.TestCase):
     def test_gait_velocity_peak_does_not_become_mean_braking_speed(self):
@@ -1449,3 +1489,14 @@ class FunctionalTableHandoffTests(unittest.TestCase):
         self.assertEqual(functional_approach_limit(cfg,dict(phase="DELIVERY")),.25)
         self.assertEqual(functional_approach_limit(cfg,dict(phase="FORWARD")),.15)
         with self.assertRaises(ValueError):functional_approach_limit(dict(delivery=dict(approach_task_position_tolerance_m=.30)),dict(phase="DELIVERY"))
+
+class FunctionalArrivalRegionStopTests(unittest.TestCase):
+    def test_entering_task_region_zeros_instead_of_inventing_final_turn(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        block=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and 'stop_inside_functional_arrival_region' in ast.unparse(n.test))
+        wrapper=ast.parse('for _ in range(1):\n pass');wrapper.body[0].body=[block];ast.fix_missing_locations(wrapper)
+        for observed,distance,expected in [(True,.24,True),(False,.24,False),(True,.26,False)]:
+            result={};mission={'phase':'DELIVERY','delivery_source_and_mode_observed':observed};pose={'x':0.,'y':.98}
+            ns=dict(cfg={'delivery':{'stop_inside_functional_arrival_region':True,'approach_task_position_tolerance_m':.25}},mission=mission,distance=distance,result=result,p=pose,functional_approach_limit=m.functional_approach_limit)
+            exec(compile(wrapper,'actual_arrival_stop','exec'),ns)
+            self.assertEqual(bool(result.get('goal_triggered_stop')),expected)

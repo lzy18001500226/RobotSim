@@ -26,8 +26,28 @@ def matching_review_model(manifest, episode):
     raise RuntimeError("no exact-scene verified review model cache")
 
 
+
+def copy_readonly_view_state(episode):
+    """Separate Windows rendering IO from the native controller's state file."""
+    if episode is None:return
+    try:
+        raw=(episode/'native_latest.json').read_bytes();json.loads(raw)
+        temp=episode/'live_view_latest.tmp';temp.write_bytes(raw);os.replace(temp,episode/'live_view_latest.json')
+    except (OSError,ValueError):return
+
+
+def review_source_ready(episode):
+    if episode is None:return False
+    try:
+        row=json.loads((episode/'live_view_latest.json').read_text())
+        return isinstance(row,dict) and row.get('generation',0)>=1
+    except (OSError,ValueError,TypeError):return False
+
+
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
+    host_threads={name:"1" for name in ("OPENBLAS_NUM_THREADS","OMP_NUM_THREADS","MKL_NUM_THREADS")}
+    os.environ.update(host_threads)
     os.chdir(REPO)
     if args.right_claw_kp is None:args.right_claw_kp=6. if args.to_delivery_table else 4.
     if Path(subprocess.check_output(["git","rev-parse","--show-toplevel"],text=True).strip()).resolve()!=REPO:raise RuntimeError("wrong worktree")
@@ -38,44 +58,55 @@ def main():
     if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
     if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
     profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/(("reviewed_carry_step_forward.json" if args.delivery_mode=="step" else "reviewed_carry_table_delivery.json") if args.to_delivery_table else "retreat_turn_human_review.json")
+    if args.higher_carry_clearance:
+        if not args.to_delivery_table or args.bottle_height_m!=.30:raise ValueError("higher carry pose scope is H300 transfer")
+        profile=profile.with_name("reviewed_carry_step_high_clearance.json")
     if args.bottle_height_m==.22:
         if not args.to_delivery_table or args.delivery_mode!="step":raise ValueError("H220 scope requires complete STEP-forward transfer")
-        profile=profile.with_name("reviewed_carry_step_h220_forward.json")
+        profile=profile.with_name("reviewed_carry_step_h220_forward_no_roll.json")
         CMD.extend(["--bottle-height-m","0.22"])
+        CMD.remove("--carry-gait-prepare")
+        CMD[CMD.index("--carry-transit-command-speed")+1]="0.20"
+        CMD.extend(["--standing-grasp-posture",str(REPO/"simulation/mujoco/scenes/raicom2026/config/reviewed_h220_turn_forward_bend_pickup_functional.json"),"--restore-postured-carry"])
         CMD[CMD.index("--grasp-height-above-center-m")+1]="0.01"
     if args.from_start:
         if not args.to_delivery_table:raise ValueError("from START requires complete delivery mission")
-        CMD.extend(["--execute-pickup-navigation","--dock-command-speed-cap","0.20","--dock-braking-delay-s","0.80","--dock-position-tolerance-m","0.15"])
+        CMD.extend(["--execute-pickup-navigation","--dock-command-speed-cap","0.20","--dock-braking-delay-s","0.80","--dock-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06"),"--refine-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06")])
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
     CMD[CMD.index("--right-claw-kp")+1]=str(args.right_claw_kp)
     if args.to_delivery_table:
-        CMD[CMD.index("--carry-compact-angular-cap")+1]="0.60"
+        CMD[CMD.index("--carry-compact-angular-cap")+1]=str(args.carry_angular_cap)
         CMD[CMD.index("--post-lift-retract-world-m")+1]="-0.16"
     if args.multiccd:
         CMD.append("--native-multiccd")
         cycle=ROOT/"raicom-stl-xvfb-native-reset-stand-20261110T053739Z"
-        if args.to_delivery_table and args.bottle_height_m==.30 and (cycle/"result.json").exists():CMD.extend(["--reuse-verified-claw-cycle",str(cycle)])
+        if args.to_delivery_table and (cycle/"result.json").exists():CMD.extend(["--reuse-verified-claw-cycle",str(cycle)])
     if args.to_delivery_table and args.bottle_height_m==.30 and not args.multiccd:
         prior="raicom-stl-xvfb-native-reset-stand-20261109T150617Z" if args.right_claw_kp==4. else "raicom-stl-xvfb-native-reset-stand-20261109T201208Z"
         if args.from_start:prior="raicom-stl-xvfb-native-reset-stand-20261109T221003Z"
         CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/prior)])
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
+    if args.to_delivery_table:
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import build_carry_route_script
+        route_check=build_carry_route_script(None,{},[],carry_pid=1,timeout_s=90.,transit_policy_050=True,away_1m=True,straight_retreat_turn=True,compact_turn=True,gait_prepare=("--carry-gait-prepare" in CMD),transit_command_speed=float(CMD[CMD.index("--carry-transit-command-speed")+1]),compact_centre_feedback=True,release_source_on_stop=True,compact_angular_cap=args.carry_angular_cap,delivery=json.loads(profile.read_text()),vendor_transition_table=True)
+        compile(route_check,'prephysics_route_configuration','exec')
     if args.check_only:
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
     attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False
-    (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
+    (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
     print("ATTEMPT",attempt,"LOG",out,flush=True)
     try:
         with (out/"runtime.stdout").open("x") as log:
             native=subprocess.Popen(CMD,cwd=REPO,stdout=log,stderr=subprocess.STDOUT,env={**os.environ,"DISPLAY":":0","MUJOCO_GL":"glfw"})
-            deadline=time.monotonic()+500.
+            deadline=time.monotonic()+(650. if args.bottle_height_m==.22 else 500.)
             while native.poll() is None:
-                if time.monotonic()>deadline:raise RuntimeError("bounded500s runtime ended")
+                if time.monotonic()>deadline:raise RuntimeError("bounded full-episode runtime ended")
                 owned=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"))-old
                 if len(owned)>1:raise RuntimeError("ambiguous live episode")
                 if owned:episode=next(iter(owned))
-                if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and (episode/"native_latest.json").exists():
+                copy_readonly_view_state(episode)
+                if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and review_source_ready(episode):
                     manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
                     def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()
                     viewer=REPO/"scripts/research/issue46/grasp/native_live_review_windows.py"
@@ -89,7 +120,7 @@ def main():
                 if episode and (episode/"live_view_closed.json").exists() and not closed:
                     (episode/"human_review_stop").write_text("viewer closed; existing controller must zero/stand/cleanup")
                     closed=True;print("REVIEW_CLOSED_REQUESTED_SAFE_STOP",flush=True)
-                time.sleep(.25)
+                time.sleep(.05)
     finally:
         if native and native.poll() is None:
             native.terminate()
@@ -104,8 +135,17 @@ def main():
                 subprocess.run(["docker","cp",name+":/agibot/data/var",str(dest)],capture_output=True,timeout=10)
                 subprocess.run(["docker","rm","-f",name],check=True,capture_output=True,timeout=10)
         for d in owned:
+            copy_readonly_view_state(d)
             if not (d/"live_review_finished.json").exists():(d/"live_review_finished.json").write_text(json.dumps(dict(physics_ended=True,review_only=not args.to_delivery_table)))
         (out/"execution.json").write_text(json.dumps(dict(attempt_id=attempt,returncode=None if native is None else native.returncode,episodes=[str(x) for x in owned],viewer_started=viewer_started,review_only=not args.to_delivery_table)))
+    if episode and (episode/"result.json").exists() and (episode/"native_latest.json").exists():
+        capture_script=REPO/"scripts/research/issue46/grasp/capture_native_run_end.py"
+        try:
+            captured=subprocess.run([sys.executable,str(capture_script),"--run",str(episode)],cwd=REPO,text=True,capture_output=True,timeout=30.,env={**os.environ,"MUJOCO_GL":"egl","MESA_D3D12_DEFAULT_ADAPTER_NAME":"NVIDIA"})
+            pg.write_new_text(out/"end_capture.stdout",captured.stdout+captured.stderr)
+            if captured.returncode==0:print("END_CAPTURE "+captured.stdout.strip().splitlines()[-1],flush=True)
+            else:print("END_CAPTURE_FAILED "+captured.stderr[-600:],flush=True)
+        except subprocess.TimeoutExpired:print("END_CAPTURE_TIMEOUT; physics result preserved",flush=True)
     if native is not None and native.returncode!=0:
         print("STARTUP_OR_RUNTIME_FAILED",native.returncode,flush=True)
         print((out/"runtime.stdout").read_text()[-6000:],flush=True)

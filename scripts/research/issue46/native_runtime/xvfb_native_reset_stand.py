@@ -508,7 +508,9 @@ try:
     failure={'gate':'DOCK_HOLD_DRIFT','distance_m':dist,'limit_m':drift_limit};break
    if stable_since is None:stable_since=time.monotonic()
    if time.monotonic()-stable_since>=1.5:
-    if dist>position_tolerance:
+    # The final pickup distance is authoritative after the existing native
+    # STAND transition below, not during its unfinished braking transient.
+    if dist>position_tolerance and not (PLAN.get('pickup_navigation') and goal_index+1==len(goals)):
      failure={'gate':'DOCK_POST_ZERO_OUTSIDE_TOLERANCE','distance_m':dist,'tolerance_m':position_tolerance};break
     milestones.append({'goal':goal_name,'position_only':position_only,'odom_xy_m':[x,y],'odom_yaw_rad':heading,'distance_m':dist,'yaw_error_rad':yerr,'arrival_latched':True})
     if goal_index+1<len(goals):
@@ -804,7 +806,7 @@ finally:n.destroy_node();rclpy.shutdown()
     return code.replace("__LIMITS__",repr(arm_limits)).replace("__REFERENCE__",repr(reference)).replace("__GAINS__",repr(gains)).replace("__OPEN__",repr(initial_hand_opening)).replace("__CLOCK_HELPER__",clock_source)
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, relay_arms: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, relay_arms: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None, max_hold_s=90.) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
@@ -927,7 +929,7 @@ try:
  # Native docking plus a host-side zero-step IK replan can take longer than
  # the original short probe window.  This remains a bounded neutral arm hold
  # and exits immediately at the explicit hand-off marker.
- end=time.monotonic()+90.;next_tick=time.monotonic()
+ end=time.monotonic()+__BOOTSTRAP_HOLD_S__;next_tick=time.monotonic()
  while rclpy.ok() and time.monotonic()<end and not os.path.exists(STOP):
   n.send();rclpy.spin_once(n,timeout_sec=.001)
   if not n.ready and all(name in n.state for name in ARM) and n.pub.get_subscription_count()==1:
@@ -936,7 +938,7 @@ try:
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
  print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'arm_relay_count':n.arm_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__RELAY_ARMS__",repr(relay_arms)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park)).replace("__INITIAL_ARM_TARGET__", encoded_target).replace("__INITIAL_ARM_EFFORT__", encoded_effort)
+""".replace("__BOOTSTRAP_HOLD_S__",repr(float(max_hold_s))).replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__RELAY_ARMS__",repr(relay_arms)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park)).replace("__INITIAL_ARM_TARGET__", encoded_target).replace("__INITIAL_ARM_EFFORT__", encoded_effort)
 
 
 def retarget_neutral_script() -> str:
@@ -1226,7 +1228,18 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if ready.get("schema")!="robotsim.x2.carry-ready.v1" or ready.get("physical_lift_pass") is not True or ready.get("post_lift_retract_pass") is not True or ready.get("generation")!=current["generation"] or heartbeat.get("pid")!=ready.get("pid") or not 0.<=(time.monotonic_ns()-heartbeat["host_monotonic_ns"])*1e-9<=.20:
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
+    result["gates"]["HAL_PHYSICAL_LIFT"]="PASS"
+    result["gates"]["POST_LIFT_RETRACT"]="PASS"
+    result["measured_lift_handoff_proof"]={"path":str(ready_path),"sha256":sha256(ready_path),"generation":ready["generation"],"controller_pid":ready["pid"]}
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
+    if getattr(args,"restore_postured_carry",False):
+        from scripts.research.issue46.native_runtime.native_grasp_stand_restore import restore_postured_hold
+        result["postured_standing_restore"]=restore_postured_hold(run,container,environment,output,ready,result)
+        result["gates"]["HELD_NATIVE_STAND_RESTORE"]="PASS"
+        result["postrestore_carry_static_hold"]=qualify_static_carry_hold(output,ready)
+        from scripts.research.issue46.native_runtime.native_grasp_stand_restore import screen_measured_route
+        result["restored_carry_route_preflight"]=screen_measured_route(args,output,replan_record,"restored_route_snapshot")
+        result["gates"]["RESTORED_CARRY_ROUTE_PREFLIGHT"]="PASS"
     result['carry_route_profile']={'compact_turn':getattr(args,'carry_compact_turn',False),'compact_turn_angular_cap':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else None,'compact_turn_radius_m':.30 if getattr(args,'carry_compact_turn',False) else None,'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'turn_centre_recovery_cap_m_s':getattr(args,'carry_turn_recovery_speed',.12),'turn_centre_recovery_scope':'TURN_POSITION_RECOVERY_ONLY_WITH_ZERO_ANGULAR','forward_cap_m_s':getattr(args,'carry_transit_command_speed',.12),'angular_cap_rad_s':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else .10 if (args.carry_sdk_minimum_turn or getattr(args,'carry_away_1m',False)) else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     if getattr(args,"carry_delivery_config",None) is not None:
         profile=json.loads(args.carry_delivery_config.read_text())
@@ -1241,7 +1254,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
     result["carry_controller_source"]={"path":str(controller),"sha256":sha256(controller),"classification":"REUSED_EXISTING_POINT_GOAL_CONTROLLER"}
     bridge=output/"official_cmd_vel_bridge.stdout"
-    if result["gates"].get("OFFICIAL_CMD_VEL_BRIDGE")!="PASS":
+    if result["gates"].get("OFFICIAL_CMD_VEL_BRIDGE")!="PASS" or result.get("pickup_bridge_retirement"):
         source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
         if not (output/"steady_cmd_vel_bridge.py").exists():pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
         bridge_linear=max(.20 if getattr(args,"carry_compact_centre_feedback",False) else .12,getattr(args,"carry_transit_command_speed",.12),getattr(args,"carry_turn_recovery_speed",.12),float(json.loads(args.carry_delivery_config.read_text()).get("delivery_forward_command_m_s",.20)) if getattr(args,"carry_delivery_config",None) is not None else 0.)
@@ -1299,11 +1312,19 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             # Screen the same Cartesian placement against the actual arrived
             # state, not only the nominal navigation waypoint.
             cfg=json.loads(args.carry_delivery_config.read_text())
+            if cfg.get("delivery_body_lowering"):
+                from scripts.research.issue46.native_runtime.native_grasp_stand_restore import screen_measured_route,retire_owned_zero_bridge,run_body_stage
+                result["delivery_pre_lower_static"]=screen_measured_route(args,output,replan_record,"delivery_pre_lower_snapshot")
+                result["delivery_bridge_retirement"]=retire_owned_zero_bridge(run,container,output,"delivery")
+                result["delivery_body_lowering"]=run_body_stage(run,container,environment,output,"body_crouch_delivery")
+                result["gates"]["DELIVERY_BODY_LOWERING"]="PASS"
             snapshot=native_grasp_audit.read_fresh_native_row(output/"native_latest.json")
             snapdir=output/"actual_placement_snapshot";snapdir.mkdir()
             pg.write_new_text(snapdir/"native_latest.json",json.dumps(snapshot))
             pg.write_new_bytes(snapdir/"native_hal_bilateral_arm_pregrasp.py",(output/"native_hal_bilateral_arm_pregrasp.py").read_bytes())
             measured_cfg=dict(cfg);measured_cfg.pop("carry_native_neutral_stow",None)
+            measured_cfg.pop("require_restored_route_preflight",None)
+            measured_cfg.pop("delivery_body_lowering",None)
             base=snapshot["bodies"]["pelvis"];rotation=base["rotation"]
             measured_cfg["base_goal_world_xy"]=base["position_m"][:2]
             measured_cfg["base_goal_world_yaw_rad"]=math.atan2(rotation[3],rotation[0])
@@ -1321,9 +1342,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             pg.write_new_text(output/"placement_mode_readback.stdout",mode.stdout)
             observed=json.loads(mode.stdout.strip().splitlines()[-1]) if mode.returncode==0 else {}
             if not observed.get("pass_result"):raise RuntimeError("PLACEMENT_LIVE_STAND_READBACK_FAILED")
-            cfg=json.loads(args.carry_delivery_config.read_text())
+            cfg=json.loads(Path(live_plan_record['delivery_static_plan']['path']).read_text())['config']
             fresh=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
-            request={**cfg,"schema":"robotsim.x2.table-place-request.v1","created_host_ns":time.monotonic_ns(),"owner_pid":ready["pid"],"generation":fresh["generation"],"navigation_and_composite_stop_pass":True,"confirmed_stand":True,"section_target_world_m":[cfg["placement_center_world_m"][0],cfg["placement_center_world_m"][1],cfg["placement_center_world_m"][2]+replan_record["grasp_height_above_center_m"]],"mode_observation":observed}
+            request={**cfg,"schema":"robotsim.x2.table-place-request.v1","created_host_ns":time.monotonic_ns(),"owner_pid":ready["pid"],"generation":fresh["generation"],"navigation_and_composite_stop_pass":True,"confirmed_stand":True,"section_target_world_m":[cfg["placement_center_world_m"][i]+replan_record["grasp_height_above_center_m"]*cfg.get("placement_axis_world",[0.,0.,1.])[i] for i in range(3)],"mode_observation":observed}
             pg.write_new_text(output/"carry_place_request.json",json.dumps(request))
             place_deadline=time.monotonic()+38.
             while not (output/"native_table_place_result.json").exists() and not exit_path.exists() and time.monotonic()<place_deadline:
@@ -1366,6 +1387,7 @@ def main() -> None:
     parser.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
     parser.add_argument("--body-height-native-build",type=Path)
     parser.add_argument("--standing-grasp-posture",type=Path)
+    parser.add_argument("--restore-postured-carry",action="store_true")
     parser.add_argument("--body-height-native-build-sha256")
     parser.add_argument("--execute-pickup-navigation",action="store_true",help="same native keyframe initialization at aligned START, followed by existing table navigation")
     parser.add_argument("--fixed-reviewed-checkpoint",action="store_true",help="native keyframe episode initialization; no navigation qualification")
@@ -1465,8 +1487,10 @@ def main() -> None:
     if args.carry_away_1m and (args.carry_goal_world_xy is not None or (args.carry_native_step_mode and not args.carry_straight_retreat_turn) or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
         raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
 
+    from scripts.research.issue46.native_runtime.native_grasp_stand_restore import postured_carry_requested
+    restoring_carry=postured_carry_requested(args)
     replan_record={}
-    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.coordinated_circle_waist or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):raise ValueError('bounded arm-only carry route required')
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or (args.coordinated_circle_waist and not restoring_carry) or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):raise ValueError('bounded arm-only carry route required')
 
     if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
         raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
@@ -1585,9 +1609,9 @@ def main() -> None:
         raise ValueError("local refinement requires an initial table docking target")
     if args.refine_position_only and args.refine_world_xy is None:
         raise ValueError("position-only refinement requires --refine-world-xy")
-    if not 0.05 <= args.refine_position_tolerance_m <= 0.20:
+    if not 0.05 <= args.refine_position_tolerance_m <= (0.25 if restoring_carry else 0.20):
         raise ValueError("local refinement position tolerance must lie in 0.05..0.20 m")
-    if not 0.05 <= args.dock_position_tolerance_m <= 0.18:
+    if not 0.05 <= args.dock_position_tolerance_m <= (0.25 if restoring_carry else 0.18):
         raise ValueError("dock position tolerance must lie in 0.05..0.18 m")
     if args.dock_world_xy is not None and (not 8.0 <= args.dock_timeout_s <= 60.0):
         raise ValueError("dock timeout must lie in 8..60 seconds")
@@ -1703,12 +1727,16 @@ def main() -> None:
             arm_split_config = output / "mc_sim_arm_waist_split.yaml"
             split = stl_hand_startup.build_arm_waist_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
             if args.coordinated_circle_waist:
-                split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
+                split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"])
+                bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else dict(checkpoint["initial_arm_command_rad"],**({"left_shoulder_roll_joint":.15} if args.standing_grasp_posture else {})),initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"],max_hold_s=300. if args.standing_grasp_posture else 90.)
                 if args.standing_grasp_posture:
-                    from scripts.research.issue46.native_runtime.standing_waist_preposition import extend_bootstrap
+                    from scripts.research.issue46.native_runtime.standing_waist_preposition import extend_bootstrap,bounded_logging_overlay
+                    split=bounded_logging_overlay(split)
+                    result['mc_logging_profile']={'classification':'DIAGNOSTIC_LOG_VERBOSITY_ONLY','delta':{'aimrt.log.default_module_lvl':['Info','Warn']},'control_model_fields_changed':False,'warning_error_output_and_independent_source_timing_retained':True}
                     bootstrap=extend_bootstrap(bootstrap)
+                    observer_source=Path(__file__).with_name("native_source_timing_observer.py")
+                    pg.write_new_bytes(output/observer_source.name,observer_source.read_bytes())
                 pg.write_new_text(output/"native_arm_bootstrap_hold.py",bootstrap)
                 arm_bootstrap_enabled=True
             pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
@@ -1784,7 +1812,7 @@ def main() -> None:
         if args.preset_motion_id is not None:
             pg.write_new_text(output / "native_preset_motion_probe.py", preset_motion_probe_script(args.preset_motion_id, args.preset_motion_area))
         if args.body_height_probe_drop_m is not None or args.standing_grasp_posture:
-            if args.execute_pickup_navigation or args.micro_base_probe or args.carry_delivery_config is not None or args.carry_away_1m:
+            if (args.execute_pickup_navigation and not restoring_carry) or args.micro_base_probe or ((args.carry_delivery_config is not None or args.carry_away_1m) and not restoring_carry):
                 raise ValueError("body-height-only diagnostic cannot execute navigation")
             from scripts.research.issue46.native_runtime.native_body_height import build_script as body_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
@@ -1806,10 +1834,18 @@ def main() -> None:
                 proposal["robot_bodies"]=bodies
                 if not args.coordinated_circle_waist or not args.fixed_reviewed_checkpoint or not args.physical_lift_test:raise ValueError("preposition requires exclusive waist and fixed-stance physical pickup")
                 pg.write_new_text(output/"standing_grasp_proposal.json",json.dumps(proposal,indent=2)+"\n")
-                pg.write_new_text(output/"body_crouch_pickup.py",body_script(limits,bodies,proposal["body_drop_m"],mode="lower_hold",label="body_crouch_pickup"))
+                pg.write_new_text(output/"body_crouch_pickup.py",body_script(limits,bodies,proposal["body_drop_m"],mode="lower_hold",label="body_crouch_pickup",task_shortfall_tolerance_m=proposal.get("task_lowering_shortfall_tolerance_m",.01)))
                 pg.write_new_text(output/"body_posture_hold.py",body_script(limits,bodies,proposal["body_drop_m"],mode="observe",label="body_posture_hold"))
+                if restoring_carry:
+                    pg.write_new_text(output/"body_restore_carry.py",body_script(limits,bodies,proposal["body_drop_m"],mode="restore",label="body_restore_carry",reference_result="/workspace/evidence/body_crouch_pickup_result.json"))
+                    pg.write_new_text(output/"body_after_restore_observer.py",body_script(limits,bodies,proposal["body_drop_m"],mode="observe",label="body_restore_final",reference_result="/workspace/evidence/body_crouch_pickup_result.json"))
+                    pg.write_new_text(output/"body_crouch_delivery.py",body_script(limits,bodies,json.loads(args.carry_delivery_config.read_text())["delivery_body_lowering"]["drop_m"],mode="lower_hold",label="body_crouch_delivery",task_shortfall_tolerance_m=proposal.get("task_lowering_shortfall_tolerance_m",.01)))
+                    pg.write_new_text(output/"body_restore_after_delivery.py",body_script(limits,bodies,proposal["body_drop_m"],mode="restore",label="body_restore_after_delivery",reference_result="/workspace/evidence/body_crouch_delivery_result.json"))
             else:pg.write_new_text(output/"native_body_height_probe.py",body_script(limits,bodies,args.body_height_probe_drop_m))
-            pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
+            contract_source=Path(native_micro_stop_contract.__file__).read_bytes()
+            contract_target=output/"native_micro_stop_contract.py"
+            if not contract_target.exists():pg.write_new_bytes(contract_target,contract_source)
+            elif contract_target.read_bytes()!=contract_source:raise RuntimeError("native stop contract input mismatch")
             result["native_body_height_build"]={"path":str(build_path),"sha256":sha256(build_path),"source_motion_provenance":provenance}
         if args.dock_world_xy is not None:
             robot_start = overlay.get("robot_start", {})
@@ -1869,7 +1905,10 @@ def main() -> None:
                 "source_unchanged":True,"ros_header_clock_unchanged":True,
                 "changed_only":["publish_timer_clock","input_receipt_age_clock","input_timeout_clock"]}
 
-            pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
+            contract_source=Path(native_micro_stop_contract.__file__).read_bytes()
+            contract_target=output/"native_micro_stop_contract.py"
+            if not contract_target.exists():pg.write_new_bytes(contract_target,contract_source)
+            elif contract_target.read_bytes()!=contract_source:raise RuntimeError("native stop contract input mismatch")
             result["micro_source_joint_limits"]=provenance
         if args.lateral_probe_mps is not None:
             pg.write_new_text(
@@ -2089,6 +2128,8 @@ def main() -> None:
                 result['native_graphics']=native_grasp_audit.require_graphics_adapter(output/'native_graphics.json',args.native_render_adapter,expected_pid=current.get('process_pid'))
                 result['gates']['NATIVE_RENDER_ADAPTER']='PASS'
         bootstrap_environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
+        if args.standing_grasp_posture:
+            run(["docker","exec","-d",container,"bash","-lc",bootstrap_environment+"python3 /workspace/evidence/native_source_timing_observer.py > /workspace/evidence/native_source_timing_observer.stdout 2>&1"],timeout_s=5.)
         if arm_bootstrap_enabled:
             run(["docker", "exec", "-d", container, "bash", "-lc", bootstrap_environment + "python3 /workspace/evidence/native_arm_bootstrap_hold.py > /workspace/evidence/native_arm_bootstrap_hold.stdout 2>&1"], timeout_s=5.0)
             bootstrap_text = wait_for(arm_bootstrap_stdout, '"ready": true', timeout_s=12.0)
@@ -2098,8 +2139,10 @@ def main() -> None:
                 raise RuntimeError("hybrid arm bootstrap did not acquire the simulator arm command subscriber")
             result["gates"]["HYBRID_ARM_BOOTSTRAP"] = "PASS"
         run(["docker", "exec", "-d", container, "bash", "-lc", "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1"], timeout_s=5.0)
-        wait_for(output / "mc-console.log", "MotionControlModule Started Succeeded", timeout_s=25.0)
-        result["gates"]["MC"] = "PASS"
+        if not args.standing_grasp_posture:
+            wait_for(output / "mc-console.log", "MotionControlModule Started Succeeded", timeout_s=25.0)
+            result["gates"]["MC"] = "PASS"
+        else:result['mc_startup_readiness']='REAL_PREARM_ROS_MODE_READBACK_REQUIRED_MODULE_INFO_LOG_NOT_A_GATE'
         if args.native_arm_policy_relay or args.observe_native_arm_policy:
             import re
             mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
@@ -2114,6 +2157,7 @@ def main() -> None:
         if prearm.returncode != 0 or prearm_data.get("mode_name") != "STAND_DEFAULT":
             raise RuntimeError(f"STAND_DEFAULT prearm failed: {prearm.stdout[-1200:]}")
         result["gates"]["PREARM"] = "PASS"
+        result["gates"]["MC"] = "PASS"
         pid = int(run(["docker", "exec", container, "bash", "-lc", "pgrep -x soc_sim"], timeout_s=4.0).stdout.strip().splitlines()[0])
         inspect = run(["docker", "exec", container, "bash", "-lc", f"python3 /workspace/evidence/native_mujoco_reset.py inspect --expected-pid {pid}"], timeout_s=8.0)
         inspected = json.loads(inspect.stdout); windows = inspected.get("windows", [])
@@ -2482,7 +2526,7 @@ def main() -> None:
                 dock_pass = dock.returncode == 0 and dock_result.get("pass") is True
                 result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"] = "PASS" if dock_pass else "FAIL"
                 result["gates"]["NATIVE_TABLE_DOCK_STOP_HOLD"] = "PASS" if dock_pass else "FAIL"
-                if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure"),"child_returncode":dock.returncode}
+                if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure") or {"gate":"DOCK_TERMINAL_CONTRACT","final_distance_m":dock_result.get("final_distance_m"),"position_tolerance_m":args.dock_position_tolerance_m,"source_mode_confirmed":dock_result.get("source_mode_confirmed")},"child_returncode":dock.returncode}
             if dock_pass:
                 if not fixed_stance_only:
                     observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 12s python3 /workspace/evidence/native_postdock_stand_observer.py"],timeout_s=14.,check=False)
@@ -2492,6 +2536,9 @@ def main() -> None:
                     ready=observed.returncode==0 and state.get('set_status') is None and state.get('mode_name')=='STAND_DEFAULT' and state.get('mode_status')==100 and state.get('stability',{}).get('pass') is True
                     result['gates']['POSTDOCK_READONLY_STAND']='PASS' if ready else 'FAIL'
                     if not ready:raise RuntimeError('postdock read-only standing qualification failed')
+                if args.standing_grasp_posture and args.execute_pickup_navigation:
+                    from scripts.research.issue46.native_runtime.native_grasp_stand_restore import retire_owned_zero_bridge
+                    result["pickup_bridge_retirement"]=retire_owned_zero_bridge(run,container,output,"pickup")
                 if args.standing_grasp_posture:
                     from scripts.research.issue46.native_runtime.standing_waist_preposition import execute_preposition
                     result["standing_grasp_posture"]=execute_preposition(run,container,environment,output,args.standing_grasp_posture)
@@ -2569,7 +2616,7 @@ def main() -> None:
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
                                 if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
-                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)
+                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)+(140. if restoring_carry else 0.)
                                     if args.carry_delivery_config is not None:
                                         replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
                                         settings=json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow")
@@ -2580,7 +2627,14 @@ def main() -> None:
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                                     replan_record['lift_preflight']['retract_preflight']['allow_carried_bottle_tilt']=args.allow_carried_bottle_tilt
                                     replan_record['lift_preflight']['retract_preflight']['carry_retention_only']=args.carry_retention_only
+                                    if restoring_carry:replan_record['lift_preflight']['retract_preflight']['carry_pose_frame']='PELVIS_RIGID'
+                                    if restoring_carry:replan_record['lift_preflight']['retract_preflight']['postured_native_stand_restore']=True
                             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"approach_staging":replan_record.get("approach_staging"),"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist or args.standing_grasp_posture is not None,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
+                            if restoring_carry:
+                                from scripts.research.issue46.native_runtime.native_grasp_stand_restore import extend_existing_owner
+                                owner=output/"native_hal_bilateral_arm_pregrasp.py"
+                                # Newly generated current-run script only; no historical evidence is edited.
+                                owner.write_text(extend_existing_owner(owner.read_text()))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:

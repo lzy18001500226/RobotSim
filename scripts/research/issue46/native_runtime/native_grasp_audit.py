@@ -442,3 +442,16 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, trans
         previous=row
     if count<2:return {"pass":False,"failure":"INSUFFICIENT_CARRY_NATIVE_EVIDENCE"}
     return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":count,"host_span_s":(previous["host_monotonic_ns"]-first_stamp)*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1]}
+
+
+def carry_lease_limit(record):
+    """Extra hold time only for native H220 standing restoration, not more walking."""
+    if record.get('postured_native_stand_restore'):
+        if record.get('carry_pose_frame')!='PELVIS_RIGID':
+            proof=record.get('postured_restore_torso_reference',{})
+            if (record.get('carry_pose_frame')!='TORSO_RIGID' or proof.get('schema')!='robotsim.postured-carry-frame.v1'
+                or proof.get('standing_restore_pass') is not True or not isinstance(proof.get('owner_pid'),int) or proof['owner_pid']<=0
+                or proof.get('generation')!=record.get('generation') or not isinstance(record.get('generation'),int) or record['generation']<1):
+                raise ValueError('restored carry lease frame')
+        return 300.
+    return 200.

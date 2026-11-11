@@ -243,13 +243,13 @@ def build_arm_waist_split_mc_config(source: dict[str, object]) -> dict[str, obje
 
 
 
-def build_coordinated_waist_relay_config(source: dict[str, object]) -> dict[str, object]:
+def build_coordinated_waist_relay_config(source: dict[str, object], *, isolate_disabled_topics=False) -> dict[str, object]:
     """Redirect only MC waist output through the pregrasp handoff relay.
 
     The MC computes the original waist commands throughout standing/navigation;
     this overlay changes only transport ownership, never gains or policy.
     """
-    result=build_arm_hand_split_mc_config(source)
+    result=build_arm_hand_split_mc_config(source,isolate_disabled_topics=isolate_disabled_topics)
     original='/aima/hal/joint/waist/command'
     private='/robotsim/issue46/mc/waist/command'
     entries=result["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
@@ -750,6 +750,28 @@ finally:
 """.replace("__GAINS__", serialized)
 
 
+def hold_native_simulation(n, target, stage, hand_command, *, sim_duration_s=1.5, wall_timeout_s=5.):
+    """Hold for measured simulation time, retaining every existing send guard."""
+    import time
+    if stage not in ('LIFT_HOLD','RETRACT_HOLD') or sim_duration_s!=1.5 or wall_timeout_s!=5.:raise ValueError('native hold scope')
+    n.refresh_native();started=float(n.native_row['sim_time_s']);generation=n.native_row['generation'];deadline=time.monotonic()+wall_timeout_s
+    while time.monotonic()<deadline:
+        n.send(target,.04,stage,hand_command);n.refresh_native()
+        if n.native_row['generation']!=generation or float(n.native_row['sim_time_s'])<started:raise RuntimeError('HOLD_SIMULATION_CLOCK_CHANGED')
+        if float(n.native_row['sim_time_s'])-started>=sim_duration_s:return
+    raise RuntimeError('HOLD_SIMULATION_TIME_INCOMPLETE')
+
+
+def validate_pregrasp_segments(start, goal, staging):
+    """Keep the1.1rad task jump bound on each executed trajectory segment."""
+    if staging is not None and not staging.get('pass_result'):
+        raise RuntimeError('INVALID_APPROACH_STAGING')
+    points=[start]+[{**start,**w} for w in (staging or {}).get('right_arm_waypoints_rad',[])]+[goal]
+    maxima=[max(abs(b[n]-a[n]) for n in start) for a,b in zip(points,points[1:])]
+    if max(maxima)>1.1:raise RuntimeError('pregrasp segment delta exceeds1.1rad:'+str(maxima))
+    return maxima
+
+
 def build_hal_bilateral_arm_plan_script(
     gains: dict[str, tuple[float, float]],
     right_target: list[float],
@@ -1062,7 +1084,10 @@ class Plan(Node):
     if staged and name in RIGHT:
      if not USE_NATIVE_FEEDBACK or not staged.get("pass_result"):raise RuntimeError("POSITION_MODE_ARM_REQUIRES_VERIFIED_STAGED_NATIVE_PATH")
      j=self.native_row["joints"][name]
-     x.position=position_mode_setpoint(float(target[name]),float(j["q"]),float(j["qvel"]),float(j["bias_force"]),x.stiffness,x.damping,staged["source_motion_limits"][name],staged["source_effort_limits_nm"][name]);x.effort=0.
+     bounded=stage=='CARRY_HOLD' and getattr(self,'carry_torso_reference_done',False)
+     cap=min(staged["source_effort_limits_nm"][name],staged["compiled_effort_limits_nm"][name]) if bounded else staged["source_effort_limits_nm"][name]
+     if bounded:x.velocity=0.
+     x.position=position_mode_setpoint(float(target[name]),float(j["q"]),float(j["qvel"]),float(j["bias_force"]),x.stiffness,x.damping,staged["source_motion_limits"][name],cap,bound_effort=bounded);x.effort=0.
     published_positions[name]=float(x.position);m.joints.append(x)
    self.pub.publish(m)
    if WAIST:
@@ -1104,10 +1129,16 @@ try:
  n.spin(.05 if USE_NATIVE_FEEDBACK else 2.0)
  n.refresh_native()
  if not n.arm_fresh():raise RuntimeError('STALE_OR_MISSING_BILATERAL_ARM_STATE')
- if WAIST and n.waist_pub.get_subscription_count()!=1:raise RuntimeError('WAIST_SUBSCRIBER_NOT_UNIQUE')
+ if WAIST:
+  waist_discovery_until=time.monotonic()+5.
+  while n.waist_pub.get_subscription_count()==0 and time.monotonic()<waist_discovery_until:
+   n.spin(.02);n.refresh_native()
+  if n.waist_pub.get_subscription_count()!=1:
+   peers=[dict(name=p.node_name,namespace=p.node_namespace,type=p.topic_type) for p in n.get_subscriptions_info_by_topic('/aima/hal/joint/waist/command')]
+   raise RuntimeError('WAIST_SUBSCRIBER_NOT_UNIQUE:'+json.dumps(peers))
  if any(name not in n.arm and name not in INITIAL_FALLBACK for name in LEFT+RIGHT):raise RuntimeError('missing complete arm state and dock-state fallback')
  start={n_:float(n.arm[n_]) for n_ in CONTROL};fallback_used=[]; goal={**dict(zip(LEFT,TARGET_LEFT)),**dict(zip(RIGHT,TARGET_RIGHT)),**dict(zip(WAIST,TARGET_WAIST))}
- if max(abs(goal[n_]-start[n_]) for n_ in CONTROL)>1.1:raise RuntimeError('pregrasp target delta exceeds 1.1 rad')
+ validate_pregrasp_segments(start,goal,(CIRCLE_CONTRACT or {}).get("approach_staging"))
  # The delivered claw component is initialized by the same 0-command
  # handshake used in the previously passing native hand round-trip before a
  # nonzero target is sent.
@@ -1248,7 +1279,7 @@ try:
    n.send(goal,3.,'LIFT',HAND_RIGHT)
    n.lift_phase['lift_offset_m']=.06;n.write_phase(n.lift_phase)
    lift_execution['hold_start_ns']=time.monotonic_ns()
-   n.send(goal,1.5,'LIFT_HOLD',HAND_RIGHT)
+   hold_native_simulation(n,goal,'LIFT_HOLD',HAND_RIGHT)
    lift_execution['hold_end_ns']=time.monotonic_ns()
    print(json.dumps({'lift_execution':lift_execution}),flush=True)
  if RESTORE:
@@ -1275,6 +1306,12 @@ finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+    if lift_contract:
+        import inspect
+        script=inspect.getsource(hold_native_simulation)+"\n"+script
+    import inspect
+    from scripts.research.issue46.native_runtime.stl_hand_startup import validate_pregrasp_segments
+    script=inspect.getsource(validate_pregrasp_segments)+"\n"+script
     if (waist_target is not None or (circle_contract or {}).get("approach_staging")) and use_native_joint_feedback:
         import inspect
         from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint,clearance_posture_error
@@ -1351,7 +1388,7 @@ def _with_postlift_retract(script, lift_contract):
    n.send(goal,4.,'RETRACT',HAND_RIGHT)
    n.lift_phase['retract_offset_world_m']=LIFT_CONTRACT['retract_preflight']['offset_world_m'];n.write_phase(n.lift_phase)
    retract_execution['hold_start_ns']=time.monotonic_ns()
-   n.send(goal,1.5,'RETRACT_HOLD',HAND_RIGHT)
+   hold_native_simulation(n,goal,'RETRACT_HOLD',HAND_RIGHT)
    retract_execution['hold_end_ns']=time.monotonic_ns()
    accepted=evaluate_unsupported_lift(n.native_lift_rows,initial_bottle_z_m=lift_execution['initial_bottle_z_m'],hold_start_ns=retract_execution['hold_start_ns'],hold_end_ns=retract_execution['hold_end_ns'])
    retract_execution['physical_hold']=accepted;retract_execution['pass']=accepted['pass']
@@ -1390,7 +1427,8 @@ def _with_carry_lease(script, retract):
     lease=float(retract["carry_lease_s"])
     margin=float(retract.get("carry_grip_force_margin",1.5))
     if margin not in (1.5,3.,6.,7.5,15.):raise ValueError("unsupported explicit carry force margin")
-    if not math.isfinite(lease) or not 5.<=lease<=200.:raise ValueError("carry lease outside bounded 5..200s")
+    from scripts.research.issue46.native_runtime.native_grasp_audit import carry_lease_limit
+    if not math.isfinite(lease) or not 5.<=lease<=carry_lease_limit(retract):raise ValueError("carry lease outside qualified bounded profile")
     def replace(old,new,count=1):
         nonlocal script
         if script.count(old)!=count:raise ValueError("carry extension anchor changed:"+old[:50])
@@ -1441,16 +1479,19 @@ def _with_carry_lease(script, retract):
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
    yaw=math.atan2(base['rotation'][3],base['rotation'][0]);dx=tcp[0]-base['position_m'][0];dy=tcp[1]-base['position_m'][1]
-   n.lift_phase.update(phase='CARRY_HOLD',carry_retention_only=bool(LIFT_CONTRACT['retract_preflight'].get('carry_retention_only',False)),allow_carried_bottle_tilt=bool(LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False)),created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
+   n.lift_phase.update(phase='CARRY_HOLD',carry_retention_only=bool(LIFT_CONTRACT['retract_preflight'].get('carry_retention_only',False)),allow_carried_bottle_tilt=bool(LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False)),created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],postured_native_stand_restore=bool(LIFT_CONTRACT['retract_preflight'].get('postured_native_stand_restore')),carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
    if n.lift_phase['allow_carried_bottle_tilt']:
     # Fixed carry pose relative to the actual shoulder-support torso, captured once after
     # the accepted physical hold. Object truth never drives this target.
-    reference_body=n.native_row['bodies']['torso_link'];P=reference_body['rotation'];axis_local=CIRCLE_CONTRACT['local_bottle_axis_in_hand']
+    frame=LIFT_CONTRACT['retract_preflight'].get('carry_pose_frame','TORSO_RIGID')
+    if frame not in ('TORSO_RIGID','PELVIS_RIGID'):raise RuntimeError('CARRY_FRAME_POLICY')
+    reference_body=n.native_row['bodies']['pelvis' if frame=='PELVIS_RIGID' else 'torso_link'];P=reference_body['rotation'];axis_local=CIRCLE_CONTRACT['local_bottle_axis_in_hand']
     actual_axis=[sum(R[3*i+j]*axis_local[j] for j in range(3)) for i in range(3)]
     delta=[tcp[i]-reference_body['position_m'][i] for i in range(3)]
-    n.lift_phase.update(carry_pose_frame='TORSO_RIGID',
+    n.lift_phase.update(carry_pose_frame=frame,
       carry_rigid_offset_base_m=[sum(P[3*i+j]*delta[i] for i in range(3)) for j in range(3)],
       carry_rigid_axis_base=[sum(P[3*i+j]*actual_axis[i] for i in range(3)) for j in range(3)])
+    if frame=='PELVIS_RIGID':n.lift_phase['carry_nominal_right_arm_rad']={name:float(n.arm[name]) for name in RIGHT}
    else:n.lift_phase['carry_pose_frame']='YAW_WORLD_UP'
    n.write_phase(n.lift_phase)
    try:

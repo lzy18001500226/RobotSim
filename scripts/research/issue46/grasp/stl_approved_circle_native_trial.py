@@ -111,6 +111,7 @@ def main():
     p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
     p.add_argument("--body-height-native-build",type=Path)
     p.add_argument("--standing-grasp-posture",type=Path,help="bounded native lowering then torso yaw/pitch; measured roll retained")
+    p.add_argument("--restore-postured-carry",action="store_true",help="H220 only: gate walking on native height and waist restoration")
     p.add_argument("--execute-pickup-navigation",action="store_true",help="initialize aligned START keyframe then execute existing real table docking")
     p.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30)
     p.add_argument("--baseline",type=Path,required=True)
@@ -189,6 +190,7 @@ def main():
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.85,-1.44))
     p.add_argument("--dock-position-tolerance-m",type=float,default=.10)
+    p.add_argument("--refine-position-tolerance-m",type=float,default=.15,help="position-only docking terminal tolerance")
     p.add_argument("--dock-angular-speed-cap",type=float)
     p.add_argument("--dock-command-speed-cap",type=float)
     p.add_argument("--dock-braking-delay-s",type=float)
@@ -226,6 +228,8 @@ def main():
         v=args.post_lift_retract_world_m
         if not args.physical_lift_test or any(not math.isfinite(x) for x in v) or math.sqrt(sum(x*x for x in v))>.25 or not -.02<=v[2]<=.05:
             raise ValueError('bounded retract requires physical lift and <=250mm translation')
+    from scripts.research.issue46.native_runtime.native_grasp_stand_restore import postured_carry_requested
+    restoring_carry=postured_carry_requested(args)
     if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):
         raise ValueError('carry needs screened arm-only physical lift/retract and bounded room goal/deadline')
     baseline=json.loads((args.baseline/"result.json").read_text())
@@ -291,6 +295,9 @@ def main():
                 names=("right_shoulder_pitch_joint","right_shoulder_roll_joint","right_shoulder_yaw_joint","right_elbow_joint","right_wrist_yaw_joint","right_wrist_pitch_joint","right_wrist_roll_joint")
                 synchronized["runtime_initial_arm_guess_rad"]={n:float(seed_plan["rows"][0]["q_rad"][n]) for n in names}
                 synchronized["runtime_initial_arm_guess_provenance"]={"source_plan":gain_cycle_reuse["plan"],"sha256":gain_cycle_reuse["plan_sha256"],"scope":"SEVEN_JOINT_INITIAL_GUESS_ONLY_CURRENT_CAMERA_ROBOT_STATE_AND_ALL_GATES_RECOMPUTED"}
+            if args.standing_grasp_posture and args.carry_delivery_config:
+                synchronized["forearm_first_approach"]=json.loads(args.carry_delivery_config.read_text()).get("approach_posture_policy")=="FOREARM_FIRST_TABLE_OUTSIDE"
+                synchronized["forearm_already_raised"]=json.loads(args.carry_delivery_config.read_text()).get("approach_posture_policy")=="PRE_RAISED_FOREARM_THEN_REACH"
             state=state.parent/"native_synchronized_dock_state.json"
             pg.write_new_text(state,json.dumps(synchronized,indent=2)+"\n")
             state=str(state)
@@ -505,6 +512,8 @@ def main():
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
     argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])
+    if not .03<=args.refine_position_tolerance_m<=(.25 if restoring_carry else .15):raise ValueError("bounded position-only docking tolerance")
+    argv.extend(["--refine-position-tolerance-m",str(args.refine_position_tolerance_m)])
     if args.dock_braking_delay_s is not None:
         if not .0<args.dock_braking_delay_s<=1. or args.target_source not in ('truth-diagnostic','fresh-rgbd','fresh-rgbd-snapshot'):raise ValueError('measured braking profile requires bounded delay and native feedback')
         argv.extend(['--dock-braking-delay-s',str(args.dock_braking_delay_s)])
@@ -518,11 +527,12 @@ def main():
     if args.coordinated_waist_pitch_offset_rad and not args.native_physics_audit:raise ValueError("coordinated circle execution requires native TCP observation")
     if args.coordinated_waist_pitch_offset_rad or args.standing_grasp_posture:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
     if args.standing_grasp_posture:
-        if not args.fixed_reviewed_checkpoint or args.carry_delivery_config or not args.physical_lift_test:raise ValueError("postured pickup is fixed-stance physical lift only until return-to-neutral is verified")
+        if not args.fixed_reviewed_checkpoint or (args.carry_delivery_config and not restoring_carry) or not args.physical_lift_test:raise ValueError("postured carry requires verified native standing restoration")
         if args.body_height_native_build is None:
             from scripts.research.issue46.native_runtime.native_body_height import prepare_publisher
             args.body_height_native_build=prepare_publisher()
         argv.extend(["--standing-grasp-posture",str(args.standing_grasp_posture.resolve()),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
+    if restoring_carry:argv.append("--restore-postured-carry")
     sys.argv=argv
     try:native.main()
     finally:

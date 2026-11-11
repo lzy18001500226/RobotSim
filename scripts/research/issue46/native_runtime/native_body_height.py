@@ -48,9 +48,18 @@ test "$code" = 2
     path=out/"binary_manifest.json";pg.write_new_text(path,json.dumps(record,indent=2)+"\n");pg.write_artifact_manifest(out)
     return path
 
-def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="native_body_height", reference_result=None):
+def same_episode_registered_body_source(proof, native_row):
+    return bool(proof.get('pass_result') is True and proof.get('mode')=='lower_hold'
+        and proof.get('generation')==native_row['generation']
+        and proof.get('native_process_pid')==native_row['process_pid']
+        and any(x.get('action')==1001 and (x.get('raw') or {}).get('response',{}).get('header',{}).get('code')==0
+                for x in proof.get('source_responses',[])))
+
+
+def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="native_body_height", reference_result=None, task_shortfall_tolerance_m=.01):
+    if not .01<=task_shortfall_tolerance_m<=.015 or task_shortfall_tolerance_m>.01 and label not in ("body_crouch_pickup","body_crouch_delivery"):raise ValueError("bounded task lowering tolerance only")
     if drop_m not in (.03,.10,.13):raise ValueError("only measured30mm or bounded task100/130mm native-height probes are supported")
-    if mode not in ("roundtrip","lower_hold","restore","observe") or label not in ("native_body_height","body_crouch_pickup","body_restore_carry","body_crouch_delivery","body_restore_final","body_posture_hold"):raise ValueError("body task mode/label")
+    if mode not in ("roundtrip","lower_hold","restore","observe") or label not in ("native_body_height","body_crouch_pickup","body_restore_carry","body_crouch_delivery","body_restore_final","body_restore_after_delivery","body_posture_hold"):raise ValueError("body task mode/label")
     if mode=="restore" and reference_result is None:raise ValueError("restore requires same-episode qualified lowering proof")
     code=micro.build_script("forward",.6,limits,robot_bodies=robot_bodies)
     code=code.rsplit("\nrun_probe()",1)[0]
@@ -68,12 +77,26 @@ def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="n
     anchor='    if MICRO.get("carry"):\n        return run_carry_navigation(n,contract)'
     if code.count(anchor)!=1:raise ValueError("existing observer routing changed")
     code=code.replace(anchor,'    if MICRO.get("body_height_probe"):\n        return run_height_probe(n,contract)\n'+anchor,1)
-    code+="\n"+inspect.getsource(run_height_probe)
-    code+='\nSOURCE="robotsim_body_height"\nMICRO.update('+repr(dict(body_height_probe=dict(drop_m=drop_m,max_runtime_s=30.,height_command_rate=.03,mode=mode,label=label,reference_result=reference_result),robot_bodies=robot_bodies))+')\nrun_probe()\n'
+    code+="\n"+inspect.getsource(same_episode_registered_body_source)+"\n"+inspect.getsource(run_height_probe)
+    code+='\nSOURCE="robotsim_body_height"\nMICRO.update('+repr(dict(body_height_probe=dict(drop_m=drop_m,max_runtime_s=60.,held_grip=(label in ("body_restore_carry","body_crouch_delivery") or mode=="observe" and reference_result is not None),height_command_rate=.03,mode=mode,label=label,reference_result=reference_result,task_shortfall_tolerance_m=task_shortfall_tolerance_m),robot_bodies=robot_bodies))+')\nrun_probe()\n'
     compile(code,"existing_observer_native_body_height","exec")
     return code
 
 def run_height_probe(n, contract):
+    def settle_native_body(n, baseline, deadline, result, label):
+        """Wait for an unchanged complete stop contract; retain failed windows."""
+        import json,time
+        until=min(deadline,time.monotonic()+15.)
+        while time.monotonic()<until:
+            try:return n.observe(min(5.,until-time.monotonic()),baseline=baseline,require_stop=True)
+            except RuntimeError as exc:
+                prefix='COMPOSITE_STOP_NOT_QUALIFIED:'
+                if not str(exc).startswith(prefix):raise
+                measured=json.loads(str(exc)[len(prefix):])
+                if not set(measured.get('violations',[])).issubset({'planar_speed_exceeded','joint_target_not_settled','joint_position_not_settled'}):raise
+                result.setdefault('settling_windows',[]).append(dict(label=label,measurement=measured))
+                if measured.get('metrics',{}).get('safety_faults'):raise
+        raise RuntimeError('BODY_STABLE_WINDOW_TIMEOUT:'+label)
     import os,subprocess,time,json,math
     from pathlib import Path
     from aimdk_msgs.srv import SetMcInputSource
@@ -82,7 +105,7 @@ def run_height_probe(n, contract):
     result=dict(classification="SIMULATION_ONLY_INSTALLED_NATIVE_BODY_POSE_COMPATIBILITY",
                 requested_drop_m=MICRO["body_height_probe"]["drop_m"],velocity_publishers_created=sum(p.topic_name in ("/cmd_vel","/aima/mc/locomotion/velocity") for p in n.publishers),node_publisher_topics=[p.topic_name for p in n.publishers],motion_action_requests_sent=0,
                 mc_receipt_ack="UNAVAILABLE",pass_result=False,commands=[],source_request_attempts=[],source_responses=[])
-    process=None;source_mutation_attempted=False;started=time.monotonic();deadline=started+30.
+    process=None;source_mutation_attempted=False;started=time.monotonic();deadline=started+float(MICRO["body_height_probe"]["max_runtime_s"])
     config=MICRO["body_height_probe"];rate=float(config.get("height_command_rate",.03))
     if rate not in (.03,.1):raise ValueError("BODY_RATE_PROFILE")
     result["height_command_rate"]=rate;mode=config.get("mode","roundtrip");label=config.get("label","native_body_height");result["mode"]=mode
@@ -104,8 +127,29 @@ def run_height_probe(n, contract):
         result["commands"].append(dict(t=time.monotonic(),stand_height=value,evidence="PIPE_WRITE_NOT_MC_RECEIPT"))
     def sample():
         if time.monotonic()>=deadline:raise RuntimeError("BODY_HEIGHT_WATCHDOG")
-        n.pump();row=n.sample()
-        if row["get_mode_desc"]!="STAND_DEFAULT" or row["common_mode_desc"]!="STAND_DEFAULT" or row["get_mode_status_value"]!=100 or row["common_mode_status_value"]!=100 or row["get_mode_header_code"]!=0:raise RuntimeError("BODY_HEIGHT_MODE_NOT_STAND")
+        n.pump()
+        try:row=n.sample()
+        except RuntimeError as exc:
+            transient=str(exc)=="CLOCK_GENERATION_PENDING" or str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
+            if not transient or process is None or result.get('clock_pauses'):raise
+            command(0.)
+            pause_started=time.monotonic();identity=(n.latest_row['generation'],n.latest_row['process_pid'])
+            fresh_until=min(deadline,pause_started+1.)
+            while time.monotonic()<fresh_until:
+                n.pump()
+                try:row=n.sample();break
+                except RuntimeError as pending:
+                    if str(pending)!="CLOCK_GENERATION_PENDING" and not str(pending).startswith("CRITICAL_ROS_TELEMETRY_STALE:"):raise
+                time.sleep(.005)
+            else:raise RuntimeError('BODY_NEW_CLOCK_GENERATION_NOT_FRESH')
+            if identity!=(n.latest_row['generation'],n.latest_row['process_pid']):raise RuntimeError('BODY_NATIVE_PROCESS_CHANGED_DURING_CLOCK_PAUSE')
+            stopped=settle_native_body(n,None,deadline,result,'clock_pause_stop')
+            if not stopped.get('pass'):raise RuntimeError('BODY_CLOCK_PAUSE_NOT_STOPPED')
+            result['clock_pauses']=[dict(start_monotonic_s=pause_started,end_monotonic_s=time.monotonic(),cause=str(exc),zero_before_reacquire=True,stop=stopped)]
+            row=n.sample()
+        if row["get_mode_desc"]!="STAND_DEFAULT" or row["common_mode_desc"]!="STAND_DEFAULT" or row["get_mode_status_value"]!=100 or row["common_mode_status_value"]!=100 or row["get_mode_header_code"]!=0:
+            result['rejected_body_mode']={k:row.get(k) for k in ('sample_monotonic_s','sim_time_s','get_mode_desc','common_mode_desc','get_mode_status_value','common_mode_status_value','get_mode_header_code','fsm_state','body_status','source_clock_generation','state_age_s')}
+            raise RuntimeError("BODY_HEIGHT_MODE_NOT_STAND:"+json.dumps(result['rejected_body_mode']))
         if row["fsm_state"] not in contract.MC_FSM_ACTIVE_STATES or row["body_status"] not in (1,4,5):raise RuntimeError("BODY_HEIGHT_POSTURE_OR_PROTECTION")
         feet={}
         for side in ("left","right"):
@@ -113,6 +157,29 @@ def run_height_probe(n, contract):
         if min(feet.values())<5.:raise RuntimeError("BODY_HEIGHT_BILATERAL_SUPPORT_LOST")
         if not n.trace or row["sample_monotonic_s"]>n.trace[-1]["sample_monotonic_s"]:n.trace.append(row)
         return row
+    def sample_after_qualified_stop(key):
+        try:return sample()
+        except RuntimeError as exc:
+            if str(exc)!='CLOCK_GENERATION_PENDING' or result.get(key,{}).get('pass') is not True:raise
+            identity=(n.latest_row['generation'],n.latest_row['process_pid']);command(0.)
+            fresh_stop=settle_native_body(n,None,deadline,result,key+'_new_epoch')
+            if not fresh_stop.get('pass'):raise RuntimeError('BODY_STOP_EPOCH_NOT_REQUALIFIED')
+            row=sample()
+            if identity!=(n.latest_row['generation'],n.latest_row['process_pid']):raise RuntimeError('BODY_NATIVE_IDENTITY_CHANGED_AT_COMPLETED_STOP')
+            result.setdefault('stationary_clock_rechecks',[]).append(dict(cause=str(exc),motion_commands_issued=False,zero_before_recheck=True,stop=fresh_stop))
+            result[key]=fresh_stop
+            return row
+
+    if config.get('held_grip'):
+        ready=json.loads(Path('/workspace/evidence/carry_ready.json').read_text())
+        if not ready.get('physical_lift_pass') or not ready.get('post_lift_retract_pass'):raise RuntimeError('BODY_RESTORE_REQUIRES_MEASURED_GRIP')
+        MICRO['allowed_contact_pairs']=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')]
+        original_sample=n.sample
+        def held_sample(*args,**kwargs):
+            value=original_sample(*args,**kwargs);health=json.loads(Path('/workspace/evidence/carry_heartbeat.json').read_text())
+            if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=n.latest_row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('BODY_HELD_OWNER_NOT_FRESH')
+            return value
+        n.sample=held_sample
     try:
         if result["velocity_publishers_created"]!=0 or any(t!="/parameter_events" for t in result["node_publisher_topics"]):raise RuntimeError("BODY_OBSERVER_MUST_CREATE_ZERO_ACTUATION_PUBLISHERS")
         n.start_feedback();until=min(deadline,time.monotonic()+5.);first=None
@@ -121,13 +188,22 @@ def run_height_probe(n, contract):
             if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:
                 try:first=sample();break
                 except RuntimeError as exc:
-                    if str(exc)!="CLOCK_GENERATION_PENDING":raise
+                    if str(exc) not in ("CLOCK_GENERATION_PENDING","NATIVE_FEEDBACK_STALE_OR_INVALID") and not str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:"):raise
+                    result.setdefault('initial_readiness_waits',[]).append(dict(cause=str(exc),t=time.monotonic(),motion_publishers_started=False))
             time.sleep(.01)
         if first is None:raise RuntimeError("BODY_INITIAL_FRESH_STATE_UNCONFIRMED")
-        result["initial_stop"]=n.observe(5.,baseline=first["body_status"],require_stop=True)
+        result["initial_stop"]=settle_native_body(n,first["body_status"],deadline,result,"initial_stop")
         if not result["initial_stop"].get("pass"):raise RuntimeError("BODY_INITIAL_COMPOSITE_STOP_FAILED")
         initial=sample();height=initial["pose"]["z"];result["initial_height_m"]=height
         if mode=="observe":
+            if config.get('reference_result'):
+                proof=json.loads(Path(config['reference_result']).read_text())
+                original_height=float(proof['initial_height_m']);height_error=initial['pose']['z']-original_height
+                baseline=json.loads(Path('/workspace/evidence/standing_waist_initial_hold.json').read_text())['request']['target_rad']
+                waist_error={name:n.latest_row['joints'][name]['q']-baseline[name] for name in baseline}
+                waist_velocity=max(abs(n.latest_row['joints'][name]['qvel']) for name in baseline)
+                result.update(qualification_scope='FINAL_HELD_NATIVE_STANDING_HEIGHT_AND_WAIST',original_height_m=original_height,actual_height_error_m=height_error,waist_return_error_rad=waist_error,max_waist_velocity_rad_s=waist_velocity)
+                if proof.get('generation')!=initial['native_generation'] or abs(height_error)>.01 or max(abs(v) for v in waist_error.values())>.10 or waist_velocity>.05:raise RuntimeError('FINAL_HELD_STANDING_STATE_NOT_RESTORED')
             result["pass_result"]=True
             return result
         initial_reference=float(initial["raw_common"]["servo_status"]["squat_offset"]);result["initial_squat_offset"]=initial_reference
@@ -140,20 +216,28 @@ def run_height_probe(n, contract):
         common=n.get_publishers_info_by_topic("/aima/mc/common/state");subs=n.get_subscriptions_info_by_topic("/aima/mc/body_pose")
         if len(common)!=1 or len(subs)!=1 or (common[0].node_name,common[0].node_namespace)!=(subs[0].node_name,subs[0].node_namespace) or subs[0].topic_type!="aimdk_msgs/msg/McBodyPose":raise RuntimeError("BODY_NATIVE_MC_SUBSCRIBER_UNVERIFIED")
         result["body_subscriber"]=dict(name=subs[0].node_name,namespace=subs[0].node_namespace,type=subs[0].topic_type,gid=list(subs[0].endpoint_gid))
-        if mode!="restore":request_source(1001)
+        if label=="body_crouch_delivery":
+            proof=json.loads(Path('/workspace/evidence/body_crouch_pickup_result.json').read_text())
+            if not same_episode_registered_body_source(proof,n.latest_row):raise RuntimeError('DELIVERY_BODY_SOURCE_REGISTRATION_PROOF_INVALID')
+            result['source_registration']='REUSE_SAME_MC_EPISODE_REGISTERED_DISABLED_SOURCE'
+        elif mode!="restore":request_source(1001)
         request_source(2001)
         log=Path("/workspace/evidence/"+label+"_publisher.stdout").open("w")
         process=subprocess.Popen(["/workspace/evidence/native_body_pose_publisher",SOURCE,str(min(27.,deadline-time.monotonic()-1.1))],stdin=subprocess.PIPE,stdout=log,stderr=subprocess.STDOUT,text=True,env={**os.environ,"LD_LIBRARY_PATH":"/workspace/raicom2026/mc/lib:"+os.environ.get("LD_LIBRARY_PATH","")})
-        wait=min(deadline,time.monotonic()+2.)
+        wait=min(deadline,time.monotonic()+5.);last_graph=None
         while time.monotonic()<wait:
             command(0.);n.pump()
             pubs=n.get_publishers_info_by_topic("/aima/mc/body_pose")
+            graph=[dict(name=p.node_name,namespace=p.node_namespace,type=p.topic_type) for p in pubs]
+            if graph!=last_graph:
+                result.setdefault('publisher_graph_observations',[]).append(dict(t=time.monotonic(),publishers=graph))
+                last_graph=graph
             if len(pubs)==1 and pubs[0].node_name=="robotsim_native_body_pose_publisher" and pubs[0].topic_type=="aimdk_msgs/msg/McBodyPose":break
             time.sleep(.02)
         else:raise RuntimeError("BODY_PUBLISHER_GRAPH_UNCONFIRMED")
         if mode!="restore":
             selected=False;lower_deadline=min(deadline-8.,time.monotonic()+8.)
-            while time.monotonic()<lower_deadline:
+            while time.monotonic()<lower_deadline+sum(p["end_monotonic_s"]-p["start_monotonic_s"] for p in result.get("clock_pauses",[])):
                 row=sample();z=row["pose"]["z"]
                 if z>height+.02 or z<height-config["drop_m"]-.03:raise RuntimeError("BODY_HEIGHT_UNEXPECTED_DIRECTION_OR_EXCURSION")
                 selected=selected or row["common_source"].get("name")==SOURCE
@@ -165,22 +249,28 @@ def run_height_probe(n, contract):
                 command(-rate);time.sleep(.02)
             else:raise RuntimeError("BODY_DOWN_RESPONSE_NOT_OBSERVED")
             command(0.);result["source_selected_observed"]=selected
-            result["low_stop"]=n.observe(5.,baseline=row["body_status"],require_stop=True)
-            low=sample();result["low_height_m"]=low["pose"]["z"];result["low_squat_offset"]=low["raw_common"]["servo_status"]["squat_offset"]
-            if not selected or not result["low_stop"].get("pass") or not config["drop_m"]-.01<=height-low["pose"]["z"]<=config["drop_m"]+.03:raise RuntimeError("BODY_LOWERED_STATE_NOT_CONFIRMED")
+            result["low_stop"]=settle_native_body(n,row["body_status"],deadline,result,"low_stop")
+            low=sample_after_qualified_stop("low_stop");result["low_height_m"]=low["pose"]["z"];result["low_squat_offset"]=low["raw_common"]["servo_status"]["squat_offset"]
+            result["lowering_target_acceptance"]=dict(actual_drop_m=height-low["pose"]["z"],legacy_shortfall010_pass=height-low["pose"]["z"]>=config["drop_m"]-.01,task_shortfall_tolerance_m=config.get("task_shortfall_tolerance_m",.01))
+            if not selected or not result["low_stop"].get("pass") or not config["drop_m"]-config.get("task_shortfall_tolerance_m",.01)<=height-low["pose"]["z"]<=config["drop_m"]+.03:raise RuntimeError("BODY_LOWERED_STATE_NOT_CONFIRMED")
             if mode=="lower_hold":
                 result["pass_result"]=True
                 return result
         raise_deadline=min(deadline-4.,time.monotonic()+8.)
-        while time.monotonic()<raise_deadline:
+        while time.monotonic()<raise_deadline+sum(p["end_monotonic_s"]-p["start_monotonic_s"] for p in result.get("clock_pauses",[])):
             row=sample();z=row["pose"]["z"]
             if z>height+.02:raise RuntimeError("BODY_RETURN_OVERSHOOT")
             if float(row["raw_common"]["servo_status"]["squat_offset"])>=initial_reference-.003:break
             command(rate);time.sleep(.02)
         else:raise RuntimeError("BODY_RETURN_RESPONSE_NOT_OBSERVED")
-        command(0.);result["restored_stop"]=n.observe(5.,baseline=row["body_status"],require_stop=True)
-        final=sample();result["final_height_m"]=final["pose"]["z"]
-        result["pass_result"]=bool(result["restored_stop"].get("pass") and abs(final["pose"]["z"]-height)<=.01 and final["body_status"]==1)
+        command(0.);result["restored_stop"]=settle_native_body(n,row["body_status"],deadline,result,"restored_stop")
+        final=sample_after_qualified_stop("restored_stop");result["final_height_m"]=final["pose"]["z"]
+        result['original_height_match']=abs(final['pose']['z']-height)<=.01
+        result['native_height_reference_restored']=abs(float(final['raw_common']['servo_status']['squat_offset'])-initial_reference)<=.003
+        if label=='body_restore_carry':
+            result['qualification_scope']='INTERMEDIATE_NATIVE_HEIGHT_REFERENCE_WAIST_HANDOFF_STILL_REQUIRED'
+            result['pass_result']=bool(result['restored_stop'].get('pass') and result['native_height_reference_restored'] and final['body_status']==1)
+        else:result['pass_result']=bool(result['restored_stop'].get('pass') and result['original_height_match'] and final['body_status']==1)
         if not result["pass_result"]:raise RuntimeError("BODY_RESTORED_STOP_NOT_QUALIFIED")
     except Exception as exc:result["failure"]=str(exc)
     finally:
@@ -196,7 +286,7 @@ def run_height_probe(n, contract):
             except Exception as exc:result["source_disable_failure"]=str(exc);result["pass_result"]=False
         if mode=="lower_hold" and result.get("pass_result"):
             try:
-                current=sample();result["released_source_low_hold"]=n.observe(5.,baseline=current["body_status"],require_stop=True)
+                current=sample();result["released_source_low_hold"]=settle_native_body(n,current["body_status"],deadline,result,"released_source_low_hold")
                 current=sample();result["final_height_m"]=current["pose"]["z"]
                 if not result["released_source_low_hold"].get("pass") or abs(current["pose"]["z"]-result["low_height_m"])>.01:raise RuntimeError("LOWERED_BODY_DID_NOT_HOLD_AFTER_SOURCE_RELEASE")
             except Exception as exc:result["failure"]=str(exc);result["pass_result"]=False

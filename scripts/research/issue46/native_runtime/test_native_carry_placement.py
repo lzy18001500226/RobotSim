@@ -2,6 +2,27 @@
 import unittest
 from scripts.research.issue46.native_runtime import native_carry_placement as p
 
+class PlacementAxisTaskToleranceTests(unittest.TestCase):
+    def test_legacy_default_and_explicit_subdegree_target(self):
+        self.assertAlmostEqual(.2*__import__('math').sin(p.placement_axis_tolerance({})/2.),.001)
+        self.assertEqual(p.placement_axis_tolerance({'placement_axis_tolerance_rad':.005}),.005)
+        for value in [0.,.02,float('nan'),float('inf')]:
+            with self.assertRaises(ValueError):p.placement_axis_tolerance({'placement_axis_tolerance_rad':value})
+
+class ArrivedPoseRouteTests(unittest.TestCase):
+    def test_zero_translation_does_not_invent_rotation_to_world_zero(self):
+        import inspect,numpy as np,math
+        text=inspect.getsource(p.prepare_delivery_scene)
+        text=text[text.index('    waypoints=[old[:2]]'):text.index('    for xy,yaw in poses:')]
+        text='\n'.join(x[4:] for x in text.splitlines())
+        scope=dict(old=np.array([.04,1.03,.65]),oldyaw=2.30,goal=np.array([.04,1.03]),cfg={'base_goal_world_yaw_rad':2.30},egress=0.,np=np,math=math)
+        exec(text,scope)
+        self.assertEqual(len(scope['poses']),9)
+        self.assertTrue(all(abs(yaw-2.30)<1e-10 for _,yaw in scope['poses']))
+        scope.update(goal=np.array([0.,0.]))
+        exec(text,scope)
+        self.assertEqual(len(scope['poses']),35)
+
 class PlacementTests(unittest.TestCase):
     def request(self):
         return dict(generation=1,bottle_height_m=.30,bottle_radius_m=.035,bottle_mass_kg=.2,
@@ -149,3 +170,36 @@ class InstalledModeSchemaTests(unittest.TestCase):
         common["action_info"]=dict(action_desc="LOCOMOTION_STEP",status=dict(value=100));self.assertFalse(check())
         common["action_info"]=mode;state["received_ns"]=700_000_000;self.assertFalse(check())
         self.assertNotIn("create_publisher",code)
+
+class ToolProjectedTableTargetTests(unittest.TestCase):
+    def test_existing_tool_projection_is_kept_and_edge_point_has_radius_clearance(self):
+        cfg={'grasp_height_above_center_m':.01,'bottle_radius_m':.035,'bottle_height_m':.22,'table_bounds_min_world_m':[-.45,1.32,-.01],'table_bounds_max_world_m':[.45,1.88,.547],'tabletop_world_z_m':.547}
+        self.assertEqual(p.tool_projected_table_target([-.06,1.42,.8],[0.,0.,1.],cfg),[-.06,1.42,.657])
+        target=p.tool_projected_table_target([0.,1.33,.8],[0.,0.,1.],cfg)
+        self.assertAlmostEqual(target[1],1.38)
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.0,.8],[0.,0.,1.],cfg)
+    def test_measured_snapshot_never_replaced_by_legacy_fixture_adjustment(self):
+        import ast,inspect
+        node=next(n for n in ast.walk(ast.parse(inspect.getsource(p.prepare_delivery_scene))) if isinstance(n,ast.If) and 'fixture_height_delta' in ast.unparse(n.test))
+        condition=compile(ast.Expression(body=node.test),'actual_fixture_reprojection_guard','eval')
+        self.assertFalse(eval(condition,{'record':{'fixture_height_delta':{'height_m':.22}},'cfg':{'route_reference':{'path':'actual_native_snapshot'}}}))
+
+class TableTargetBodyRightTests(unittest.TestCase):
+    def test_explicit_body_right_and_50mm_bound(self):
+        cfg={'grasp_height_above_center_m':.01,'bottle_radius_m':.035,'bottle_height_m':.22,'table_bounds_min_world_m':[-.45,1.32,-.01],'table_bounds_max_world_m':[.45,1.88,.547],'tabletop_world_z_m':.547,'placement_tool_right_offset_m':.05}
+        target=p.tool_projected_table_target([-.03,1.42,.8],[0.,0.,1.],cfg,[.8,.6,0.])
+        self.assertAlmostEqual(target[0],.01);self.assertAlmostEqual(target[1],1.45)
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.42,.8],[0.,0.,1.],cfg)
+        cfg['placement_tool_right_offset_m']=.051
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.42,.8],[0.,0.,1.],cfg,[.8,.6,0.])
+
+class ScaledAxisAngleUnitsTests(unittest.TestCase):
+    def test_real_one_degree_is_scaled_chord_not_raw_radians(self):
+        import math,numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import axis_grasp_error
+        theta=math.radians(1.)
+        R=np.array([[math.cos(theta),0.,math.sin(theta)],[0.,1.,0.],[-math.sin(theta),0.,math.cos(theta)]])
+        e=axis_grasp_error(np.zeros(3),R,np.zeros(3),np.zeros(3),np.array([0.,0.,1.]),np.array([0.,0.,1.]))
+        self.assertAlmostEqual(np.linalg.norm(e[3:]),.2*math.sin(theta/2.))
+        self.assertAlmostEqual(2.*math.asin(np.linalg.norm(e[3:])/.2),theta)
+        self.assertGreater(2.*math.asin(.017453292519943295/.2),math.radians(10.))

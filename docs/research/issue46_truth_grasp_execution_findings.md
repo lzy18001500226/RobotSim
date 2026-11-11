@@ -1,9 +1,101 @@
 # Truth grasp execution: opening and pose findings
 
-Current checkpoint, 2026-11-10: H300 fresh simulated RGB-D grasp and a complete
-START-to-second-table transfer passed once in actual native MuJoCo/MC.
-Repeatability and the H220/120-mm grasp section remain in development.
-The older failures below are retained, not current blanket failure claims.
+Current checkpoint, 2026-11-11: both H300 and H220 have one completed
+START-to-second-table physical transfer witness in the native MC/MuJoCo runtime.
+This is a SIMULATION_ONLY D70 cylinder baseline at 0.200 kg. It does not establish
+the historical 0.570 kg bottle requirement, hardware fidelity, or broad repeatability.
+Human visual review remains pending. Historical failures below are preserved.
+
+## H220 complete START witness
+
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261111T004845Z/`
+completed real START approach, fresh simulated RGB-D grasp, lift, retraction,
+native standing/waist recovery, retreat/turn/carry, table contact, release,
+80 mm open-hand withdrawal and independent table support. Every corresponding
+runtime gate passed; no terminal failure; native container absence was verified.
+The initialized root was (-1.5, -1.5, 0.65192435) m, not a table-front replay.
+
+| Measured quantity | Result |
+| --- | --- |
+| Cylinder | D70 mm / H220 mm / 0.200 kg |
+| Initial unsupported lift | min 59.003 mm / max 60.837 mm; continuous qualified 1 s |
+| Minimum bilateral pad normals | 13.9991 N / 14.0017 N |
+| Mean upward hand support during lift | 1.962279 N; pickup-table support 0 N |
+| Whole-episode COM peak rise | 208.951 mm, including native standing recovery |
+| Carry base endpoint displacement | 2.56845 m |
+| Actual dock error | 107.48 mm; 0.267891 rad heading error |
+| Released independent support | 2.02 simulation seconds; minimum table support 1.961884 N; pad force 0 N |
+| Final bottle orientation | upright error 0.03736 degrees |
+| Native records | 15,203, continuing beyond the old 12,000-record cutoff |
+
+A separate fixed-table H220 witness `raicom-stl-xvfb-native-reset-stand-20261110T235520Z`
+also passed release/withdraw/free support. These are two different starts, not a
+claim of statistical repeatability. The tested START scene source SHA-256 is
+`297ac89ef0d807cee105a29c19991fa0c70838475c8425dba22e0893feb27f87`;
+the approved gripper geometry, joints, coupling, collision masks, friction, gains
+and actuator limits were preserved. Runtime physics was native MuJoCo 3.3.7;
+host 3.3.6 was used for offline IK and review rendering.
+
+The task no longer makes a separate final base-heading correction. Functional
+arrival remains separate from the retained 150 mm / 120 mrad diagnostics; actual
+stopped-pose arm IK and collision screening must pass before placement motion.
+The user-requested retraction remains, without the extra preset inward wrist
+stow. Placement uses a bounded source-range tabletop/arm IK and a source-valid
+small tilted contact posture; actual table support gates release. The freely
+released cylinder settles upright under contact/gravity physics. A planned tilt
+or an IK result is never counted as placement acceptance.
+
+Angle units were corrected: `axis_grasp_error` stores `0.1*(axis-target)`.
+Its norm is a scaled chord; the actual angle is `2*asin(norm/.2)`. The placement
+solver and tracker now use the same 5 mm position / 1 degree axis-tracking target
+contract around the selected posture. No joint range or physical safety limit
+was enlarged. Older informal “1 mrad/1 degree” interpretations of raw residuals
+must not be used to upgrade any earlier failed static or dynamic study.
+
+### Confirmed observer lifetime defect
+
+The old read-only interposer stopped emitting after 12,000 records while still
+calling the real `mj_step`. The three late failures 231041Z, 232044Z and 233127Z
+all contain exactly 12,000 rows; the prior H300 successful run had 11,500 rows.
+This created stale-state errors without proving a physics freeze or vendor defect.
+The lifetime cutoff was removed; controller motion budgets, sampling cadence,
+200 ms state acceptance and every physical gate remain unchanged. Temporary
+late-snapshot retry code was removed after this root cause was identified.
+
+`native-observer-12000-frame-regression-20261110T234818Z` is an executable C
+interposition regression using exact 3.3.7 headers and a stub step, not dynamics:
+12,020 calls produce 12,000 old records and 12,020 fixed records. The actual
+235520Z and 004845Z runs then independently exceeded the old cutoff and completed
+physical placement. The fixed observer source SHA-256 is
+`c450cff4c4c06f84e048fa7b5788c538ecb4cc20bfba80272965cdf4b9766f01`.
+
+### Evidence and reproduction
+
+Local canonical evidence is under `/home/lzy18001500226/projects/RobotSim/reviews/issue-46/`:
+
+- measured summary: `h220-full-start-transfer-closeout-20261111T010140Z/measured_result.json`, SHA-256 `acbd3c6cb14971c1f09c95f530c5a48eee9f168b28e9d96b347bc7b8d9beeb85`;
+- source episode result: `004845Z/result.json` within the full run directory above, SHA-256 `8c86d613bf3d1918633261ad222130214cd7cade66f8a90b98fb3e5307951199`;
+- full native trace SHA-256 `e18e8081bbeb8a557e4316419ddac292cd2833fb5d423dbc7ac840a4dc96d8eb`;
+- complete review MP4: `native-transfer-recorded-review-20261111T005652Z/full_x2_actual_transfer_review.mp4`, SHA-256 `43fc26622df7880672599401653eaca73f519ad9d8efba8af41b9830efb43fd3`.
+
+The MP4 renders measured real native-physics states in the matched full model;
+it sends no commands and performs no new stepping. It is not the force/lift proof;
+raw native contacts, motion and released-support gates are the proof. Local large
+artifacts are preserved, not committed as Git blobs. Linux and Windows UNC access
+were checked by matching SHA-256, and the entire MP4 decoded without errors.
+
+Exact locally executed PowerShell command (requires the existing pinned runtime,
+local source inputs and offline environment; not a clean-clone installation claim):
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -B scripts/research/issue46/grasp/live_retreat_turn_review.py --to-delivery-table --from-start --bottle-height-m .22 --multiccd
+```
+
+Stop at human review. Keep PR #106 Draft and Issue #46 open. No new dynamic test,
+main merge, model promotion, vendor edit or local cleanup is authorized by this result.
+The research implementation remains isolated and has disposition **PORT-TO-C++**.
+
+## Earlier checkpoints (historical)
 
 | Actual native episode under reviews/issue-46 | Observed result |
 | --- | --- |

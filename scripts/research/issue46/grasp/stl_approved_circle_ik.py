@@ -145,10 +145,11 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
 
 
 def tracking_phase_is_fresh(phase, now_ns):
+    from scripts.research.issue46.native_runtime.native_grasp_audit import carry_lease_limit
     limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.,"RETRACTING":6.}
     if phase.get("phase")=="CARRY_HOLD":
         lease=phase.get("carry_lease_s")
-        if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=200. or phase.get("post_retract_physical_hold_pass") is not True:return False
+        if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=carry_lease_limit(phase) or phase.get("post_retract_physical_hold_pass") is not True:return False
         limits["CARRY_HOLD"]=float(lease)
     stage=phase.get("phase");created=phase.get("created_host_ns")
     if stage not in limits or not isinstance(created,int) or not 0.<=(now_ns-created)*1e-9<=limits[stage]:return False
@@ -411,12 +412,17 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
     if reference.get("approach_staging"):
         bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference))
+    position_limit=.001;axis_limit=.001;weights=np.ones(6)
+    if phase is not None and phase.get('placement_active'):
+        request=phase['placement_request'];position_limit=float(request.get('placement_position_tolerance_m',.001));angle=float(request.get('placement_axis_tolerance_rad',2.*np.arcsin(.005)))
+        if not .001<=position_limit<=.005 or not .001<=angle<=np.deg2rad(1.):raise RuntimeError('PLACEMENT_IK_TASK_TOLERANCE')
+        axis_limit=.2*np.sin(angle/2.);weights=np.r_[np.full(3,1./position_limit),np.full(3,1./axis_limit)]
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
         if np.linalg.norm(error[:3])<1e-4 and np.linalg.norm(error[3:])<1e-4:break
-        J=jacobian(q)
-        dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error)
+        J=jacobian(q)*weights[:,None]
+        dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error*weights)
         if phase is not None and phase.get("phase")=="CARRY_HOLD" and not phase.get("placement_active") and phase.get("carry_nominal_right_arm_rad") is not None:
             nominal=phase["carry_nominal_right_arm_rad"]
             if set(nominal)!=set(ik.ARM):raise RuntimeError("INVALID_CARRY_POSTURE_REFERENCE")
@@ -424,12 +430,12 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
 
         q=np.clip(q+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
     error=residual(q)
-    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:
+    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:
         # Bound-aware recovery can redistribute axial-roll redundancy instead
         # of repeatedly clipping the same wrist joint at its source limit.
-        opt=least_squares(residual,q,jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        opt=least_squares(lambda q:residual(q)*weights,q,jac=lambda q:jacobian(q)*weights[:,None],bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         q=opt.x;error=residual(q)
-    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'q':q.tolist()}))
+    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'q':q.tolist()}))
     actual=np.array([row['joints'][n]['q'] for n in ik.ARM])
     actual_error=residual(actual);J=jacobian(actual)
     correction=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error)
@@ -575,6 +581,23 @@ def refine_position_mode_margin(model,state,seed,center,target,local_axis):
         raise RuntimeError("SOURCE_AND_POSITION_MODE_MARGIN_UNQUALIFIED:"+str((fit.message,float(fit.x[7]),equality.tolist())))
     return np.r_[seed[:2],fit.x[:7]],dict(solver="SLSQP_SAME_TASK_MAXIMUM_MINIMUM_POSITION_MODE_MARGIN",margin_rad=float(fit.x[7]),gain_source="UNCHANGED_ANIMATION_PLAYER",status=str(fit.message),mj_step_calls=0)
 
+def compiled_arm_effort_limits(model):
+    """Torque caps of the frozen direct-motor actuators, not URDF guesses."""
+    caps={}
+    for name in ik.ARM:
+        j=ik.native.jid(model,name);ids=[i for i in range(model.nu) if model.actuator_trnid[i,0]==j]
+        if len(ids)!=1:raise RuntimeError('AMBIGUOUS_ARM_TORQUE_TRANSMISSION:'+name)
+        i=ids[0]
+        if (not model.actuator_ctrllimited[i] or model.actuator_gear[i,0]!=1. or model.actuator_gainprm[i,0]!=1. or model.actuator_biastype[i]!=0):raise RuntimeError('UNQUALIFIED_DIRECT_ARM_TORQUE_MAPPING:'+name)
+        lo,hi=model.actuator_ctrlrange[i]
+        if not lo<0.<hi:raise RuntimeError('INVALID_COMPILED_ARM_TORQUE_CAP:'+name)
+        cap=min(-float(lo),float(hi))
+        if model.actuator_forcelimited[i]:cap=min(cap,-float(model.actuator_forcerange[i,0]),float(model.actuator_forcerange[i,1]))
+        if cap<=0.:raise RuntimeError('INVALID_ARM_FORCE_CAP:'+name)
+        caps[name]=cap
+    return caps
+
+
 def staged_clear_approach(model,state,start,finish,opening,center,object_center,local_axis):
     """Reuse bounded circle IK for a table-outside lift, then a high approach."""
     data=mujoco.MjData(model);hand=ik.native.bid(model,"R_omnipicker_base_link")
@@ -591,14 +614,30 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
     qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
     points=[start.copy()];targets=[]
-    for point_index,target in enumerate((lift,near)):
+    forearm_first=bool(state.get("forearm_first_approach"))
+    preferred=start[2:].copy();weights=np.ones(7)
+    if forearm_first:
+        weights[:3]=4.
+        elbow=tuple(ik.ARM).index("right_elbow_joint")
+        preferred[elbow]=np.clip(preferred[elbow]-.50,lo[elbow]+1e-5,hi[elbow]-1e-5)
+    regularizer=1e-4 if forearm_first else .00001
+    stage_targets=[(0,lift),(1,near)]
+    if state.get("forearm_already_raised"):stage_targets=[(1,near)]
+    if forearm_first:
+        # Literal first stage: keep shoulder/wrist targets, flex only the elbow.
+        prearm=start.copy();prearm[2+elbow]=preferred[elbow]
+        ik.set_pose(model,data,state,prearm,np.zeros(3),0.,opening,np.zeros(3),0.,None)
+        prepoint=data.xpos[hand]+data.xmat[hand].reshape(3,3)@center
+        points.append(prearm);targets.append(prepoint.tolist())
+        stage_targets=[(1,near)]
+    for point_index,target in stage_targets:
         def residual(arm):
             data.qpos[qa]=arm;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
             error=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,np.array([0.,0.,1.]),local_axis)
-            return np.r_[error[:3],.00001*(arm-start[2:])] if point_index==0 else error
+            return np.r_[error[:3],regularizer*weights*(arm-preferred)] if point_index==0 else error
         def jac(arm):
             residual(arm);matrix=circle_task_jacobian(model,data,hand,center,local_axis,dofs)
-            return np.vstack([matrix[:3],.00001*np.eye(7)]) if point_index==0 else matrix
+            return np.vstack([matrix[:3],regularizer*np.diag(weights)]) if point_index==0 else matrix
         fitted=least_squares(residual,np.clip(points[-1][2:],lo+1e-5,hi-1e-5),jac=jac,bounds=(lo+1e-5,hi-1e-5),max_nfev=150,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         error=residual(fitted.x)
         if np.linalg.norm(error[:3])>.001 or point_index>0 and np.linalg.norm(error[3:])>.001:raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,float(np.linalg.norm(error[:3])),float(np.linalg.norm(error[3:])))))
@@ -620,7 +659,7 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     root_rotation=data.xmat[root].reshape(3,3).copy()
     relative=[(root_rotation.T@(np.asarray(point)-root_position)).tolist() for point in targets]
     robots=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,i) for i in range(model.nbody) if model.body_rootid[i]==root]
-    return dict(pass_result=not violations,circle_waypoints_base_m=relative,root_reference_world_m=root_position.tolist(),robot_bodies=robots,all_source_motion_limits=state["runtime_source_motion_limits"],source_effort_limits_nm=efforts,source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
+    return dict(posture_policy="FOREARM_FIRST_TABLE_OUTSIDE" if forearm_first else "MINIMUM_JOINT_DISPLACEMENT",pass_result=not violations,circle_waypoints_base_m=relative,root_reference_world_m=root_position.tolist(),robot_bodies=robots,all_source_motion_limits=state["runtime_source_motion_limits"],source_effort_limits_nm=efforts,compiled_effort_limits_nm=compiled_arm_effort_limits(model),source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=31*(len(points)-1),violations=violations)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -849,7 +888,7 @@ def main():
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             if pads or bad or robot_table:sweep.append({"fraction":float(fraction),"pads":pads,"forbidden_object":bad,"robot_table":robot_table})
         approach_staging=None
-        if sweep and args.right_arm_seed:
+        if (sweep or state.get("forearm_already_raised")) and args.right_arm_seed:
             try:
                 approach_staging=staged_clear_approach(model,state,approach_start,solved,open_command,center,object_center,local_axis)
                 if approach_staging["pass_result"]:sweep=[]
