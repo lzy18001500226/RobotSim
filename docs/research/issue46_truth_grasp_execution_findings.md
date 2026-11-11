@@ -124,6 +124,14 @@ and `verify_stance_region_static.py` under `scripts/research/issue46/grasp/`.
 Disposition: RETAIN_RESEARCH for human review; not a production dependency or a
 promotion of the frozen SIMULATION_ONLY hand. PR106 remains Draft; no main merge.
 
+The presentation-only slider followup links historical model/STL/contact-circle
+pages and the physical transfer MP4 without moving or copying their assets.
+`h220-stance-slider-process-review-20261111T094848Z/index.html` is the process
+hub and `stance.html` selects existing grid states through X/Y/yaw/stage sliders.
+Position and angle samples remain8cm/15degrees; no interpolated state is labeled
+verified. Both presentations reuse the same175-case dataset and387 source images.
+
+
 ## Earlier checkpoints (historical)
 
 | Actual native episode under reviews/issue-46 | Observed result |
