@@ -30,6 +30,43 @@ def control_observation(estimated, native, *, now_ns=None):
     return record
 
 
+def acquire_control_observation(read_native, capture, *, generation, after_source_ns, attempts, timeout_s=3.0):
+    """Discard slow image results; preserve the unchanged 200ms source gate."""
+    deadline = time.monotonic_ns()+int(timeout_s*1e9)
+    while time.monotonic_ns() < deadline:
+        native = read_native()
+        stamp = native["host_monotonic_ns"]
+        if native["generation"] != generation:
+            raise RuntimeError("TASK_RGBD_GENERATION_CHANGED")
+        if stamp < after_source_ns:
+            raise RuntimeError("TASK_RGBD_SOURCE_REGRESSED")
+        if stamp == after_source_ns:
+            time.sleep(.005)
+            continue
+        began = time.monotonic_ns()
+        rgb, estimated = capture(native)
+        ended = time.monotonic_ns()
+        record = {"source_host_ns": stamp, "generation": generation,
+                  "completed_host_ns": ended, "processing_s": (ended-began)*1e-9,
+                  "source_age_s": (ended-stamp)*1e-9, "accepted": False}
+        attempts.append(record)
+        if ended > deadline:
+            record["failure"] = "TASK_RGBD_ACQUISITION_DEADLINE"
+            raise RuntimeError(record["failure"])
+        try:
+            observation = control_observation(estimated, native, now_ns=ended)
+        except RuntimeError as exc:
+            record["failure"] = str(exc)
+            if not str(exc).startswith("STALE_RGBD_SOURCE:"):
+                raise
+            # Never refresh the rejected image's stamp or use its estimated
+            # target. Only a new source frame may qualify the next attempt.
+            after_source_ns = stamp
+            continue
+        record["accepted"] = True
+        return native, rgb, observation
+    raise RuntimeError("TASK_RGBD_ACQUISITION_TIMEOUT")
+
 def task_route_profile(profile):
     """Select the short checked turn; preserve every physical/control bound."""
     import copy
@@ -435,18 +472,27 @@ def execute(run, container, environment, output, scene, cache, reference, limits
             for i in range(live_model.nu) if live_model.actuator_forcelimited[i]}
     model, data, renderer, camera = vision.build_sensor(scene, cache)
     events = []
+    acquisition_audit = []
     began = time.monotonic()
     try:
         warm = read_fresh_native_row(output/"native_latest.json")
         rgb, depth, K, T = vision.render(model, data, renderer, camera, warm)
         vision.estimate(rgb, depth, K, T)  # discard cold setup, as existing sensor
+        after_source_ns = warm["host_monotonic_ns"]
+        def capture(native):
+            rgb, depth, K, T = vision.render(model, data, renderer, camera, native)
+            estimated, _ = vision.estimate(rgb, depth, K, T)
+            return rgb, estimated
         for index in range(3):
             observations = []
             for label in ("a", "b"):
-                native = read_fresh_native_row(output/"native_latest.json")
-                rgb, depth, K, T = vision.render(model, data, renderer, camera, native)
-                estimated, _ = vision.estimate(rgb, depth, K, T)
-                obs = control_observation(estimated, native)
+                audit = {"index": index, "label": label, "attempts": []}
+                acquisition_audit.append(audit)
+                native, rgb, obs = acquire_control_observation(
+                    lambda: read_fresh_native_row(output/"native_latest.json"), capture,
+                    generation=warm["generation"], after_source_ns=after_source_ns,
+                    attempts=audit["attempts"])
+                after_source_ns = native["host_monotonic_ns"]
                 observations.append(obs)
                 Image.fromarray(rgb).save(output/f"task_region_{index}_{label}.png")
                 time.sleep(.03)
@@ -496,3 +542,7 @@ def execute(run, container, environment, output, scene, cache, reference, limits
         raise
     finally:
         renderer.close()
+        pg.write_new_text(output/"task_rgbd_acquisition.json", json.dumps({
+            "classification": "FRESH_RGBD_ACQUISITION_WITH_SLOW_FRAME_REJECTION",
+            "maximum_source_age_s": .20, "timestamp_rewriting": False,
+            "samples": acquisition_audit}, indent=2)+"\n")

@@ -162,5 +162,52 @@ class ClockRecoveryTests(unittest.TestCase):
         self.assertIn('require_stop=True', code)
 
 
+
+class FreshRgbdAcquisitionTests(unittest.TestCase):
+    def run_acquisition(self, durations, *, timeout_s=3.0, generation=1, read_error=None):
+        from unittest.mock import patch
+        import itertools
+        clock = {"now": 1_000_000_000, "calls": 0}
+        values = iter(durations)
+        attempts = []
+        def read():
+            if read_error:raise RuntimeError(read_error)
+            return {"generation": generation, "host_monotonic_ns": clock["now"]}
+        def capture(native):
+            clock["calls"] += 1
+            clock["now"] += round(next(values)*1e9)
+            return clock["calls"], {"center_xy_world_m": [1.42,-1.38],
+                "top_world_z_m": .77, "axis_world": [0.,0.,1.], "diameter_m": .07}
+        with patch.object(task.time,"monotonic_ns",side_effect=lambda:clock["now"]):
+            result=task.acquire_control_observation(read,capture,generation=1,
+                after_source_ns=0,attempts=attempts,timeout_s=timeout_s)
+        return result, attempts
+
+    def test_cold_image_rejected_and_new_frame_qualified_without_restamping(self):
+        (native,rgb,obs),attempts=self.run_acquisition([.240,.060])
+        self.assertEqual([x["accepted"] for x in attempts],[False,True])
+        self.assertAlmostEqual(attempts[0]["source_age_s"],.240)
+        self.assertTrue(attempts[0]["failure"].startswith("STALE_RGBD_SOURCE:"))
+        self.assertEqual(native["host_monotonic_ns"],1_240_000_000)
+        self.assertEqual(obs["source_host_ns"],1_240_000_000)
+        self.assertEqual(obs["created_host_ns"],1_300_000_000)
+        self.assertEqual(rgb,2)
+
+    def test_consistently_slow_images_hit_acquisition_deadline(self):
+        with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_ACQUISITION"):
+            self.run_acquisition([.21,.21,.21,.21],timeout_s=.5)
+
+    def test_source_generation_change_is_not_retried(self):
+        with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_GENERATION_CHANGED"):
+            self.run_acquisition([.01],generation=2)
+
+    def test_physical_or_native_source_fault_is_not_retried(self):
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_JOINT_LIMIT"):
+            self.run_acquisition([.01],read_error="SOURCE_JOINT_LIMIT")
+
+    def test_completion_after_readiness_deadline_is_not_accepted(self):
+        with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_ACQUISITION_DEADLINE"):
+            self.run_acquisition([.06],timeout_s=.05)
+
 if __name__ == "__main__":
     unittest.main()
