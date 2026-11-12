@@ -222,7 +222,7 @@ def main():
     parser.add_argument("--fps", type=int, default=10, choices=range(1,16))
     parser.add_argument("--replay-rate", type=float, default=1.)
     args = parser.parse_args()
-    if not 1024 <= args.port <= 65535 or not 0 < args.replay_rate <= 10:
+    if not (args.port == 0 or 1024 <= args.port <= 65535) or not 0 < args.replay_rate <= 10:
         parser.error("bounded local stream parameters required")
     from scripts.agent import path_governance as pg
     import imageio_ffmpeg
@@ -242,9 +242,11 @@ def main():
               "resolution": [320,240], "fps": args.fps, "url": f"http://localhost:{args.port}/",
               "new_mj_step_calls": 0, "no_control_publishers": True,
               "queue_policy": "LATEST_FRAME_ONLY_INDEPENDENT_OBSERVER"}
-    pg.write_new_text(out/"first_person_stream_configuration.json", json.dumps(config,indent=2)+"\n")
     worker = threading.Thread(target=capture, args=(args,frames,stop), daemon=True)
     server = ThreadingHTTPServer(("127.0.0.1",args.port), handler_class(frames,stop,args,ffmpeg))
+    config["url"] = f"http://localhost:{server.server_address[1]}/"
+    config["bound_port"] = server.server_address[1]
+    pg.write_new_text(out/"first_person_stream_configuration.json", json.dumps(config,indent=2)+"\n")
     server.timeout = .25
     worker.start()
     print(json.dumps(config),flush=True)

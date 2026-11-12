@@ -54,14 +54,14 @@ def launch_first_person_observer(episode):
     destination=episode/"first_person_video";destination.mkdir()
     script=REPO/"scripts/research/issue46/perception/native_rgb_video_stream.py"
     command=[sys.executable,"-B",str(script),"--scene",record["source"],"--cache",str(cache),
-             "--run",str(episode),"--output-dir",str(destination),"--port","8793"]
+             "--run",str(episode),"--output-dir",str(destination),"--port","0"]
     with (destination/"observer.stdout").open("x") as log:
         observer=subprocess.Popen(command,cwd=REPO,stdout=log,stderr=subprocess.STDOUT,
             env={**os.environ,"MUJOCO_GL":"egl","MESA_D3D12_DEFAULT_ADAPTER_NAME":"NVIDIA",
                  "OPENBLAS_NUM_THREADS":"1","OMP_NUM_THREADS":"1"})
     (destination/"observer_process.json").write_text(json.dumps({
         "pid":observer.pid,"command":command,"role":"READ_ONLY_SAME_NATIVE_STATE_H264",
-        "url":"http://localhost:8793/","physics_owner":False},indent=2))
+        "configuration":str(destination/"first_person_stream_configuration.json"),"physics_owner":False},indent=2))
     return observer
 
 def main():
@@ -126,7 +126,7 @@ def main():
     if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
     if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
-    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False
+    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False;camera_endpoint_printed=False
     (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
     print("ATTEMPT",attempt,"LOG",out,flush=True)
     try:
@@ -143,11 +143,15 @@ def main():
                     camera_started=True
                     try:
                         launch_first_person_observer(episode)
-                        print("FIRST_PERSON_RGB_VIDEO http://localhost:8793/",flush=True)
+                        print("FIRST_PERSON_RGB_VIDEO_STARTING",episode/"first_person_video",flush=True)
                     except Exception as camera_error:
                         # Observer failure cannot command or abort the physical owner.
                         (episode/"first_person_observer_start_failure.json").write_text(json.dumps({"failure":str(camera_error),"physical_controller_unchanged":True}))
                         print("FIRST_PERSON_OBSERVER_FAILED",str(camera_error),flush=True)
+                if camera_started and not camera_endpoint_printed and episode and (episode/"first_person_video/first_person_stream_configuration.json").exists():
+                    camera_config=json.loads((episode/"first_person_video/first_person_stream_configuration.json").read_text())
+                    print("FIRST_PERSON_RGB_VIDEO",camera_config["url"],flush=True)
+                    camera_endpoint_printed=True
                 if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and review_source_ready(episode):
                     manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
                     def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()

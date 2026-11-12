@@ -54,6 +54,17 @@ raicom-stl-xvfb-native-reset-stand-20261112T012251Z，START到中线观察位及
 新增5项回归与原有检查共159 PASS。旧失败/旧batch保持；新版本重新prepare再执行点5/0/10。
 本轮恢复的closeout attempt_id为1bc024dc-25ce-4e52-912c-38ae0c27c521，旧BLOCKED事件不覆盖。
 
+### 新微调入口的时刻顺序修复
+
+第二轮raicom-stl-xvfb-native-reset-stand-20261112T013657Z：相机两帧源年龄56/70ms通过，
+新鲜RGB-D选择NEARBY_0；随后微调调用把读取状态前的tick传给PointGoalController，
+新读到的样本可晚于tick而被判stale_state。纯离线测试用真实PointGoalController复现旧调用失败；
+改为读取/校验状态后再取求值时刻，保留原样本时间戳，新增实际pose_age诊断。160项检查PASS。
+手、模型、接触、关节/effort/物理速度和200ms新鲜度未改；尚未闭爪/抬升。
+相机固定8793端口另有实测EADDRINUSE，现由系统分配独立loopback端口并在绑定成功后写URL，
+不改相机标定。外部Edge自动启动被策略拒绝；提供Codex浏览器面板/手动URL，未绕过拒绝。
+旧两轮原始轨迹和失败均保留，新版本重新prepare实际试验。
+
 ## 后续空手运动标定：当前停在审核（2026-11-11）
 
 新增有界标定没有取得最小精度资格：前后与左右转向各一条停稳响应；左移

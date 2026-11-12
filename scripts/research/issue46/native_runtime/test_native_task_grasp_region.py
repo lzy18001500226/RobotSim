@@ -211,3 +211,33 @@ class FreshRgbdAcquisitionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskRegionControlTimingTests(unittest.TestCase):
+    def test_new_native_sample_is_evaluated_after_acquisition(self):
+        import sys, threading
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        sys.path.insert(0,str(Path(task.__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation"))
+        clock={"now":10.0}
+        node=MagicMock()
+        node.lock=threading.RLock();node.moving=False;node.feedback_fault=None
+        node.trace=[];node.events=[];node.command_log=[]
+        node.latest_row={"generation":1,"actuators":{}}
+        def sample():
+            clock["now"]+=.001
+            return {"body_status":100,"pose":{"x":0.,"y":0.,"yaw":0.},
+                    "sample_monotonic_s":clock["now"]}
+        node.sample.side_effect=sample
+        node.observe.return_value={"pass":True}
+        saved=[]
+        cfg={"goal":[0.,0.,0.],"effort_caps":{},"label":"unit_clock_order",
+             "maximum_excursion_m":.90}
+        with patch.dict(task.__dict__,{"MICRO":{"task_region":cfg},
+                "write_durable_milestone":lambda path,value:saved.append(value),
+                "rclpy":MagicMock()}),patch.object(task.time,"monotonic",side_effect=lambda:clock["now"]),patch.object(task.time,"sleep",side_effect=lambda dt:clock.__setitem__("now",clock["now"]+dt)),patch("threading.Timer"):
+            task.run_region_navigation(node,None)
+        self.assertTrue(saved[0]["pass_result"],saved[0].get("failure"))
+        ages=[row["controller_pose_age_s"] for row in saved[0]["trace"] if "controller_pose_age_s" in row]
+        self.assertTrue(ages)
+        self.assertGreaterEqual(min(ages),0.)

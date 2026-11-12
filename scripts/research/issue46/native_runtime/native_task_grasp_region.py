@@ -224,9 +224,13 @@ def run_region_navigation(node, contract):
                 actual = node.latest_row["actuators"].get(name)
                 if actual is None or not math.isfinite(actual["force"]) or abs(actual["force"]) > cap+1e-5:
                     raise RuntimeError("TASK_REGION_SOURCE_EFFORT:"+name)
+            control_now = time.monotonic()
             output = controller.step(
                 Pose2D(pose["x"], pose["y"], pose["yaw"], "native_scene_world", row["sample_monotonic_s"]),
-                goal, now_steady_s=tick)
+                goal, now_steady_s=control_now)
+            row["controller_evaluated_steady_s"] = control_now
+            row["controller_pose_age_s"] = control_now-row["sample_monotonic_s"]
+            row["controller_state"] = output.state.value
             node.trace.append(row)
             if output.state in (NavState.ARRIVED, NavState.SETTLING):
                 node.publish()
@@ -243,7 +247,7 @@ def run_region_navigation(node, contract):
                     raise RuntimeError("TASK_REGION_NO_MEASURED_PROGRESS")
                 node.publish(output.linear_x, 0.0, output.angular_z)
             else:
-                raise RuntimeError("TASK_REGION_CONTROLLER:"+output.state.value)
+                raise RuntimeError("TASK_REGION_CONTROLLER:"+output.state.value+":pose_age="+str(row["controller_pose_age_s"]))
             time.sleep(max(0.0, tick+.02-time.monotonic()))
         else:
             raise RuntimeError("TASK_REGION_TIMEOUT")
