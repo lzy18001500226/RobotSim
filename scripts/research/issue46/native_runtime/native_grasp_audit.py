@@ -408,7 +408,38 @@ def iter_complete_native_rows(path):
             if not line.endswith(bytes([10])):break
             yield json.loads(line)
 
-def read_complete_native_rows(path):
+def wait_for_native_trace(path, through_host_ns, timeout_s=2.0):
+    """Evidence-only drain barrier; never used by the real-time feedback path."""
+    import time
+    path=Path(path)
+    try:
+        latest=json.loads(path.with_name("native_latest.json").read_text())
+    except (OSError,ValueError):
+        return {"mode":"LEGACY_OR_OFFLINE_NO_ASYNC_DESCRIPTOR"}
+    if latest.get("timing",{}).get("trace_io_mode")!="BOUNDED_ASYNC_FIFO":
+        return {"mode":"LEGACY_SYNCHRONOUS"}
+    deadline=time.monotonic()+timeout_s
+    last_ns=0
+    while time.monotonic()<deadline:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0,2);size=stream.tell();stream.seek(max(0,size-1048576));raw=stream.read()
+            parts=raw.splitlines()
+            if raw and not raw.endswith(b"\n"):parts=parts[:-1]
+            for line in reversed(parts):
+                try:last_ns=int(json.loads(line)["host_monotonic_ns"]);break
+                except (ValueError,KeyError):continue
+            if last_ns>=through_host_ns:
+                return {"mode":"ASYNC_EVIDENCE_VISIBLE","last_source_ns":last_ns}
+        except OSError:
+            pass
+        time.sleep(.01)
+    raise RuntimeError("NATIVE_TRACE_EVIDENCE_NOT_FLUSHED:"+str(last_ns)+":"+str(through_host_ns))
+
+
+def read_complete_native_rows(path, *, through_host_ns=None):
+    if through_host_ns is not None:
+        wait_for_native_trace(path,through_host_ns)
     return list(iter_complete_native_rows(path))
 
 

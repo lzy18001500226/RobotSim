@@ -1277,11 +1277,18 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav_path=output/"native_carry_route_result.json"
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
-    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"])
+    audit_end_ns=time.monotonic_ns()
+    try:
+        result["carry_trace_persistence"]=native_grasp_audit.wait_for_native_trace(output/"native_physics.jsonl",audit_end_ns)
+    except RuntimeError as trace_error:
+        result["carry_trace_persistence"]={"mode":"EVIDENCE_DRAIN_FAILED","failure":str(trace_error)}
+        if nav.get("pass_result"):raise
+
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"])
     diagnostic_contacts=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("incidental_contact_diagnostic"))
     if diagnostic_contacts:
         result["carry_native_legacy_strict_contact_audit"]=recorded
-        recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")),expected_owner_pid=ready["pid"],review_incidental_contacts=True)
+        recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")),expected_owner_pid=ready["pid"],review_incidental_contacts=True)
         recorded["contact_policy"]="USER_APPROVED_SIMULATION_ONLY_INCIDENTAL_CONTACT_RECORDING; engine contact forces unchanged"
     result["carry_native_motion_audit"]=recorded
     if getattr(args,"carry_transit_speed_policy_050",False):
@@ -2756,7 +2763,7 @@ def main() -> None:
                     if lift.get('executed'):
                         result['gates']['HAL_PHYSICAL_LIFT']='FAIL'
                         if 'hold_end_ns' in lift:
-                            rows=native_grasp_audit.read_complete_native_rows(output/'native_physics.jsonl')
+                            rows=native_grasp_audit.read_complete_native_rows(output/'native_physics.jsonl',through_host_ns=lift['hold_end_ns'])
                             metrics=native_grasp_audit.evaluate_unsupported_lift(rows,initial_bottle_z_m=lift['initial_bottle_z_m'],hold_start_ns=lift['hold_start_ns'],hold_end_ns=lift['hold_end_ns'])
                             result['physical_lift_evidence']=metrics
                             result['gates']['HAL_PHYSICAL_LIFT']='PASS' if metrics['pass'] else 'FAIL'

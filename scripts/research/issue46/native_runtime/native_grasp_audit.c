@@ -27,10 +27,84 @@ static mjtNum peak_qvel[4096];
 static double qvel_window_start;
 static long long last_step_end_ns,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns;
 
+
+/* Evidence I/O owns immutable copies. Real-time feedback publication remains
+ * on the observer thread, and retains the original capture timestamp. */
+#define TRACE_QUEUE_CAPACITY 64
+#define TRACE_QUEUE_BYTES_CAPACITY (16U*1024U*1024U)
+typedef struct { char* bytes; size_t length; long long source_ns; } TraceRecord;
+static TraceRecord trace_queue[TRACE_QUEUE_CAPACITY];
+static pthread_mutex_t trace_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t trace_ready=PTHREAD_COND_INITIALIZER;
+static pthread_t trace_thread;
+static FILE* trace_stream;
+static int trace_started,trace_finishing,trace_failed,trace_head,trace_size,trace_peak;
+static long long trace_written,trace_rejected,trace_written_ns,trace_last_io_ns,trace_max_io_ns;
+static char trace_status_path[4096];
+static size_t trace_bytes;
+
 static long long mono_ns(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
   return (long long)t.tv_sec*1000000000LL + t.tv_nsec;
 }
+static void* trace_write_loop(void* unused) {
+  (void)unused;
+  for(;;) {
+    pthread_mutex_lock(&trace_mutex);
+    while(!trace_size && !trace_finishing)pthread_cond_wait(&trace_ready,&trace_mutex);
+    if(!trace_size && trace_finishing){pthread_mutex_unlock(&trace_mutex);break;}
+    TraceRecord item=trace_queue[trace_head];
+    trace_head=(trace_head+1)%TRACE_QUEUE_CAPACITY;trace_size--;trace_bytes-=item.length;
+    pthread_mutex_unlock(&trace_mutex);
+    long long begin=mono_ns();
+    int ok=fwrite(item.bytes,1,item.length,trace_stream)==item.length && fflush(trace_stream)==0;
+    long long duration=mono_ns()-begin;
+    free(item.bytes);
+    pthread_mutex_lock(&trace_mutex);
+    trace_last_io_ns=duration;if(duration>trace_max_io_ns)trace_max_io_ns=duration;
+    if(ok){trace_written++;trace_written_ns=item.source_ns;}
+    else trace_failed=1;
+    pthread_mutex_unlock(&trace_mutex);
+    if(!ok)fprintf(stderr,"NATIVE_TRACE_WRITE_FAILED_CONTROL_PUBLICATION_STOPPED\n");
+  }
+  return NULL;
+}
+static int trace_writer_start(FILE* file) {
+  trace_stream=file;
+  if(pthread_create(&trace_thread,NULL,trace_write_loop,NULL)!=0){trace_failed=1;return -1;}
+  trace_started=1;return 0;
+}
+static int trace_enqueue(const char* bytes,size_t length,long long source_ns) {
+  char* copy=length<=TRACE_QUEUE_BYTES_CAPACITY?malloc(length):NULL;
+  if(copy)memcpy(copy,bytes,length);
+  pthread_mutex_lock(&trace_mutex);
+  if(!copy || trace_failed || trace_size==TRACE_QUEUE_CAPACITY || trace_bytes+length>TRACE_QUEUE_BYTES_CAPACITY) {
+    trace_failed=1;trace_rejected++;
+    pthread_mutex_unlock(&trace_mutex);free(copy);
+    fprintf(stderr,"NATIVE_TRACE_QUEUE_FAILED_CONTROL_PUBLICATION_STOPPED\n");return -1;
+  }
+  int tail=(trace_head+trace_size)%TRACE_QUEUE_CAPACITY;
+  trace_queue[tail]=(TraceRecord){copy,length,source_ns};trace_size++;trace_bytes+=length;
+  if(trace_size>trace_peak)trace_peak=trace_size;
+  pthread_cond_signal(&trace_ready);pthread_mutex_unlock(&trace_mutex);return 0;
+}
+static int trace_faulted(void) {
+  pthread_mutex_lock(&trace_mutex);int value=trace_failed;pthread_mutex_unlock(&trace_mutex);return value;
+}
+static void trace_writer_finish(void) {
+  if(!trace_started)return;
+  pthread_mutex_lock(&trace_mutex);trace_finishing=1;
+  pthread_cond_signal(&trace_ready);pthread_mutex_unlock(&trace_mutex);
+  pthread_join(trace_thread,NULL);trace_started=0;
+}
+__attribute__((destructor)) static void observer_shutdown(void) {
+  trace_writer_finish();
+  if(*trace_status_path) {
+    FILE* status=fopen(trace_status_path,"w");
+    if(status){fprintf(status,"{\"captured_records\":%d,\"written_records\":%lld,\"rejected_records\":%lld,\"failed\":%d,\"queue_peak\":%d,\"queue_capacity\":%d}\n",count,trace_written,trace_rejected,trace_failed,trace_peak,TRACE_QUEUE_CAPACITY);fclose(status);}
+  }
+}
+
 static void init(void) {
   step_real=dlsym(RTLD_NEXT,"mj_step");
   version_real=dlsym(RTLD_NEXT,"mj_version");
@@ -50,9 +124,11 @@ static void init(void) {
     if(slash) {
       snprintf(latest_path,sizeof(latest_path),"%.*s/native_latest.json",(int)(slash-path),path);
       snprintf(latest_tmp,sizeof(latest_tmp),"%s.tmp",latest_path);
+      snprintf(trace_status_path,sizeof(trace_status_path),"%.*s/native_trace_status.json",(int)(slash-path),path);
     }
   }
   if (!sink) fprintf(stderr,"NATIVE_GRASP_AUDIT_NO_EXCLUSIVE_OUTPUT\n");
+  else if(trace_writer_start(sink)!=0){fclose(sink);sink=NULL;fprintf(stderr,"NATIVE_TRACE_THREAD_START_FAILED\n");}
 }
 static void array(const mjtNum* x, int n) {
   fputc('[',sink);
@@ -139,7 +215,7 @@ void mj_step(const mjModel* m,mjData* d) {
   if(physics_end-begin>max_step_duration_ns)max_step_duration_ns=physics_end-begin;
   last_step_end_ns=physics_end;
   /* Observation lasts as long as this bounded runtime; motion limits belong to the controller. */
-  if (!sink) return;
+  if (!sink || trace_faulted()) return;
   if (d->time<previous) {generation++;next_time=-1;memset(peak_qvel,0,sizeof(peak_qvel));qvel_window_start=d->time;}
   if(m->njnt>4096){fprintf(stderr,"NATIVE_AUDIT_JOINT_WINDOW_CAPACITY\n");return;}
   for(int j=0;j<m->njnt;j++) {
@@ -223,11 +299,15 @@ void mj_step(const mjModel* m,mjData* d) {
     if(b1==bottle || b2==bottle) for(int k=0;k<3;k++) support+=(b2==bottle?1:-1)*c->frame[k*3+2]*f[k];
     fprintf(sink,",\"signed_bottle_world_z_force_n\":%.17g}",support);
   }
-  fprintf(sink,"],\"observer_work_ns\":%lld,\"timing\":{\"max_between_step_calls_ns\":%lld,\"max_physics_step_ns\":%lld,\"previous_observer_io_ns\":%lld,\"max_observer_io_ns\":%lld}}\n",mono_ns()-started,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns);
+  pthread_mutex_lock(&trace_mutex);
+  long long written_ns=trace_written_ns,writer_io=trace_last_io_ns,writer_max=trace_max_io_ns,written_count=trace_written;
+  int pending=trace_size,peak=trace_peak;
+  pthread_mutex_unlock(&trace_mutex);
+  fprintf(sink,"],\"observer_work_ns\":%lld,\"timing\":{\"max_between_step_calls_ns\":%lld,\"max_physics_step_ns\":%lld,\"previous_observer_io_ns\":%lld,\"max_observer_io_ns\":%lld,\"trace_io_mode\":\"BOUNDED_ASYNC_FIFO\",\"trace_last_written_source_ns\":%lld,\"trace_writer_last_io_ns\":%lld,\"trace_writer_max_io_ns\":%lld,\"trace_written_records\":%lld,\"trace_queue_pending\":%d,\"trace_queue_peak\":%d,\"trace_queue_capacity\":%d}}\n",mono_ns()-started,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns,written_ns,writer_io,writer_max,written_count,pending,peak,TRACE_QUEUE_CAPACITY);
   max_call_gap_ns=0;max_step_duration_ns=0;
   fclose(sink);sink=logfile;
+  if(trace_enqueue(buffer,length,started)!=0){free(buffer);return;}
   long long io_started=mono_ns();
-  fwrite(buffer,1,length,sink);fflush(sink);
   if(*latest_path){
     FILE* latest=fopen(latest_tmp,"w");
     if(latest){fwrite(buffer,1,length,latest);fclose(latest);rename(latest_tmp,latest_path);}
