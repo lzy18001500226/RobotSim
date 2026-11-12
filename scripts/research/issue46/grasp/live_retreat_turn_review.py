@@ -72,6 +72,7 @@ def main():
         if not args.from_start or not args.to_delivery_table or args.bottle_height_m!=.22 or args.carry_angular_cap!=.60:
             raise ValueError("task region is the complete H220 START transfer")
         CMD.append("--task-grasp-region")
+        CMD[CMD.index("--post-lift-retract-world-m")+2]="-0.04"
         if any(args.task_bottle_offset_xy_m):
             CMD.extend(["--task-bottle-offset-xy-m",*map(str,args.task_bottle_offset_xy_m)])
     host_threads={name:"1" for name in ("OPENBLAS_NUM_THREADS","OMP_NUM_THREADS","MKL_NUM_THREADS")}
