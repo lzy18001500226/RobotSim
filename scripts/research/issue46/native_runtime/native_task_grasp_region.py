@@ -109,12 +109,15 @@ def stage_runtime_posture(output, selected_path):
 
 
 def reference_contract():
-    return {"schema": "robotsim.rgbd-task-grasp-region.v2",
+    return {"schema": "robotsim.rgbd-task-grasp-region.v3",
             "control_object_source": "FRESH_RGBD_ONLY",
             "existing_navigation_controller": "PointGoalController",
+            "task_motion_mapping": "MC_BODY_XY_NO_PIVOT_SOURCE_CAP020",
             "maximum_stance_adjustments": 2,
             "posture_reference": str(Path(__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_h220_turn_forward_bend_pickup_functional.json"),
             "maximum_candidate_shift_m": .80, "maximum_navigation_excursion_m": .90,
+            "translation_tube_xy_m": .05, "translation_tube_heading_rad": .20,
+            "task_translation_position_tolerance_m": .06,
             "mechanical_changes": False}
 
 
@@ -142,6 +145,26 @@ def recover_clock_at_stop(node, baseline, generation, recoveries):
     return {"stop": stop, "generation": generation, "time_monotonic_s": time.monotonic()}
 
 
+def body_translation_velocity(pose, goal_xy, *, gain=.6, speed_cap=.20):
+    """Map the existing point error to MC body-X/Y velocity, without pivoting."""
+    values=[pose["x"],pose["y"],pose["yaw"],*goal_xy,gain,speed_cap]
+    if not all(math.isfinite(v) for v in values) or gain<=0 or not 0<speed_cap<=.20:
+        raise ValueError("invalid bounded MC translation input")
+    dx,dy=goal_xy[0]-pose["x"],goal_xy[1]-pose["y"]
+    c,s=math.cos(pose["yaw"]),math.sin(pose["yaw"])
+    forward,lateral=gain*(c*dx+s*dy),gain*(-s*dx+c*dy)
+    scale=min(1.,speed_cap/max(math.hypot(forward,lateral),1e-12))
+    return forward*scale,lateral*scale,0.
+
+
+def translation_corridor_error(pose, start_xy, goal_xy, heading):
+    dx,dy=goal_xy[0]-start_xy[0],goal_xy[1]-start_xy[1]
+    t=max(0.,min(1.,((pose["x"]-start_xy[0])*dx+(pose["y"]-start_xy[1])*dy)/max(dx*dx+dy*dy,1e-12)))
+    distance=math.hypot(pose["x"]-start_xy[0]-t*dx,pose["y"]-start_xy[1]-t*dy)
+    yaw_error=abs((pose["yaw"]-heading+math.pi)%(2*math.pi)-math.pi)
+    return distance,yaw_error
+
+
 def run_region_navigation(node, contract):
     """Existing PointGoalController and native Micro transport; no foot controller."""
     import sys
@@ -155,7 +178,9 @@ def run_region_navigation(node, contract):
     cfg = MICRO["task_region"]
     result = {"classification": "SIMULATION_ONLY_EXISTING_POINT_GOAL_TO_GRASP_REGION",
               "pass_result": False, "clock_recoveries": [], "goal": cfg["goal"],
-              "failure": None}
+              "failure": None,
+              "motion_input_profile": "MC_BODY_XY_NO_PIVOT_SOURCE_CAP020",
+              "maximum_command_norm_m_s": .20, "angular_command_rad_s": 0.}
     watchdog = None
     baseline = None
     try:
@@ -178,10 +203,13 @@ def run_region_navigation(node, contract):
         baseline = row["body_status"]
         result["pre_motion_stop"] = node.observe(8.0, baseline=baseline, require_stop=True)
         origin = node.sample()["pose"]
+        planned_start = cfg.get("path_start_xy_m") or [origin["x"],origin["y"]]
+        if math.hypot(origin["x"]-planned_start[0],origin["y"]-planned_start[1])>.01:
+            raise RuntimeError("TASK_TRANSLATION_PLAN_SOURCE_MOVED")
         generation = node.latest_row["generation"]
         goal = Goal2D(*cfg["goal"], "native_scene_world")
         controller = PointGoalController(ControllerConfig(
-            xy_tolerance_m=.10, yaw_tolerance_rad=.25,
+            xy_tolerance_m=.06, yaw_tolerance_rad=.25,
             max_forward_mps=.20, max_angular_rps=.40, goal_timeout_s=45.0))
         until = time.monotonic() + 45.0
         node.stand_once("LOCOMOTION_STEP")
@@ -195,6 +223,8 @@ def run_region_navigation(node, contract):
         last_progress = time.monotonic()
         best = math.inf
         last_nav_state = None
+        source_acquired = False
+        activation_started = time.monotonic()
         while time.monotonic() < until:
             tick = time.monotonic()
             try:
@@ -214,6 +244,9 @@ def run_region_navigation(node, contract):
                     node.moving = True
                 node.stop_started = False
                 last_progress = time.monotonic()
+                best, last_nav_state = math.inf, None
+                activation_started = time.monotonic()
+                source_acquired = False
                 continue
             if not node.moving or row["body_status"] != baseline:
                 raise RuntimeError("TASK_REGION_WATCHDOG_OR_BODY_STATUS")
@@ -232,6 +265,24 @@ def run_region_navigation(node, contract):
             row["controller_pose_age_s"] = control_now-row["sample_monotonic_s"]
             row["controller_state"] = output.state.value
             node.trace.append(row)
+            source = row.get("common_source",{}).get("name")
+            source_acquired = source_acquired or (source=="robotsim_official_cmd_vel"
+                and row.get("common_mode_desc")=="LOCOMOTION_STEP"
+                and row.get("get_mode_desc")=="LOCOMOTION_STEP")
+            if not source_acquired and time.monotonic()-activation_started>.75:
+                raise RuntimeError("TASK_TRANSLATION_SOURCE_AND_MODE_NOT_OBSERVED")
+            if output.state not in (NavState.ARRIVED,NavState.SETTLING,NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN):
+                raise RuntimeError("TASK_REGION_CONTROLLER:"+output.state.value+":pose_age="+str(row["controller_pose_age_s"]))
+            cross, heading_error = translation_corridor_error(pose,planned_start,cfg["goal"][:2],cfg["goal"][2])
+            row["translation_cross_track_m"],row["translation_heading_error_rad"]=cross,heading_error
+            if cross>.05 or heading_error>.20:
+                result["task_replan_pause"]={"reason":"LEFT_SAMPLED_TRANSLATION_TUBE",
+                    "cross_track_m":cross,"heading_error_rad":heading_error}
+                break
+            if output.distance_m is not None and output.distance_m<=controller.config.xy_tolerance_m:
+                result["position_region_entered"]=True
+                result["legacy_heading_error_rad"]=output.yaw_error_rad
+                break
             if output.state in (NavState.ARRIVED, NavState.SETTLING):
                 node.publish()
                 if output.state == NavState.ARRIVED:
@@ -240,12 +291,14 @@ def run_region_navigation(node, contract):
                 if output.state != last_nav_state:
                     best, last_progress = math.inf, tick
                     last_nav_state = output.state
-                metric = output.distance_m if output.state == NavState.DRIVE else abs(output.yaw_error_rad)
+                metric = output.distance_m
                 if metric < best-.01:
                     best, last_progress = metric, tick
                 if tick-last_progress > 5.0:
                     raise RuntimeError("TASK_REGION_NO_MEASURED_PROGRESS")
-                node.publish(output.linear_x, 0.0, output.angular_z)
+                command = body_translation_velocity(pose,cfg["goal"][:2],
+                    gain=controller.config.k_linear,speed_cap=controller.config.max_forward_mps)
+                node.publish(*command)
             else:
                 raise RuntimeError("TASK_REGION_CONTROLLER:"+output.state.value+":pose_age="+str(row["controller_pose_age_s"]))
             time.sleep(max(0.0, tick+.02-time.monotonic()))
@@ -257,8 +310,10 @@ def run_region_navigation(node, contract):
         node.stand_once()
         result["post_stop_composite"] = node.observe(12.0, baseline=baseline, require_stop=True)
         result["end_pose"] = node.sample()["pose"]
-        result["pass_result"] = result["post_stop_composite"]["pass"]
-        result["scope"] = "ARRIVAL_AND_STOP_ONLY; RGBD_AND_GRASP_REGION_MUST_BE_RECHECKED"
+        result["source_and_step_observed"] = source_acquired
+        result["pass_result"] = bool(source_acquired and result["post_stop_composite"]["pass"])
+        result["scope"] = "SAFE_UNLOADED_STOP_ONLY; FRESH_RGBD_AND_GRASP_REGION_MUST_BE_RECHECKED"
+        result["point_heading_acceptance"] = "DEFERRED_TO_ACTUAL_GRASP_IK_NOT_REQUIRED_FOR_TRANSLATION"
     except Exception as exc:
         node.deadline_zero()
         node.stop_started = True
@@ -274,13 +329,14 @@ def run_region_navigation(node, contract):
         if watchdog:
             watchdog.cancel()
         node.stop_feedback()
-        result.update(trace=node.trace, commands=node.command_log, events=node.events)
+        result.update(trace=node.trace, commands=node.command_log, events=node.events,
+                      bridge_commands=node.bridge_commands)
         write_durable_milestone("/workspace/evidence/"+cfg["label"]+"_result.json", result)
         node.destroy_node()
         rclpy.shutdown()
 
 
-def build_motion_script(goal, limits, bodies, caps, label):
+def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None):
     from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
 
     if not label.isidentifier():
@@ -303,36 +359,39 @@ def build_motion_script(goal, limits, bodies, caps, label):
         action_line.replace("if requested!=", 'if not MICRO.get("task_region") and requested!='), 1)
     code = code.replace("                fault=physical_fault(",
         '                if MICRO.get("task_region"):limit=.60\n                fault=physical_fault(', 1)
-    for function in (recover_clock_at_stop, run_region_navigation):
+    for function in (recover_clock_at_stop, body_translation_velocity, translation_corridor_error, run_region_navigation):
         code += "\n"+inspect.getsource(function)+"\n"
     code += "MICRO.update("+repr({"task_region": {
-        "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90},
+        "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90, "path_start_xy_m": path_start_xy},
         "graph_startup_timeout_s": 5.0})+")\nrun_probe()\n"
     compile(code, "task_region_navigation", "exec")
     return code
 
 
 def sampled_navigation_clearance(study, native_row, estimated_center, chosen):
-    """Sample the existing align/drive/align route; not a gait/swept-volume proof."""
+    """Sample a fixed-heading translation tube; actual gait remains a live gate."""
     current = study.frame(native_row)
-    current[study.obj:study.obj+7] = np.r_[estimated_center, 1., 0., 0., 0.]
+    current[study.obj:study.obj+7] = np.r_[estimated_center,1.,0.,0.,0.]
     study.apply(current)
     anchor = study.foot_anchor().copy()
-    p = native_row["bodies"]["pelvis"]
-    yaw = math.atan2(p["rotation"][3], p["rotation"][0])
-    target = np.asarray(chosen["anchor_xy_m"])
-    bearing = math.atan2(*(target-anchor)[::-1])
-    shortest = lambda a, b: (b-a+math.pi)%(2*math.pi)-math.pi
-    samples = [(anchor, yaw+u*shortest(yaw, bearing)) for u in np.linspace(0., 1., 9)]
-    samples += [(anchor+u*(target-anchor), bearing) for u in np.linspace(0., 1., 15)]
-    samples += [(target, bearing+u*shortest(bearing, chosen["yaw_rad"])) for u in np.linspace(0., 1., 9)]
-    for index, (xy, heading) in enumerate(samples):
-        report = study.screen(study.relocate(current, xy, heading))
-        if not report["pass"]:
-            return {"pass": False, "first_sample": index, "screen": report,
-                    "scope": "SAMPLED_STATIC_BODY_PATH_NOT_DYNAMIC_GAIT"}
-    return {"pass": True, "samples": len(samples),
-            "scope": "SAMPLED_STATIC_BODY_PATH_NOT_DYNAMIC_GAIT"}
+    body=native_row["bodies"]["pelvis"]
+    yaw=math.atan2(body["rotation"][3],body["rotation"][0])
+    target=np.asarray(chosen["anchor_xy_m"])
+    count=0;minimum=.05
+    offsets=((0.,0.),(.05,0.),(-.05,0.),(0.,.05),(0.,-.05))
+    for u in np.linspace(0.,1.,17):
+        for offset in offsets:
+            for dyaw in (0.,-.20,.20):
+                xy=anchor+u*(target-anchor)+np.asarray(offset)
+                report=study.screen(study.relocate(current,xy,yaw+dyaw));count+=1
+                minimum=min(minimum,report["minimum_external_clearance_m_capped_50mm"])
+                if not report["pass"]:
+                    return {"pass":False,"first_sample":count,"screen":report,
+                            "scope":"SAMPLED_TRANSLATION_TUBE_NOT_DYNAMIC_GAIT"}
+    return {"pass":True,"samples":count,"minimum_clearance_m_capped_50mm":minimum,
+            "source_root_xy_m":body["position_m"][:2],
+            "xy_envelope_m":.05,"heading_envelope_rad":.20,
+            "scope":"SAMPLED_TRANSLATION_TUBE_NOT_DYNAMIC_GAIT"}
 
 
 def torso_heading_for_target(center, root_xy, reference_root_xy, reference_object_xy,
@@ -530,7 +589,8 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                 raise RuntimeError("TASK_REGION_ADJUSTMENT_BUDGET")
             label = f"task_region_navigation_{index}"
             goal = [*chosen["root_goal_xy_m"], chosen["yaw_rad"]]
-            code = build_motion_script(goal, all_limits, robot_bodies, caps, label)
+            code = build_motion_script(goal, all_limits, robot_bodies, caps, label,
+                path_start_xy=chosen["navigation_preflight"]["source_root_xy_m"])
             pg.write_new_text(output/(label+".py"), code)
             process = run(["docker", "exec", container, "bash", "-lc",
                            environment+"timeout 85s python3 /workspace/evidence/"+label+".py"],

@@ -1,3 +1,4 @@
+import math
 """Focused task-boundary checks; no physics, SDK, or gain tuning."""
 import json
 import unittest
@@ -227,7 +228,8 @@ class TaskRegionControlTimingTests(unittest.TestCase):
         def sample():
             clock["now"]+=.001
             return {"body_status":100,"pose":{"x":0.,"y":0.,"yaw":0.},
-                    "sample_monotonic_s":clock["now"]}
+                    "sample_monotonic_s":clock["now"],"common_source":{"name":"robotsim_official_cmd_vel"},
+                    "common_mode_desc":"LOCOMOTION_STEP","get_mode_desc":"LOCOMOTION_STEP"}
         node.sample.side_effect=sample
         node.observe.return_value={"pass":True}
         saved=[]
@@ -241,3 +243,26 @@ class TaskRegionControlTimingTests(unittest.TestCase):
         ages=[row["controller_pose_age_s"] for row in saved[0]["trace"] if "controller_pose_age_s" in row]
         self.assertTrue(ages)
         self.assertGreaterEqual(min(ages),0.)
+
+class McTaskTranslationTests(unittest.TestCase):
+    def test_body_axes_and_command_norm_without_yaw(self):
+        f,l,w=task.body_translation_velocity({"x":0.,"y":0.,"yaw":0.},[1.,1.])
+        self.assertAlmostEqual((f*f+l*l)**.5,.20)
+        self.assertEqual(w,0.)
+        f,l,w=task.body_translation_velocity({"x":0.,"y":0.,"yaw":math.pi/2},[1.,0.])
+        self.assertAlmostEqual(f,0.)
+        self.assertAlmostEqual(l,-.20)
+        self.assertEqual(w,0.)
+
+    def test_backward_correction_keeps_existing_speed_cap(self):
+        self.assertEqual(task.body_translation_velocity({"x":0.,"y":0.,"yaw":0.},[-.1,0.]),(-.06,0.,0.))
+        self.assertEqual(task.body_translation_velocity({"x":0.,"y":0.,"yaw":0.},[0.,0.]),(0.,0.,0.))
+        with self.assertRaises(ValueError):
+            task.body_translation_velocity({"x":0.,"y":0.,"yaw":0.},[1.,0.],speed_cap=.21)
+
+    def test_checked_translation_corridor_and_wrapped_heading(self):
+        cross,yaw=task.translation_corridor_error({"x":.5,"y":.02,"yaw":-math.pi+.01},[0.,0.],[1.,0.],math.pi-.01)
+        self.assertAlmostEqual(cross,.02)
+        self.assertAlmostEqual(yaw,.02)
+        cross,_=task.translation_corridor_error({"x":1.1,"y":0.,"yaw":0.},[0.,0.],[1.,0.],0.)
+        self.assertAlmostEqual(cross,.1)
