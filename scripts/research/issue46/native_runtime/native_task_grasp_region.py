@@ -748,6 +748,7 @@ def execute(run, container, environment, output, scene, cache, reference, limits
         adjustment_budget=reference["maximum_stance_adjustments"]
         for index in range(adjustment_budget+1):
             observations = []
+            captured_images=[]
             for label in ("a", "b"):
                 audit = {"index": index, "label": label, "attempts": []}
                 acquisition_audit.append(audit)
@@ -757,9 +758,12 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                     attempts=audit["attempts"])
                 after_source_ns = native["host_monotonic_ns"]
                 observations.append(obs)
-                Image.fromarray(rgb).save(output/f"task_region_{index}_{label}.png")
-                time.sleep(.03)
+                captured_images.append((label,rgb))
+            # Qualify/freeze acquired observations before diagnostic PNG I/O.
+            # No timestamp changes: only valid fresh frames can create a snapshot.
             snapshot = vision.make_stationary_snapshot(*observations, generation=native["generation"])
+            for label,picture in captured_images:
+                Image.fromarray(picture).save(output/f"task_region_{index}_{label}.png")
             early_target=-2.15
             if (output/"pre_raise_forearm_result.json").exists():
                 prior=json.loads((output/"pre_raise_forearm_result.json").read_text())

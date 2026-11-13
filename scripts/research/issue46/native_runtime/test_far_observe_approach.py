@@ -115,6 +115,14 @@ class FarApproachTests(unittest.TestCase):
         compile(script,"side_generated","exec")
         self.assertIn("side_corridor_boundary_reached",script)
         self.assertIn("PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY",script)
+    def test_stationary_snapshot_is_qualified_before_diagnostic_png_io(self):
+        import ast,inspect
+        from scripts.research.issue46.native_runtime import native_task_grasp_region as task
+        tree=ast.parse(inspect.getsource(task.execute))
+        snapshot=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="make_stationary_snapshot")
+        png=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save"]
+        self.assertTrue(png);self.assertTrue(all(snapshot.lineno<n.lineno for n in png))
+        self.assertNotIn('time.sleep(.03)',inspect.getsource(task.execute))
     def test_new_contract_and_generated_script_remain_separate(self):
         self.assertNotEqual(reference_contract(),reference_contract(far_observe=True))
         s=build_motion_script([.9,-1.3,0.],{},[],{},"test",point_goal=True,locomotion_action="LOCOMOTION_STEP")
