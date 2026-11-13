@@ -1556,10 +1556,13 @@ class MeasuredStepStandHandoffTests(unittest.TestCase):
         helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
         calls=[]
         n=NS(observe=lambda *a,**k:calls.append("zero"),source_enabled=lambda enabled:calls.append("disable"),stand_once=lambda:calls.append("sd"))
-        def ready(*args):calls.append("measured_ready");return {"ready":True}
+        def ready(node,baseline,deadline):
+            self.assertGreater(deadline-__import__("time").monotonic(),8.90)
+            self.assertLessEqual(deadline-__import__("time").monotonic(),8.95)
+            calls.append("measured_ready");return {"ready":True}
         ns=dict(cfg=dict(motion_mode="LOCOMOTION_STEP",release_source_on_stop=True,
             delivery=dict(release_source_after_zero_window=True)),n=n,baseline=1,result={},
-            time=__import__("time"),await_step_stand_handoff=ready)
+            time=__import__("time"),stop_wait_s=12.,await_step_stand_handoff=ready)
         exec(compile(ast.Module(body=[helper],type_ignores=[]),"real_handoff","exec"),ns)
         ns["stand_transition"]()
         self.assertEqual(calls,["zero","measured_ready","disable","sd"])

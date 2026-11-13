@@ -1374,7 +1374,12 @@ def run_carry_navigation(n,contract):
         else:
             n.observe(1.05,baseline=baseline)
             if cfg.get("motion_mode")=="LOCOMOTION_STEP":
-                readiness=await_step_stand_handoff(n,baseline,time.monotonic()+5.)
+                # Share the existing stop observation budget: reserve the initial
+                # 1.05s zero period and >=2s independent composite stop window.
+                # Saved209..218s physics entersSD only5.45s after zero and
+                # becomes measured-ready after8.3s; a5s subdeadline cut it short.
+                handoff_budget_s=stop_wait_s-1.05-2.
+                readiness=await_step_stand_handoff(n,baseline,time.monotonic()+handoff_budget_s)
                 result.setdefault("step_stand_handoffs",[]).append(readiness)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
             n.stand_once()
