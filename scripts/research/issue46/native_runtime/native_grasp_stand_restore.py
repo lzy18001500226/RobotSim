@@ -70,6 +70,30 @@ def request_torso_carry_reference(self):
     os.replace('/workspace/evidence/carry_torso_reference_feedback.tmp','/workspace/evidence/carry_torso_reference_feedback.json')
 
 
+def request_carry_waist_return(self,target):
+    import os,json,time
+    path='/workspace/evidence/carry_waist_return_request.json'
+    if getattr(self,'carry_waist_return_started',None) is None and os.path.exists(path):
+        req=json.load(open(path));baseline=json.load(open('/workspace/evidence/standing_waist_initial_hold.json'))['request']
+        if (req.get('owner_pid')!=os.getpid() or req.get('generation')!=self.native_generation
+            or baseline.get('generation')!=self.native_generation or req.get('target_rad')!=baseline['target_rad']
+            or not 0.<=(time.monotonic_ns()-req['created_host_ns'])*1e-9<=.20):raise RuntimeError('CARRY_WAIST_RETURN_REQUEST_UNQUALIFIED')
+        self.carry_waist_return_started=time.monotonic();self.carry_waist_return_from={name:float(target[name]) for name in WAIST};self.carry_waist_return_target=dict(req['target_rad'])
+    if getattr(self,'carry_waist_return_started',None) is None:return target
+    fraction=min(1.,(time.monotonic()-self.carry_waist_return_started)/4.);u=fraction*fraction*(3.-2.*fraction)
+    target=dict(target)
+    for name in WAIST:
+        lo,hi=LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][:2]
+        start=self.carry_waist_return_from[name];end=self.carry_waist_return_target[name]
+        target[name]=end if u==1. else (1.-u)*start+u*end
+        if not lo<=target[name]<=hi:raise RuntimeError('CARRY_WAIST_RETURN_SOURCE_LIMIT:'+name)
+    if time.monotonic()-getattr(self,'carry_waist_return_report',0.)>=.10:
+        value=dict(owner_pid=os.getpid(),generation=self.native_generation,fraction=fraction,target_rad={name:target[name] for name in WAIST},host_monotonic_ns=time.monotonic_ns(),gains_and_gravity_conversion='UNCHANGED_EXISTING_OWNER')
+        with open('/workspace/evidence/carry_waist_return_feedback.tmp','w') as stream:json.dump(value,stream)
+        os.replace('/workspace/evidence/carry_waist_return_feedback.tmp','/workspace/evidence/carry_waist_return_feedback.json');self.carry_waist_return_report=time.monotonic()
+    return target
+
+
 def request_native_waist_handoff(self):
     import os,json,time
     path="/workspace/evidence/native_waist_handoff_request.json"
@@ -92,13 +116,13 @@ def extend_existing_owner(script):
         nonlocal script
         if script.count(old)!=1:raise ValueError("postured restoration owner anchor:"+old[:60])
         script=script.replace(old,new)
-    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_native_waist_handoff))
+    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_native_waist_handoff))
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))
     lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_native_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
     script="\n".join(lines)+"\n"
-    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':request_native_waist_handoff(self);request_torso_carry_reference(self)\n   if WAIST and getattr(self,\'mc_waist_blend_started\',None) is None:\n    w=JointCommandArray();w.header=m.header")
+    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self)\n   if WAIST and getattr(self,\'mc_waist_blend_started\',None) is None:\n    w=JointCommandArray();w.header=m.header")
     replace("    self.waist_pub.publish(w)","    self.waist_pub.publish(w);self.last_waist_message=w")
     replace("self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}","self.last_published_arm_target={name:float(target[name]) for name in CONTROL}")
     replace(" def send(self,target,seconds,stage,hand_right=None):", " def send(self,target,seconds,stage,hand_right=None):\n  if WAIST and stage in (\'CARRY_STOW\',\'CARRY_HOLD\'):target={**self.last_published_arm_target,**target}")
@@ -121,13 +145,44 @@ def held_waist_return_ready(rows, baseline):
 
 
 def restore_postured_hold(run,container,environment,output,ready,result):
-    """Return native waist first, then height; the existing arm owner holds the tool."""
+    """Return waist then height, then native MC ownership; the arm owner holds the tool."""
     import os
     from scripts.agent import path_governance as pg
     from scripts.research.issue46.native_runtime.native_grasp_audit import read_fresh_native_row
     proof=json.loads((output/"body_crouch_pickup_result.json").read_text())
     expected_mc=proof["body_subscriber"]["name"]
     if not proof.get("pass_result") or proof.get("generation")!=ready["generation"]:raise RuntimeError("RESTORE_NEEDS_SAME_EPISODE_QUALIFIED_LOWERING")
+    # Return the existing gravity-compensated waist target first. The native
+    # MC crouch reference remains forward-leaning, so its relay stays deferred
+    # until body height has returned. Arm IK holds the pelvis-relative tool pose.
+    baseline=json.loads((output/'standing_waist_initial_hold.json').read_text())['request']['target_rad']
+    request=dict(owner_pid=ready['pid'],generation=ready['generation'],created_host_ns=time.monotonic_ns(),target_rad=baseline)
+    pg.write_new_text(output/'carry_waist_return_request.tmp',json.dumps(request)+'\n')
+    os.replace(output/'carry_waist_return_request.tmp',output/'carry_waist_return_request.json')
+    waist_rows=[];deadline=time.monotonic()+10.
+    while time.monotonic()<deadline:
+        row=read_fresh_native_row(output/'native_latest.json')
+        health=json.loads((output/'carry_heartbeat.json').read_text())
+        if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH')
+        if not waist_rows or row['host_monotonic_ns']>waist_rows[-1]['host_monotonic_ns']:waist_rows.append(row)
+        path=output/'carry_waist_return_feedback.json'
+        if path.exists():
+            returned=json.loads(path.read_text())
+            if returned.get('owner_pid')==ready['pid'] and returned.get('generation')==ready['generation'] and returned.get('fraction')==1. and 0.<=(time.monotonic_ns()-returned['host_monotonic_ns'])*1e-9<=.20 and held_waist_return_ready(waist_rows,baseline):break
+        time.sleep(.01)
+    else:raise RuntimeError('HELD_WAIST_RETURN_BEFORE_RISE_NOT_QUALIFIED')
+    waist_proof=dict(classification='MEASURED_EXISTING_OWNER_WAIST_RETURN_BEFORE_BODY_RISE',pass_result=True,baseline_rad=baseline,
+        source_host_ns=row['host_monotonic_ns'],source_sim_time_s=row['sim_time_s'],actual_rad={name:row['joints'][name]['q'] for name in WAIST},
+        actual_velocity_rad_s={name:row['joints'][name]['qvel'] for name in WAIST},window_sim_s=.20,position_tolerance_rad=.10,velocity_limit_rad_s=.05,
+        joints_and_gains_changed=False,held_tool_reference='PELVIS_RIGID')
+    pg.write_new_text(output/'held_waist_before_body_rise.json',json.dumps(waist_proof,indent=2)+'\n')
+    result['held_waist_before_body_rise']=waist_proof
+    observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 65s python3 /workspace/evidence/body_restore_carry.py"],timeout_s=68.,check=False)
+    pg.write_new_text(output/"body_restore_carry.stdout",observed.stdout)
+    body_path=output/"body_restore_carry_result.json"
+    body=json.loads(body_path.read_text()) if body_path.exists() else {}
+    result["body_restore_carry"]=body
+    if observed.returncode or not body.get("pass_result"):raise RuntimeError("HELD_BODY_RESTORE_NOT_QUALIFIED:"+str(body.get("failure",observed.stdout[-1000:])))
     row=read_fresh_native_row(output/"native_latest.json")
     request=dict(schema="robotsim.native-waist-handoff.v1",owner_pid=ready["pid"],generation=row["generation"],expected_mc_node=expected_mc,created_host_ns=time.monotonic_ns())
     pg.write_new_text(output/"native_waist_handoff_request.tmp",json.dumps(request)+"\n")
@@ -143,31 +198,6 @@ def restore_postured_hold(run,container,environment,output,ready,result):
             if feedback.get("owner_pid")==ready["pid"] and feedback.get("generation")==ready["generation"] and feedback["fraction"]>=1. and feedback["relay_count"]>=2 and 0.<=(time.monotonic_ns()-feedback["host_monotonic_ns"])*1e-9<=.20:break
         time.sleep(.02)
     else:raise RuntimeError("NATIVE_MC_WAIST_HANDOFF_UNCONFIRMED")
-    # Keep the existing pelvis-relative arm tracker active while the native
-    # waist returns first. Rising with the loaded waist within7mrad of its
-    # source upper limit caused the recorded180405Z hard-stop.
-    baseline=json.loads((output/'standing_waist_initial_hold.json').read_text())['request']['target_rad']
-    waist_rows=[];deadline=time.monotonic()+6.
-    while time.monotonic()<deadline:
-        row=read_fresh_native_row(output/'native_latest.json')
-        health=json.loads((output/'carry_heartbeat.json').read_text())
-        if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH')
-        if not waist_rows or row['host_monotonic_ns']>waist_rows[-1]['host_monotonic_ns']:waist_rows.append(row)
-        if held_waist_return_ready(waist_rows,baseline):break
-        time.sleep(.01)
-    else:raise RuntimeError('HELD_WAIST_RETURN_BEFORE_RISE_NOT_QUALIFIED')
-    waist_proof=dict(classification='MEASURED_NATIVE_WAIST_RETURN_BEFORE_BODY_RISE',pass_result=True,baseline_rad=baseline,
-        source_host_ns=row['host_monotonic_ns'],source_sim_time_s=row['sim_time_s'],actual_rad={name:row['joints'][name]['q'] for name in WAIST},
-        actual_velocity_rad_s={name:row['joints'][name]['qvel'] for name in WAIST},window_sim_s=.20,position_tolerance_rad=.10,velocity_limit_rad_s=.05,
-        joints_and_gains_changed=False,held_tool_reference='PELVIS_RIGID')
-    pg.write_new_text(output/'held_waist_before_body_rise.json',json.dumps(waist_proof,indent=2)+'\n')
-    result['held_waist_before_body_rise']=waist_proof
-    observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 65s python3 /workspace/evidence/body_restore_carry.py"],timeout_s=68.,check=False)
-    pg.write_new_text(output/"body_restore_carry.stdout",observed.stdout)
-    body_path=output/"body_restore_carry_result.json"
-    body=json.loads(body_path.read_text()) if body_path.exists() else {}
-    result["body_restore_carry"]=body
-    if observed.returncode or not body.get("pass_result"):raise RuntimeError("HELD_BODY_RESTORE_NOT_QUALIFIED:"+str(body.get("failure",observed.stdout[-1000:])))
     observed=run(["docker","exec",container,"bash","-lc",environment+"timeout 30s python3 /workspace/evidence/body_after_restore_observer.py"],timeout_s=33.,check=False)
     pg.write_new_text(output/"body_after_restore_observer.stdout",observed.stdout)
     path=output/"body_restore_final_result.json";stop=json.loads(path.read_text()) if path.exists() else {}

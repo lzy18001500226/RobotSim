@@ -261,3 +261,31 @@ class HeldWaistReturnTests(unittest.TestCase):
             if change=='generation':rows[5]['generation']=2
             if change=='gap':rows=rows[:4]+rows[8:]
             self.assertFalse(restore.held_waist_return_ready(rows,baseline))
+
+
+class CarryWaistCommandReturnTests(unittest.TestCase):
+    def test_existing_owner_returns_desired_angle_without_native_mc_crouch_target(self):
+        baseline={name:0. for name in restore.WAIST}
+        owner=S(carry_waist_return_started=10.,carry_waist_return_from={name:.28 for name in restore.WAIST},carry_waist_return_target=baseline,carry_waist_return_report=100.)
+        target={name:.28 for name in restore.WAIST};target['right_elbow_joint']=-1.8
+        limits={name:(-.314,.314,13.088) for name in restore.WAIST}
+        with patch.object(restore,'LIFT_CONTRACT',{'retract_preflight':{'source_motion_limits':limits}},create=True):
+            for now,expected in ((10.,.28),(12.,.14),(14.,0.)):
+                with patch('time.monotonic',return_value=now):got=restore.request_carry_waist_return(owner,target)
+                self.assertAlmostEqual(got['waist_pitch_joint'],expected)
+                self.assertEqual(got['right_elbow_joint'],-1.8)
+        self.assertEqual(target['waist_pitch_joint'],.28)
+
+    def test_unknown_or_stale_request_cannot_start_return(self):
+        import os
+        from unittest.mock import mock_open
+        owner=S(native_generation=1)
+        baseline={'generation':1,'target_rad':{name:0. for name in restore.WAIST}}
+        req=dict(owner_pid=os.getpid(),generation=1,created_host_ns=1000000000,target_rad=baseline['target_rad'])
+        for change in ('target','owner','stale'):
+            bad=copy.deepcopy(req)
+            if change=='target':bad['target_rad']['waist_pitch_joint']=.2
+            if change=='owner':bad['owner_pid']+=1
+            with patch('os.path.exists',return_value=True),patch('builtins.open',mock_open()),patch('json.load',side_effect=[bad,{'request':baseline}]),patch('time.monotonic_ns',return_value=1500000000 if change=='stale' else 1001000000):
+                with self.assertRaisesRegex(RuntimeError,'CARRY_WAIST_RETURN_REQUEST_UNQUALIFIED'):restore.request_carry_waist_return(owner,{name:.28 for name in restore.WAIST})
+            self.assertFalse(hasattr(owner,'carry_waist_return_started'))
