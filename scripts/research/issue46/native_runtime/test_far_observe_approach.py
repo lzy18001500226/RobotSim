@@ -109,7 +109,7 @@ class FarApproachTests(unittest.TestCase):
         self.assertIsNone(side_corridor_waypoint([.89,-1.45],[.947,-1.55]))
         bounds=side_corridor_bounds([.892,-1.454],[.892,-1.154])
         self.assertFalse(side_corridor_boundary_reached({"x":.892,"vx":0.},bounds))
-        self.assertTrue(side_corridor_boundary_reached({"x":.98,"vx":.1},bounds))
+        self.assertTrue(side_corridor_boundary_reached({"x":1.04,"vx":.1},bounds))
     def test_side_route_preflight_is_attached_to_generated_motion_script(self):
         script=build_motion_script([.89,-1.15,1.57],{},[],{},"side",point_goal=True,side_corridor_bounds={"x":[.84,.94],"y":[-1.51,-1.10]},locomotion_action="LOCOMOTION_STEP")
         compile(script,"side_generated","exec")

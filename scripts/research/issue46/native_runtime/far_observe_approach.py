@@ -119,14 +119,14 @@ def side_corridor_waypoint(origin, terminal, *, maximum_step=.30, forward_limit=
     return np.array([origin[0],origin[1]+math.copysign(min(maximum_step,abs(dy)),dy)])
 
 
-def side_corridor_bounds(origin, terminal, *, margin=.05):
+def side_corridor_bounds(origin, terminal, *, margin=.15):
     origin,terminal=map(lambda v:np.asarray(v,dtype=float),(origin,terminal))
-    if not np.isfinite(np.r_[origin,terminal,margin]).all() or margin not in (.05,):raise ValueError("side corridor envelope")
+    if not np.isfinite(np.r_[origin,terminal,margin]).all() or margin not in (.15,):raise ValueError("side corridor envelope")
     return {"x":[float(min(origin[0],terminal[0])-margin),float(max(origin[0],terminal[0])+margin)],
             "y":[float(min(origin[1],terminal[1])-margin),float(max(origin[1],terminal[1])+margin)]}
 
 
-def sampled_side_corridor_clearance(study, native, center, waypoint, *, xy_uncertainty=.05, yaw_uncertainty=.15):
+def sampled_side_corridor_clearance(study, native, center, waypoint, *, xy_uncertainty=.15, yaw_uncertainty=.15):
     """Full-body turn+forward side route screen; dynamic gait remains separately gated."""
     q=study.frame(native);q[study.obj:study.obj+7]=np.r_[center,1.,0.,0.,0.];study.apply(q)
     root=np.asarray(native["bodies"]["pelvis"]["position_m"][:2]);R=native["bodies"]["pelvis"]["rotation"];yaw=math.atan2(R[3],R[0]);anchor=study.foot_anchor().copy();target=np.asarray(waypoint,dtype=float)
@@ -135,7 +135,7 @@ def sampled_side_corridor_clearance(study, native, center, waypoint, *, xy_uncer
         for u in np.linspace(0.,1.,17):
             base_anchor=anchor if phase=="turn" else anchor+u*(target_anchor-anchor)
             base_yaw=yaw+u*wrap(travel-yaw) if phase=="turn" else travel
-            for off in ((0.,0.),(.05,0.),(-.05,0.),(0.,.05),(0.,-.05)):
+            for off in ((0.,0.),(xy_uncertainty,0.),(-xy_uncertainty,0.),(0.,xy_uncertainty),(0.,-xy_uncertainty)):
                 for error in (-yaw_uncertainty,0.,yaw_uncertainty):
                     pose=study.relocate(q,base_anchor+np.asarray(off),base_yaw+error);screen=study.screen(pose);count+=1
                     minimum=min(minimum,screen["minimum_external_clearance_m_capped_50mm"])
