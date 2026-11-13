@@ -713,7 +713,7 @@ def run_probe(smoke_only=False):
                     # already-commanded motion or native/physical fault stays fail-closed.
                     initial_zero_only=bool(MICRO.get("carry") or MICRO.get("visual_stance") or MICRO.get("task_region") or MICRO.get("body_readonly_zero_phase")) and not self.moving and not any(
                         any(float(c.get(k,0.)) for k in ("forward","lateral","angular")) for c in self.command_log)
-                    if (initial_zero_only and str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
+                    if (initial_zero_only and (str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:") or str(exc)=="CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING")
                             and time.monotonic()<hard_until):
                         until=min(hard_until,max(until,time.monotonic()+seconds))
                         self.events.append(dict(event="PREMOTION_FRESHNESS_REACQUIRE",t=time.monotonic(),failure=str(exc),readiness_deadline=until))

@@ -178,4 +178,17 @@ class PlacementRadialLimitTests(unittest.TestCase):
         corrected=hint+delta*.149/np.linalg.norm(delta)
         self.assertLess(np.linalg.norm(corrected-hint),.15)
         np.testing.assert_allclose(corrected,[.12103368378638066,1.4147217671374237])
+class PremotionNewEpochTests(unittest.TestCase):
+    def test_missing_new_epoch_can_wait_only_without_any_prior_nonzero_command(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_script("forward",.6,{})
+        tree=ast.parse(script);guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(x,ast.Constant) and x.value=="CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING" for x in ast.walk(n.test)) and any(isinstance(x,ast.Name) and x.id=="initial_zero_only" for x in ast.walk(n.test)))
+        check=compile(ast.Expression(guard.test),"actual_initial_epoch_wait","eval")
+        class Clock:
+            def monotonic(self):return 10.
+        ns=dict(initial_zero_only=True,exc=RuntimeError("CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING"),time=Clock(),hard_until=12.)
+        self.assertTrue(eval(check,ns));ns["initial_zero_only"]=False;self.assertFalse(eval(check,ns))
+        ns["initial_zero_only"]=True;ns["hard_until"]=9.;self.assertFalse(eval(check,ns))
+        ns["hard_until"]=12.;ns["exc"]=RuntimeError("JOINT_LIMIT");self.assertFalse(eval(check,ns))
 if __name__=="__main__":unittest.main()

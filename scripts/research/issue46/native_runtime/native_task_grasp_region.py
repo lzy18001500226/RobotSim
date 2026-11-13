@@ -249,7 +249,7 @@ def run_region_navigation(node, contract):
                 row = node.sample()
                 break
             except RuntimeError as exc:
-                if not (str(exc) in ("CLOCK_GENERATION_PENDING", "NATIVE_FEEDBACK_STALE_OR_INVALID")
+                if not (str(exc) in ("CLOCK_GENERATION_PENDING", "NATIVE_FEEDBACK_STALE_OR_INVALID","CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING")
                         or str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")):
                     raise
             time.sleep(.01)
