@@ -99,8 +99,16 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
         result["loaded_terminal_slowdown"]=True
-        result["conservative_terminal_stop"]=True
-        result["bounded_terminal_forward_reapproach"]=True
+        # Reuse the delivered FoundationWalk policy already used for loaded
+        # retreat/turn. The saved loaded STEP terminal stop remained TRANSITION
+        # despite physical rest; its exit check is not equivalent to zero speed.
+        # Do not transplant STEP braking calibration or STEP reapproach pulses
+        # into this policy. Fresh measured stop and placement IK still gate use.
+        result["delivery_motion_mode"]="LOCOMOTION_DEFAULT"
+        result["measure_step_braking_after_progress_m"]=0.
+        result["conservative_terminal_stop"]=False
+        result["bounded_terminal_forward_reapproach"]=False
+        result["forward_response_profile"]="EXISTING_INSTALLED_FOUNDATIONWALK_COMMON_CARRY_POLICY; unchanged source weights/gains, physical stop and actual-pose placement gates"
         # Saved actual near-table stop blocked30mm lowering at rightknee.
         # The smallest checked backoff80mm passed original lowering/placement.
         goal=list(result["base_goal_world_xy"])
