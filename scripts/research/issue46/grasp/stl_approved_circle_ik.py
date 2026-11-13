@@ -699,14 +699,26 @@ def compiled_arm_effort_limits(model):
     return caps
 
 
+def planar_approach_direction(initial,target):
+    """Normalize an observed nonzero XY offset, independent of clearance.
+
+    A raised hand may already be less than 50 mm from the object in XY.
+    Reject only an undefined direction; the entire staged path still has to
+    pass the unchanged source-limit and enabled-contact collision screens.
+    """
+    direction=np.asarray(target,dtype=float)[:2]-np.asarray(initial,dtype=float)[:2]
+    length=float(np.linalg.norm(direction))
+    if not np.isfinite(direction).all() or length<=1e-6:
+        raise RuntimeError("NO_CLEAR_APPROACH_DIRECTION")
+    return direction/length
+
+
 def staged_clear_approach(model,state,start,finish,opening,center,object_center,local_axis):
     """Reuse bounded circle IK for a table-outside lift, then a high approach."""
     data=mujoco.MjData(model);hand=ik.native.bid(model,"R_omnipicker_base_link")
     ik.set_pose(model,data,state,start,np.zeros(3),0.,opening,np.zeros(3),0.,None)
     initial=data.xpos[hand]+data.xmat[hand].reshape(3,3)@center
-    direction=object_center[:2]-initial[:2];length=float(np.linalg.norm(direction))
-    if length<.05:raise RuntimeError("NO_CLEAR_APPROACH_DIRECTION")
-    direction/=length
+    direction=planar_approach_direction(initial,object_center)
     high=float(max(initial[2],object_center[2]+.06))
     lift=initial.copy();lift[2]=high
     near=object_center.copy();near[:2]-=.12*direction;near[2]=high

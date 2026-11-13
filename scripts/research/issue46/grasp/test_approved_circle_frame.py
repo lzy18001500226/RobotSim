@@ -9,9 +9,19 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','tracking_task_converged')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','tracking_task_converged','planar_approach_direction')]
         from scipy.optimize import least_squares
         cls.ns={'np':np,'least_squares':least_squares};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
+
+    def test_raised_hand_48mm_offset_has_well_defined_direction(self):
+        fn=self.ns['planar_approach_direction']
+        initial=np.array([1.3871947476775017,-1.0221898503854667,.7621699204700031])
+        target=np.array([1.4269966824441143,-.9952467135630227,.6670583692341485])
+        direction=fn(initial,target)
+        self.assertAlmostEqual(float(np.linalg.norm(direction)),1.)
+        np.testing.assert_allclose(direction,(target-initial)[:2]/np.linalg.norm((target-initial)[:2]))
+        for bad in (initial,initial+[1e-8,0.,0.],np.array([np.nan,0.,0.])):
+            with self.assertRaises(RuntimeError):fn(initial,bad)
 
     def test_placement_continuation_rejects_half_radian_wrist_branch_jump(self):
         bounds=np.array([[-2.,2.],[-1.,.061]])
