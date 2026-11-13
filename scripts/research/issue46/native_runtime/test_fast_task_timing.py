@@ -70,7 +70,7 @@ class CarryStopTimingTests(unittest.TestCase):
         default=task_route_profile(cfg);fast=task_route_profile(cfg,fast_task_timing=True)
         self.assertNotIn("release_source_after_zero_window",default)
         self.assertTrue(fast["release_source_after_zero_window"])
-        self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
+        self.assertEqual(fast["delivery_turn_direction"],"SHORTEST")
         self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
         self.assertEqual(fast["delivery_motion_mode"],"LOCOMOTION_STEP")
         self.assertEqual(fast["stand_transition_strategy"],"EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC")

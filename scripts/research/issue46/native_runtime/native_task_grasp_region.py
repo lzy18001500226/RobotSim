@@ -86,10 +86,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
-        # Loaded CCW forward arcs at the measured south-wall start drifted
-        # into the wall-side workspace. Reuse the physically successful
-        # clockwise/pure-yaw prefix; actual-pose route screening remains required.
-        result["delivery_turn_direction"]="CLOCKWISE"
+        # Saved220513Z CW pure-yaw travelled4.73rad and drifted back to the
+        # pickup table. The earlier CCW failure used FORWARD_ARC, not pure yaw.
+        # Static221826Z checks the shortest pure-yaw envelope at the actual
+        # loaded retreat pose (+/-100mm); live gait/collision gates still decide.
+        result["delivery_turn_direction"]="SHORTEST"
         result["turn_translation_strategy"]="PURE_YAW"
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
@@ -122,7 +123,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="MEASURED_WALL_SIDE_AVOIDANCE_REUSE_CW_PREFIX",evidence="reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261111T004845Z; fast-unified-grasp-transfer-20261113T041413Z/measured_turn_origin_static_direction_comparison.json")
+        result["task_turn_selection"].update(classification="STATIC_CHECKED_SHORTEST_PURE_YAW_NOT_FORWARD_ARC",evidence="reviews/issue-46/measured-shortest-yaw-egress-static-20261113T221826Z/result.json")
     return result
 
 
