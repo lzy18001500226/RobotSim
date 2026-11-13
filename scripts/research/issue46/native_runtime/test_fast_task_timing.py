@@ -131,4 +131,11 @@ class TorsoRelativeCarryTests(unittest.TestCase):
             R=Rotation.from_euler("z",yaw).as_matrix();v=torso_horizontal_retract(R)
             np.testing.assert_allclose(R.T@v,[-.16,-.12,0.],atol=1e-12)
             self.assertAlmostEqual(np.linalg.norm(v),.20);self.assertEqual(v[2],0.)
+class UniformReliablePreloadTests(unittest.TestCase):
+    def test_current_complete_task_preserves_historical_five_second_preload(self):
+        from scripts.research.issue46.grasp import stl_approved_circle_native_trial as runner
+        import inspect
+        code=inspect.getsource(runner)
+        self.assertIn("argv[argv.index('--hal-hand-close-hold-s')+1]='5'",code)
+        self.assertNotIn("argv[argv.index('--hal-hand-close-hold-s')+1]='2'",code)
 if __name__=="__main__":unittest.main()

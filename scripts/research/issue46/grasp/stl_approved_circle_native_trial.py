@@ -556,7 +556,7 @@ def main():
         if args.carry_reverse_moving_arc:argv.append('--carry-reverse-moving-arc')
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
-        argv[argv.index('--hal-hand-close-hold-s')+1]='2' if args.fast_task_timing else '5'
+        argv[argv.index('--hal-hand-close-hold-s')+1]='5'
     if args.visual_stance_adjustment:
         if not args.execute_pickup_navigation or host_model_cache is None or args.target_source!='fresh-rgbd-snapshot':raise ValueError('sensor-only stance requires current RGBD/cache and START navigation')
         from scripts.research.issue46.native_runtime.native_visual_stance import reference_contract
