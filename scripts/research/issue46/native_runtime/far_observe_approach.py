@@ -38,7 +38,7 @@ def stance_proposals(anchor, root, yaw, center):
     # arrival rejected all old poses despite a feasible current-heading grasp.
     # Try the same bounded root targets at current yaw only as a fallback.
     for a,label,heading in list(result):
-        if not label.startswith("FAR_DIAGONAL_"):continue
+        if root[0]<.75 or not label.startswith("FAR_DIAGONAL_"):continue
         target=a-Rotation.from_euler("z",heading-yaw).as_matrix()[:2,:2]@(anchor-root)
         result.append((target+anchor-root,label+"_CURRENT_HEADING",float(yaw)))
     return result
@@ -102,6 +102,51 @@ def intermediate_forward_waypoint(origin, terminal):
     if .06 < dx <= .16 and abs(dy)<.08:
         return origin+np.array([.04,0.])
     return None
+
+
+
+def side_corridor_waypoint(origin, terminal, *, maximum_step=.30, forward_limit=.15):
+    """Bound a world-lateral transit when forward-plane braking blocks a diagonal.
+
+    The waypoint is a transit pose only. The task must stop, reacquire RGB-D,
+    and rerun the full grasp witness before any arm/gripper command.
+    """
+    origin,terminal=map(lambda v:np.asarray(v,dtype=float),(origin,terminal))
+    if origin.shape!=(2,) or terminal.shape!=(2,) or not np.isfinite(np.r_[origin,terminal]).all():raise ValueError("finite side-route endpoints required")
+    dx,dy=terminal-origin
+    if not .06<=maximum_step<=.30 or not 0.<=forward_limit<=.15:raise ValueError("side-route bound")
+    if abs(dy)<=.15 or abs(dx)>forward_limit:return None
+    return np.array([origin[0],origin[1]+math.copysign(min(maximum_step,abs(dy)),dy)])
+
+
+def side_corridor_bounds(origin, terminal, *, margin=.05):
+    origin,terminal=map(lambda v:np.asarray(v,dtype=float),(origin,terminal))
+    if not np.isfinite(np.r_[origin,terminal,margin]).all() or margin not in (.05,):raise ValueError("side corridor envelope")
+    return {"x":[float(min(origin[0],terminal[0])-margin),float(max(origin[0],terminal[0])+margin)],
+            "y":[float(min(origin[1],terminal[1])-margin),float(max(origin[1],terminal[1])+margin)]}
+
+
+def sampled_side_corridor_clearance(study, native, center, waypoint, *, xy_uncertainty=.05, yaw_uncertainty=.15):
+    """Full-body turn+forward side route screen; dynamic gait remains separately gated."""
+    q=study.frame(native);q[study.obj:study.obj+7]=np.r_[center,1.,0.,0.,0.];study.apply(q)
+    root=np.asarray(native["bodies"]["pelvis"]["position_m"][:2]);R=native["bodies"]["pelvis"]["rotation"];yaw=math.atan2(R[3],R[0]);anchor=study.foot_anchor().copy();target=np.asarray(waypoint,dtype=float)
+    travel=math.atan2(target[1]-root[1],target[0]-root[0]);Rstart=Rotation.from_euler("z",travel-yaw).as_matrix()[:2,:2];target_anchor=target+Rstart@(anchor-root);minimum=.05;count=0
+    for phase in ("turn","translate"):
+        for u in np.linspace(0.,1.,17):
+            base_anchor=anchor if phase=="turn" else anchor+u*(target_anchor-anchor)
+            base_yaw=yaw+u*wrap(travel-yaw) if phase=="turn" else travel
+            for off in ((0.,0.),(.05,0.),(-.05,0.),(0.,.05),(0.,-.05)):
+                for error in (-yaw_uncertainty,0.,yaw_uncertainty):
+                    pose=study.relocate(q,base_anchor+np.asarray(off),base_yaw+error);screen=study.screen(pose);count+=1
+                    minimum=min(minimum,screen["minimum_external_clearance_m_capped_50mm"])
+                    if not screen["pass"]:return {"pass":False,"first_sample":count,"phase":phase,"screen":screen,"scope":"SAMPLED_STATIC_FULLBODY_SIDE_CORRIDOR_NOT_DYNAMIC_GAIT"}
+    return {"pass":True,"samples":count,"minimum_clearance_m_capped_50mm":minimum,"source_root_xy_m":root.tolist(),"waypoint_xy_m":target.tolist(),"scope":"SAMPLED_STATIC_FULLBODY_SIDE_CORRIDOR_NOT_DYNAMIC_GAIT"}
+
+
+def side_corridor_boundary_reached(pose, bounds, *, delay_s=.80):
+    if not all(math.isfinite(float(pose[k])) for k in ("x","vx")) or delay_s!=.80:raise ValueError("side corridor stopping state")
+    predicted=pose["x"]+delay_s*pose["vx"]
+    return predicted<=bounds["x"][0]+.02 or predicted>=bounds["x"][1]-.02
 
 
 def forward_turn_command(pose,goal,linear,angular):

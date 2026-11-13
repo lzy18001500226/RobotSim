@@ -143,7 +143,7 @@ def reference_contract(*,far_observe=False):
             "task_translation_position_tolerance_m": .06,
             "mechanical_changes": False}
     if far_observe:
-        result.update(schema="robotsim.rgbd-task-grasp-region.v12",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.80,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
+        result.update(schema="robotsim.rgbd-task-grasp-region.v13",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.80,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
     return result
 
 
@@ -340,9 +340,10 @@ def run_region_navigation(node, contract):
             if short_forward and first_active_command_at is not None and tick-first_active_command_at>=.20:
                 result["short_forward_activation_pulse"]={"requested_span_m":requested_span,"maximum_nonzero_duration_s":.20,"actual_stopped_pose_must_requalify":True}
                 break
-            if not short_forward and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
-                result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"}
-                break
+            if not short_forward and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(pose,cfg["side_corridor_bounds"]):
+                result["side_corridor_boundary_stop"]={"pose":pose,"bounds":cfg["side_corridor_bounds"],"claim":"PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY"};break
+            if not short_forward and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
+                result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"};break
             stop_distance=stopping_distance(pose,cfg["goal"]) if cfg.get("point_goal") else controller.config.xy_tolerance_m
             if not short_forward and output.distance_m is not None and output.distance_m<=stop_distance:
                 result["position_region_entered"]=True
@@ -409,7 +410,7 @@ def run_region_navigation(node, contract):
         rclpy.shutdown()
 
 
-def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None, outer_bounds=None, point_goal=False,locomotion_action="LOCOMOTION_DEFAULT"):
+def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None, outer_bounds=None, side_corridor_bounds=None,point_goal=False,locomotion_action="LOCOMOTION_DEFAULT"):
     from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
 
     if not label.isidentifier():
@@ -433,12 +434,12 @@ def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None
     code = code.replace("                fault=physical_fault(",
         '                if MICRO.get("task_region"):limit=.60\n                fault=physical_fault(', 1)
     if point_goal:
-        from scripts.research.issue46.native_runtime.far_observe_approach import forward_turn_command,stopping_distance,forward_table_plane_reached,wrap
-        for function in (wrap,forward_turn_command,stopping_distance,forward_table_plane_reached):code+="\n"+inspect.getsource(function)+"\n"
+        from scripts.research.issue46.native_runtime.far_observe_approach import forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached,wrap
+        for function in (wrap,forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached):code+="\n"+inspect.getsource(function)+"\n"
     for function in (recover_clock_at_stop, body_translation_velocity, translation_corridor_error, locomotion_source_observed, locomotion_cycle_proof, run_region_navigation):
         code += "\n"+inspect.getsource(function)+"\n"
     code += "MICRO.update("+repr({"task_region": {
-        "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90, "path_start_xy_m": path_start_xy, "outer_bounds":outer_bounds,"point_goal":point_goal,"locomotion_action":locomotion_action},
+        "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90, "path_start_xy_m": path_start_xy, "outer_bounds":outer_bounds,"point_goal":point_goal,"locomotion_action":locomotion_action,"side_corridor_bounds":side_corridor_bounds},
         "graph_startup_timeout_s": 5.0})+")\nrun_probe()\n"
     compile(code, "task_region_navigation", "exec")
     return code
@@ -796,6 +797,15 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                 result["posture_config"] = str(posture_path)
                 pg.write_new_text(output/"visual_stance_result.json", json.dumps(result, indent=2)+"\n")
                 return result
+            side_waypoint=None
+            side_preflight=None
+            if far_observe:
+                from scripts.research.issue46.native_runtime.far_observe_approach import side_corridor_waypoint,side_corridor_bounds,sampled_side_corridor_clearance
+                current_root=np.asarray(native["bodies"]["pelvis"]["position_m"][:2]);terminal=np.asarray(chosen["root_goal_xy_m"])
+                side_waypoint=side_corridor_waypoint(current_root,terminal)
+                if side_waypoint is not None:
+                    side_preflight=sampled_side_corridor_clearance(study,native,snapshot["estimated_center_world_m"],side_waypoint)
+                    if not side_preflight["pass"]:raise RuntimeError("SIDE_CORRIDOR_STATIC_COLLISION:"+json.dumps(side_preflight.get("screen")))
             if index == adjustment_budget:
                 raise RuntimeError("TASK_REGION_ADJUSTMENT_BUDGET")
             if not far_observe and chosen["label"].startswith("NEARBY_") and abs(chosen["root_goal_xy_m"][1]-native["bodies"]["pelvis"]["position_m"][1])>.10:
@@ -803,7 +813,12 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                 continue
             label = f"task_region_navigation_{index}"
             motion_target=chosen
-            if far_observe:
+            if side_waypoint is not None:
+                study.apply(study.frame(native));anchor=study.foot_anchor().copy();rotation=native["bodies"]["pelvis"]["rotation"];heading=math.atan2(rotation[3],rotation[0])
+                motion_target={"label":"SIDE_CORRIDOR_TRANSIT_NOT_GRASP_READY","root_goal_xy_m":side_waypoint.tolist(),"anchor_xy_m":(anchor+side_waypoint-np.asarray(native["bodies"]["pelvis"]["position_m"][:2])).tolist(),"yaw_rad":heading,"side_corridor_bounds":side_corridor_bounds(np.asarray(native["bodies"]["pelvis"]["position_m"][:2]),side_waypoint),"side_corridor_preflight":side_preflight}
+                origin=np.asarray(native["bodies"]["pelvis"]["position_m"][:2]);travel=heading+(math.atan2(side_waypoint[1]-origin[1],side_waypoint[0]-origin[0])-heading+math.pi)%(2*math.pi)-math.pi
+                motion_target["navigation_preflight"]={**side_preflight,"outer_bounds":{"x":[float(origin[0]-.16),float(origin[0]+.16)],"y":[float(min(origin[1],side_waypoint[1])-.16),float(max(origin[1],side_waypoint[1])+.16)],"yaw":[float(min(heading,travel)-.35),float(max(heading,travel)+.35)]}}
+            elif far_observe:
                 from scripts.research.issue46.native_runtime.far_observe_approach import intermediate_forward_waypoint,sampled_approach_clearance
                 origin=np.asarray(native["bodies"]["pelvis"]["position_m"][:2])
                 transit=intermediate_forward_waypoint(origin,chosen["root_goal_xy_m"])
@@ -818,11 +833,11 @@ def execute(run, container, environment, output, scene, cache, reference, limits
             pg.write_new_text(output/(label+"_plan.json"),json.dumps({"terminal_grasp_witness":f"task_region_{index}.json",
                 "terminal_label":chosen["label"],"terminal_root_goal_xy_m":chosen["root_goal_xy_m"],
                 "motion_label":motion_target["label"],"motion_root_goal_xy_m":motion_target["root_goal_xy_m"],
-                "transit_is_grasp_ready":False,"navigation_preflight":motion_target["navigation_preflight"]},indent=2)+"\n")
+                "transit_is_grasp_ready":False,"side_corridor_preflight":motion_target.get("side_corridor_preflight"),"navigation_preflight":motion_target.get("navigation_preflight")},indent=2)+"\n")
             goal = [*motion_target["root_goal_xy_m"], motion_target["yaw_rad"]]
             code = build_motion_script(goal, all_limits, robot_bodies, caps, label,
-                path_start_xy=motion_target["navigation_preflight"]["source_root_xy_m"],
-                outer_bounds=motion_target["navigation_preflight"].get("outer_bounds"),point_goal=far_observe,
+                path_start_xy=motion_target["navigation_preflight"]["source_root_xy_m"] if motion_target.get("navigation_preflight") else np.asarray(native["bodies"]["pelvis"]["position_m"][:2]).tolist(),
+                outer_bounds=motion_target["navigation_preflight"].get("outer_bounds") if motion_target.get("navigation_preflight") else None,side_corridor_bounds=motion_target.get("side_corridor_bounds"),point_goal=far_observe,
                 locomotion_action="LOCOMOTION_STEP" if far_observe else "LOCOMOTION_DEFAULT")
             pg.write_new_text(output/(label+".py"), code)
             process = run(["docker", "exec", container, "bash", "-lc",

@@ -102,6 +102,19 @@ class FarApproachTests(unittest.TestCase):
         self.assertIsNone(intermediate_forward_waypoint([.9,-1.5],[.94,-1.5]))
         self.assertIsNone(intermediate_forward_waypoint([.9,-1.5],[.85,-1.5]))
         with self.assertRaises(ValueError):intermediate_forward_waypoint([float("nan"),0.],[0.,0.])
+    def test_side_transit_is_bounded_waypoint_not_grasp_acceptance(self):
+        import numpy as np
+        from scripts.research.issue46.native_runtime.far_observe_approach import side_corridor_waypoint,side_corridor_bounds,side_corridor_boundary_reached
+        np.testing.assert_allclose(side_corridor_waypoint([.892,-1.454],[.947,-.995]),[.892,-1.154])
+        self.assertIsNone(side_corridor_waypoint([.89,-1.45],[.947,-1.55]))
+        bounds=side_corridor_bounds([.892,-1.454],[.892,-1.154])
+        self.assertFalse(side_corridor_boundary_reached({"x":.892,"vx":0.},bounds))
+        self.assertTrue(side_corridor_boundary_reached({"x":.98,"vx":.1},bounds))
+    def test_side_route_preflight_is_attached_to_generated_motion_script(self):
+        script=build_motion_script([.89,-1.15,1.57],{},[],{},"side",point_goal=True,side_corridor_bounds={"x":[.84,.94],"y":[-1.51,-1.10]},locomotion_action="LOCOMOTION_STEP")
+        compile(script,"side_generated","exec")
+        self.assertIn("side_corridor_boundary_reached",script)
+        self.assertIn("PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY",script)
     def test_new_contract_and_generated_script_remain_separate(self):
         self.assertNotEqual(reference_contract(),reference_contract(far_observe=True))
         s=build_motion_script([.9,-1.3,0.],{},[],{},"test",point_goal=True,locomotion_action="LOCOMOTION_STEP")
