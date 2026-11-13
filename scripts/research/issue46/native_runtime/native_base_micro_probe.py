@@ -1101,18 +1101,19 @@ def native_step_activation_ready(state, baseline):
             state['raw_common']['speed_status']['speed_mode']['value']==4)
 
 
-def step_stand_handoff_ready(rows):
+def step_stand_handoff_ready(rows, *, max_sample_gap_s=.15):
     """A transition permission, never the two-second composite stop acceptance.
 
     Keep STEP's zero input active until measured legs are slow and both feet
     support the body. The speed bounds are diagnostic transition criteria;
     source limits and the subsequent stricter composite stop are unchanged.
+    Sampling gaps use that existing stop contract, not an assumed 50Hz cadence.
     """
     if len(rows)<3:return False
     latest=rows[-1]["sim_time_s"]
     tail=[r for r in rows if 0.<=latest-r["sim_time_s"]<=.200001]
     if len(tail)<3 or tail[-1]["sim_time_s"]-tail[0]["sim_time_s"]<.18:return False
-    if any(b["sim_time_s"]-a["sim_time_s"]>.050001 for a,b in zip(tail,tail[1:])):return False
+    if any(b["sim_time_s"]-a["sim_time_s"]>max_sample_gap_s+1e-9 for a,b in zip(tail,tail[1:])):return False
     if len({(r["native_generation"],r.get("source_clock_generation",0)) for r in tail})!=1:return False
     for row in tail:
         p=row["pose"];values=[p[k] for k in ("vx","vy","vz")]

@@ -1503,6 +1503,12 @@ class FunctionalArrivalRegionStopTests(unittest.TestCase):
 
 
 class MeasuredStepStandHandoffTests(unittest.TestCase):
+    def test_sampling_bound_matches_existing_stop_contract(self):
+        import inspect
+        from scripts.research.issue46.native_runtime import native_micro_stop_contract as stop
+        bound=inspect.signature(m.step_stand_handoff_ready).parameters['max_sample_gap_s'].default
+        self.assertEqual(bound,stop.PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+
     def rows(self):
         return [dict(sim_time_s=i*.02,native_generation=1,source_clock_generation=0,
                      pose=dict(vx=.01,vy=0.,vz=.001),leg_states=[dict(velocity=.02)],
@@ -1521,7 +1527,12 @@ class MeasuredStepStandHandoffTests(unittest.TestCase):
                             ("source_clock_generation",2)):
             bad=copy.deepcopy(rows);bad[5][field]=value
             self.assertFalse(m.step_stand_handoff_ready(bad))
-        self.assertFalse(m.step_stand_handoff_ready([rows[0],*rows[5:]]))
+        # The shared stop contract permits up to150ms source gaps. A60ms
+        # observation gap was rejecting an otherwise1.8s stationary real trace.
+        supported=copy.deepcopy([rows[i] for i in (0,3,5,7,10)])
+        self.assertTrue(m.step_stand_handoff_ready(supported))
+        unsupported=copy.deepcopy([rows[i] for i in (0,8,10)])
+        self.assertFalse(m.step_stand_handoff_ready(unsupported))
 
     def test_actual_generated_transition_waits_before_disable_and_sd(self):
         from types import SimpleNamespace as NS
