@@ -1101,6 +1101,53 @@ def native_step_activation_ready(state, baseline):
             state['raw_common']['speed_status']['speed_mode']['value']==4)
 
 
+def step_stand_handoff_ready(rows):
+    """A transition permission, never the two-second composite stop acceptance.
+
+    Keep STEP's zero input active until measured legs are slow and both feet
+    support the body. The speed bounds are diagnostic transition criteria;
+    source limits and the subsequent stricter composite stop are unchanged.
+    """
+    if len(rows)<3:return False
+    latest=rows[-1]["sim_time_s"]
+    tail=[r for r in rows if 0.<=latest-r["sim_time_s"]<=.200001]
+    if len(tail)<3 or tail[-1]["sim_time_s"]-tail[0]["sim_time_s"]<.18:return False
+    if any(b["sim_time_s"]-a["sim_time_s"]>.050001 for a,b in zip(tail,tail[1:])):return False
+    if len({(r["native_generation"],r.get("source_clock_generation",0)) for r in tail})!=1:return False
+    for row in tail:
+        p=row["pose"];values=[p[k] for k in ("vx","vy","vz")]
+        speeds=[j["velocity"] for j in row["leg_states"]]
+        support=row["floor_support_n"]
+        if not speeds or not all(math.isfinite(x) for x in values+speeds+list(support.values())):return False
+        if (math.hypot(p["vx"],p["vy"])>.020 or abs(p["vz"])>.005
+                or max(abs(x) for x in speeds)>.05
+                or any(support.get(side,0.)<=0. for side in ("left","right"))):return False
+    return True
+
+
+def await_step_stand_handoff(n, baseline, deadline_s):
+    """Zero-only, bounded measured readiness before the installed STEP->SD path."""
+    rows=[]
+    while time.monotonic()<deadline_s:
+        n.publish();n.pump();row=n.sample()
+        if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
+        support={"left":0.,"right":0.}
+        for contact in n.latest_row["contacts"]:
+            for side in support:
+                if contact["geom1"]=="raicom_floor" and contact["body2"]==side+"_ankle_roll_link":
+                    support[side]+=contact["local_force_torque"][0]
+        row=dict(row,floor_support_n=support)
+        if not rows or row["sim_time_s"]>rows[-1]["sim_time_s"]:
+            rows.append(row);n.trace.append(row)
+        if step_stand_handoff_ready(rows):
+            return dict(ready=True,start_sim_s=rows[0]["sim_time_s"],end_sim_s=row["sim_time_s"],
+                        pose=row["pose"],floor_support_n=support,
+                        max_leg_speed_rad_s=max(abs(j["velocity"]) for j in row["leg_states"]),
+                        meaning="TRANSITION_PERMISSION_ONLY_COMPOSITE_STOP_STILL_REQUIRED")
+        time.sleep(.02)
+    raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
+
+
 def carry_stop_evidence(result):
     """Describe saved stop evidence without issuing actions or qualifying a stop."""
     commands=result.get("command_log",[])
@@ -1307,6 +1354,9 @@ def run_carry_navigation(n,contract):
             n.stand_once();n.observe(1.05,baseline=baseline)
         else:
             n.observe(1.05,baseline=baseline)
+            if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+                readiness=await_step_stand_handoff(n,baseline,time.monotonic()+5.)
+                result.setdefault("step_stand_handoffs",[]).append(readiness)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
             n.stand_once()
 

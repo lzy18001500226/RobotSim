@@ -173,7 +173,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         class Node:
             def __init__(self):
                 self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
-                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1}
+                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1,"contacts":[dict(geom1="raicom_floor",body2=side+"_ankle_roll_link",local_force_torque=[200.]) for side in ("left","right")]}
                 self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT";self.native_sample_at=clock.t
             def start_feedback(self):pass
             def stop_feedback(self):pass
@@ -203,7 +203,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+                return dict(native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
@@ -1500,3 +1500,45 @@ class FunctionalArrivalRegionStopTests(unittest.TestCase):
             ns=dict(cfg={'delivery':{'stop_inside_functional_arrival_region':True,'approach_task_position_tolerance_m':.25}},mission=mission,distance=distance,result=result,p=pose,functional_approach_limit=m.functional_approach_limit)
             exec(compile(wrapper,'actual_arrival_stop','exec'),ns)
             self.assertEqual(bool(result.get('goal_triggered_stop')),expected)
+
+
+class MeasuredStepStandHandoffTests(unittest.TestCase):
+    def rows(self):
+        return [dict(sim_time_s=i*.02,native_generation=1,source_clock_generation=0,
+                     pose=dict(vx=.01,vy=0.,vz=.001),leg_states=[dict(velocity=.02)],
+                     floor_support_n=dict(left=190.,right=240.)) for i in range(11)]
+
+    def test_measured_window_and_double_support_are_required(self):
+        import copy
+        rows=self.rows();self.assertTrue(m.step_stand_handoff_ready(rows))
+        self.assertFalse(m.step_stand_handoff_ready(rows[:8]))
+        for key,value in (("vx",.11),("vz",.006)):
+            bad=copy.deepcopy(rows);bad[5]["pose"][key]=value
+            self.assertFalse(m.step_stand_handoff_ready(bad))
+        for field,value in (("floor_support_n",dict(left=0.,right=430.)),
+                            ("leg_states",[dict(velocity=.051)]),
+                            ("leg_states",[dict(velocity=float("nan"))]),
+                            ("source_clock_generation",2)):
+            bad=copy.deepcopy(rows);bad[5][field]=value
+            self.assertFalse(m.step_stand_handoff_ready(bad))
+        self.assertFalse(m.step_stand_handoff_ready([rows[0],*rows[5:]]))
+
+    def test_actual_generated_transition_waits_before_disable_and_sd(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,release_source_on_stop=True,native_action_smoothing=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        calls=[]
+        n=NS(observe=lambda *a,**k:calls.append("zero"),source_enabled=lambda enabled:calls.append("disable"),stand_once=lambda:calls.append("sd"))
+        def ready(*args):calls.append("measured_ready");return {"ready":True}
+        ns=dict(cfg=dict(motion_mode="LOCOMOTION_STEP",release_source_on_stop=True,
+            delivery=dict(release_source_after_zero_window=True)),n=n,baseline=1,result={},
+            time=__import__("time"),await_step_stand_handoff=ready)
+        exec(compile(ast.Module(body=[helper],type_ignores=[]),"real_handoff","exec"),ns)
+        ns["stand_transition"]()
+        self.assertEqual(calls,["zero","measured_ready","disable","sd"])
+        self.assertNotIn("pass_result",ns["result"])
+        def not_ready(*args):raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
+        ns["await_step_stand_handoff"]=not_ready;calls.clear()
+        with self.assertRaisesRegex(RuntimeError,"NOT_READY"):ns["stand_transition"]()
+        self.assertEqual(calls,["zero"])

@@ -199,7 +199,7 @@ class BodyModeReadinessTests(unittest.TestCase):
         tree=ast.parse(native_body_height.build_script({},[],mode="observe"));outer=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_height_probe");fn=next(n for n in outer.body if isinstance(n,ast.FunctionDef) and n.name=="sample")
         row={"get_mode_desc":None,"get_mode_header_code":None,"common_mode_desc":"STAND_DEFAULT"}
         ns=dict(n=SimpleNamespace(pump=lambda:None,sample=lambda:row),deadline=10.,time=SimpleNamespace(monotonic=lambda:1.),process=None,result={"commands":[]})
-        exec(compile(ast.Module(body=[fn],type_ignores=[]),"actual_body_mode_readiness","exec"),ns)
+        exec(compile(ast.Module(body=[next(n for n in outer.body if isinstance(n,ast.FunctionDef) and n.name=="fresh_mode_sample"),fn],type_ignores=[]),"actual_body_mode_readiness","exec"),ns)
         with self.assertRaisesRegex(RuntimeError,"CRITICAL_ROS_TELEMETRY_STALE:get_mode"):ns["sample"]()
 class TerminalReapproachContractTests(unittest.TestCase):
     def test_actual_generated_reapproach_is_bounded_and_requires_physical_stop(self):
