@@ -157,6 +157,10 @@ def run_height_probe(n, contract):
             if not stopped.get('pass'):raise RuntimeError('BODY_CLOCK_PAUSE_NOT_STOPPED')
             result['clock_pauses']=[dict(start_monotonic_s=pause_started,end_monotonic_s=time.monotonic(),cause=str(exc),zero_before_reacquire=True,stop=stopped)]
             row=n.sample()
+        if process is None and not result["commands"] and (row.get("get_mode_desc") is None or row.get("get_mode_header_code") is None):
+            # A new observer/clock epoch has no applied-mode evidence yet.
+            # Treat absence as zero-only readiness, never as accepted STAND.
+            raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:get_mode")
         if row["get_mode_desc"]!="STAND_DEFAULT" or row["common_mode_desc"]!="STAND_DEFAULT" or row["get_mode_status_value"]!=100 or row["common_mode_status_value"]!=100 or row["get_mode_header_code"]!=0:
             result['rejected_body_mode']={k:row.get(k) for k in ('sample_monotonic_s','sim_time_s','get_mode_desc','common_mode_desc','get_mode_status_value','common_mode_status_value','get_mode_header_code','fsm_state','body_status','source_clock_generation','state_age_s')}
             raise RuntimeError("BODY_HEIGHT_MODE_NOT_STAND:"+json.dumps(result['rejected_body_mode']))

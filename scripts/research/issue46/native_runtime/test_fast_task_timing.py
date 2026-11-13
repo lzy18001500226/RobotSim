@@ -191,4 +191,14 @@ class PremotionNewEpochTests(unittest.TestCase):
         self.assertTrue(eval(check,ns));ns["initial_zero_only"]=False;self.assertFalse(eval(check,ns))
         ns["initial_zero_only"]=True;ns["hard_until"]=9.;self.assertFalse(eval(check,ns))
         ns["hard_until"]=12.;ns["exc"]=RuntimeError("JOINT_LIMIT");self.assertFalse(eval(check,ns))
+class BodyModeReadinessTests(unittest.TestCase):
+    def test_empty_initial_mode_is_readiness_missing_not_accepted_stand(self):
+        import ast
+        from types import SimpleNamespace
+        from scripts.research.issue46.native_runtime import native_body_height
+        tree=ast.parse(native_body_height.build_script({},[],mode="observe"));outer=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_height_probe");fn=next(n for n in outer.body if isinstance(n,ast.FunctionDef) and n.name=="sample")
+        row={"get_mode_desc":None,"get_mode_header_code":None,"common_mode_desc":"STAND_DEFAULT"}
+        ns=dict(n=SimpleNamespace(pump=lambda:None,sample=lambda:row),deadline=10.,time=SimpleNamespace(monotonic=lambda:1.),process=None,result={"commands":[]})
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),"actual_body_mode_readiness","exec"),ns)
+        with self.assertRaisesRegex(RuntimeError,"CRITICAL_ROS_TELEMETRY_STALE:get_mode"):ns["sample"]()
 if __name__=="__main__":unittest.main()
