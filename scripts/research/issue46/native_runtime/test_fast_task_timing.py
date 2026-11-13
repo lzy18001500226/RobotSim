@@ -140,4 +140,14 @@ class UniformReliablePreloadTests(unittest.TestCase):
         code=inspect.getsource(runner)
         self.assertIn("argv[argv.index('--hal-hand-close-hold-s')+1]='5'",code)
         self.assertNotIn("argv[argv.index('--hal-hand-close-hold-s')+1]='2'",code)
+class GeometricTableArrivalTests(unittest.TestCase):
+    def test_nominal_xy_failure_only_can_request_original_physical_placement_preflight(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import geometric_delivery_handoff_eligible
+        nav={"pass_result":False,"failure":"CARRY_GOAL_OR_STOP_NOT_QUALIFIED","goal_triggered_stop":True,"source_and_motion_mode_observed":True,"retreat_turn_prefix_pass":True,"away_mission":{"bilateral_support_alternation_observed":True},"measured_distance_m":2.}
+        for name in ("post_stop_composite","retreat_stop_composite","turn_stop_composite"):nav[name]={"pass":True}
+        cfg={"delivery_pose_acceptance":"ACTUAL_PLACEMENT_IK","require_restored_route_preflight":True}
+        self.assertTrue(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
+        self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":False},cfg))
+        nav["failure"]="JOINT_LIMIT";self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
+        nav["failure"]="CARRY_GOAL_OR_STOP_NOT_QUALIFIED";nav["post_stop_composite"]={"pass":False};self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
 if __name__=="__main__":unittest.main()

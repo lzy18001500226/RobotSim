@@ -1214,6 +1214,16 @@ def qualify_static_carry_hold(output, ready, *, minimum_sim_s=8.):
     raise RuntimeError("CARRY_STATIC_HOLD_INCOMPLETE")
 
 
+def geometric_delivery_handoff_eligible(nav, recorded, profile):
+    """Nominal XY miss can request actual-pose planning, never waive physics."""
+    if profile.get("delivery_pose_acceptance")!="ACTUAL_PLACEMENT_IK" or not profile.get("require_restored_route_preflight"):return False
+    if nav.get("pass_result") or nav.get("failure")!="CARRY_GOAL_OR_STOP_NOT_QUALIFIED" or recorded.get("pass") is not True:return False
+    return bool(nav.get("goal_triggered_stop") and nav.get("source_and_motion_mode_observed")
+                and nav.get("retreat_turn_prefix_pass") and nav.get("away_mission",{}).get("bilateral_support_alternation_observed")
+                and nav.get("measured_distance_m",0.)>.005
+                and all(nav.get(k,{}).get("pass") is True for k in ("post_stop_composite","retreat_stop_composite","turn_stop_composite")))
+
+
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
     """Run the existing grip owner and navigation adapter with a measured handoff."""
     import subprocess
@@ -1317,6 +1327,16 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         if not nav.get("failure"):nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
         result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
         result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
+    if getattr(args,"carry_delivery_config",None) is not None:
+        profile=json.loads(args.carry_delivery_config.read_text())
+        if geometric_delivery_handoff_eligible(nav,recorded,profile):
+            from scripts.research.issue46.native_runtime.native_grasp_stand_restore import screen_measured_route
+            # Fresh same-episode physical state and full original lowering,
+            # placement IK, tilt and collision checks precede any arm motion.
+            proof=screen_measured_route(args,output,replan_record,"functional_arrival_geometry_snapshot")
+            result["functional_delivery_arrival"]={"classification":"ACTUAL_POSE_PLACEMENT_GEOMETRY_QUALIFIED_NOT_PLACED_YET","nominal_navigation_result":dict(result["carry_navigation"]),"measured_full_model_placement_screen":proof,"physical_gates_changed":False}
+            nav["pass_result"]=True;nav["failure"]=None
+            result["carry_navigation"].update(pass_result=True,failure=None,arrival_acceptance="ACTUAL_FULL_MODEL_PLACEMENT_PREFLIGHT_NOT_NOMINAL_XY",legacy_nominal_xy_pass=False)
     mission_gate="SECOND_TABLE_BASE_ARRIVAL_AND_STOP" if getattr(args,"carry_delivery_config",None) is not None else "RETREAT_AND_INPLACE_TURN_PREFIX" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
     result["gates"][mission_gate]="PASS" if nav.get("pass_result") else "FAIL"
     if review_prefix:
