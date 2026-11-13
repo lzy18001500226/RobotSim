@@ -316,3 +316,23 @@ class HeadingPhaseStopTests(unittest.TestCase):
         value=self.run_turn(outside=True)
         self.assertEqual(len(value['trace']),1)
         self.assertEqual(value['task_replan_pause']['reason'],'LEFT_CHECKED_OUTER_BOX')
+
+
+class RegisteredProfileHandoffTests(unittest.TestCase):
+    def test_registered_profile_reaches_consumer_and_edited_profile_is_rejected(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        from scripts.research.issue46.native_runtime.grasp_profiles import load_profiles
+        import copy
+        with TemporaryDirectory() as directory:
+            output=Path(directory);base={"body_drop_m":.1,"robot_bodies":["pelvis"]}
+            (output/"standing_grasp_proposal.json").write_text(json.dumps(base))
+            selected={**base,"grasp_profile":copy.deepcopy(load_profiles()[10])}
+            path=output/"selected.json";path.write_text(json.dumps(selected))
+            with patch.object(task.pg,"write_new_text",side_effect=lambda path,text:path.write_text(text)):
+                result=json.loads(task.stage_runtime_posture(output,path).read_text())
+            self.assertEqual(result["grasp_profile"],load_profiles()[10]);self.assertEqual(result["body_drop_m"],.1)
+            selected["grasp_profile"]["waist_pitch_rad"]+=.1;path.write_text(json.dumps(selected))
+            with self.assertRaisesRegex(ValueError,"unchanged registered grasp profile"):
+                task.stage_runtime_posture(output,path)

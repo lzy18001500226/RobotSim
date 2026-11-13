@@ -126,6 +126,11 @@ def stage_runtime_posture(output, selected_path):
     base = json.loads((output/"standing_grasp_proposal.json").read_text())
     selected = json.loads(Path(selected_path).read_text())
     allowed = {"waist_target_rad", "torso_world_yaw_target_rad", "rgbd_posture_selection", "pre_raise_forearm_target_rad"}
+    if "grasp_profile" in selected:
+        from scripts.research.issue46.native_runtime.grasp_profiles import load_profiles
+        if selected["grasp_profile"] not in load_profiles():
+            raise ValueError("task posture requires an unchanged registered grasp profile")
+        allowed.add("grasp_profile")
     for key, value in selected.items():
         if key not in allowed and base.get(key) != value:
             raise ValueError("task posture may not change protected field:"+key)
