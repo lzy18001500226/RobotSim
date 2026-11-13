@@ -66,11 +66,13 @@ class AdaptiveCloseTests(unittest.TestCase):
 class CarryStopTimingTests(unittest.TestCase):
     def test_fast_task_keeps_owned_source_active_through_zero_window(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
-        cfg={"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,"turn_translation_strategy":"PURE_YAW"}
+        cfg={"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,"turn_translation_strategy":"PURE_YAW","base_goal_world_xy":[.015,.98]}
         default=task_route_profile(cfg);fast=task_route_profile(cfg,fast_task_timing=True)
         self.assertNotIn("release_source_after_zero_window",default)
         self.assertTrue(fast["release_source_after_zero_window"])
         self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
+        self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
+        self.assertEqual(default["base_goal_world_xy"],[.015,.98])
         self.assertEqual(fast["turn_translation_strategy"],"PURE_YAW")
         self.assertTrue(fast["stop_inside_functional_arrival_region"])
         self.assertEqual(fast["approach_task_position_tolerance_m"],.15)
