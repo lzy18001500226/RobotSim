@@ -26,6 +26,23 @@ def clearance_posture_error(row, local_center, pelvis_relative_target):
     expected=[base["position_m"][i]+sum(B[3*i+j]*pelvis_relative_target[j] for j in range(3)) for i in range(3)]
     return actual,expected,math.dist(actual,expected)
 
+def position_mode_feedback_target(endpoint, offset, bias, kp, limits, margin=.01):
+    """Anti-windup for a target; reserve both q and q+bias/kp source bounds.
+
+    This bounds only the adaptive position request. It never writes measured
+    state or bypasses the downstream effort, tracking, contact or limit gates.
+    """
+    lo,hi=limits[:2]
+    if not all(math.isfinite(v) for v in (endpoint,offset,bias,kp,lo,hi,margin)) or kp<=0. or margin<.001:
+        raise RuntimeError('INVALID_POSITION_MODE_FEEDBACK_INPUT')
+    if not lo+.001<=endpoint<=hi-.001:
+        raise RuntimeError('POSITION_MODE_FEEDBACK_ENDPOINT_SOURCE_LIMIT')
+    lower=max(lo+margin,lo+margin-bias/kp)
+    upper=min(hi-margin,hi-margin-bias/kp)
+    if lower>upper:raise RuntimeError('NO_POSITION_MODE_FEEDBACK_INTERVAL')
+    return min(upper,max(lower,endpoint+offset))
+
+
 def position_mode_setpoint(desired, actual, velocity, bias, kp, kd, limits, effort_cap, *, bound_effort=False):
     lo,hi,speed=limits
     values=(desired,actual,velocity,bias,kp,kd,lo,hi,speed,effort_cap)

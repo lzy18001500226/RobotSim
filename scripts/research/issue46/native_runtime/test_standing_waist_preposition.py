@@ -217,3 +217,37 @@ class WaistSimulationClockTests(unittest.TestCase):
         with self.assertRaises(KeyError):w.waist_trajectory_fraction(dict(duration_s=4.),dict(sim_time_s=21.))
     def test_completion_requires_all_physical_seconds(self):
         self.assertEqual(w.waist_trajectory_fraction(dict(start_sim_time_s=20.,duration_s=4.),dict(sim_time_s=24.)),1.)
+
+
+class AdaptivePositionModeMarginTests(unittest.TestCase):
+    def test_saved_left_endpoint_feedback_cannot_spend_gravity_reserve(self):
+        limits=(-.523599,.523599,4.188)
+        bias=(-.5213384673805598+.49732175847544635)*30.
+        unsafe=-.49932175847544635
+        with self.assertRaisesRegex(RuntimeError,'EFFORT_OR_SETPOINT'):
+            w.position_mode_setpoint(unsafe,-.48567509061001535,0.,bias,30.,1.,limits,6.)
+        desired=w.position_mode_feedback_target(-.47859042012384956,unsafe+.47859042012384956,bias,30.,limits)
+        command=w.position_mode_setpoint(desired,-.48567509061001535,0.,bias,30.,1.,limits,6.)
+        self.assertGreaterEqual(command,limits[0]+.01-1e-12)
+        self.assertLessEqual(command,limits[1]-.01+1e-12)
+    def test_repeated_correction_is_bounded_for_both_bias_signs(self):
+        for bias in (-.72,.72):
+            offset=0.;endpoint=-.47859 if bias<0 else .47859
+            for _ in range(1000):
+                desired=w.position_mode_feedback_target(endpoint,offset+(-.002 if bias<0 else .002),bias,30.,(-.523599,.523599,4.188))
+                offset=desired-endpoint
+                command=w.position_mode_setpoint(desired,desired,0.,bias,30.,1.,(-.523599,.523599,4.188),6.)
+                self.assertLessEqual(abs(command),.513599+1e-12)
+    def test_invalid_endpoint_and_effort_still_stop(self):
+        with self.assertRaisesRegex(RuntimeError,'ENDPOINT_SOURCE_LIMIT'):
+            w.position_mode_feedback_target(-.6,.2,-.72,30.,(-.523599,.523599,4.188))
+        desired=w.position_mode_feedback_target(0.,0.,.72,30.,(-.523599,.523599,4.188))
+        with self.assertRaisesRegex(RuntimeError,'EFFORT_OR_SETPOINT'):
+            w.position_mode_setpoint(desired,-.5,0.,.72,30.,1.,(-.523599,.523599,4.188),6.)
+    def test_generated_owner_contains_feedback_bound_and_joint_diagnostic(self):
+        gains=native.stl_hand_startup.load_animation_player_arm_pd_parameters()
+        script=native.stl_hand_startup.build_hal_bilateral_arm_plan_script(gains,[0.]*7,[0.]*7,duration_s=6.,hold_s=1.,restore=False,use_native_joint_feedback=True,circle_contract={"approach_staging":{"pass_result":True}})
+        compile(script,'margin_owner','exec')
+        self.assertIn('def position_mode_feedback_target',script)
+        self.assertIn('desired=position_mode_feedback_target(endpoint[name]',script)
+        self.assertIn('unbounded_command=',script)

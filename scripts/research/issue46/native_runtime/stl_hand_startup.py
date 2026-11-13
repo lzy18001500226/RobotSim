@@ -1076,11 +1076,13 @@ class Plan(Node):
      for name in RIGHT:
       correction=float(self.tracking_metrics['cartesian_correction_rad'][name])
       if not math.isfinite(correction):raise RuntimeError('NONFINITE_LIFT_TRACKING_CORRECTION')
-      limits=SOURCE_LIMITS[name]
-      command=endpoint[name]+self.ff_offset[name]+max(-.002,min(.002,.05*correction))
-      self.ff_offset[name]=max(limits[0]+.01,min(limits[1]-.01,command))-endpoint[name]
+      self.ff_offset[name]+=max(-.002,min(.002,.05*correction))
     for name in RIGHT:
-     desired=endpoint[name]+self.ff_offset[name]
+     if (CIRCLE_CONTRACT or {}).get('approach_staging'):
+      j=self.native_row['joints'][name]
+      desired=position_mode_feedback_target(endpoint[name],self.ff_offset[name],float(j['bias_force']),float(GAINS[name][0]),SOURCE_LIMITS[name])
+      self.ff_offset[name]=desired-endpoint[name]
+     else:desired=endpoint[name]+self.ff_offset[name]
      if stage=='APPROACH':desired=self.approach_start[name]+self.approach_fraction*(desired-self.approach_start[name])
      limits=SOURCE_LIMITS.get(name)
      if limits is None or not limits[0]+.001<=desired<=limits[1]-.001:raise RuntimeError('LIVE_TARGET_SOURCE_LIMIT:'+name)
@@ -1105,7 +1107,9 @@ class Plan(Node):
      bounded=stage=='CARRY_HOLD' and getattr(self,'carry_torso_reference_done',False)
      cap=min(staged["source_effort_limits_nm"][name],staged["compiled_effort_limits_nm"][name]) if bounded else staged["source_effort_limits_nm"][name]
      if bounded:x.velocity=0.
-     x.position=position_mode_setpoint(float(target[name]),float(j["q"]),float(j["qvel"]),float(j["bias_force"]),x.stiffness,x.damping,staged["source_motion_limits"][name],cap,bound_effort=bounded);x.effort=0.
+     try:x.position=position_mode_setpoint(float(target[name]),float(j["q"]),float(j["qvel"]),float(j["bias_force"]),x.stiffness,x.damping,staged["source_motion_limits"][name],cap,bound_effort=bounded)
+     except RuntimeError as exc:raise RuntimeError(str(exc)+':'+json.dumps(dict(joint=name,stage=stage,desired=target[name],actual=j['q'],velocity=j['qvel'],bias=j['bias_force'],kp=x.stiffness,kd=x.damping,limits=staged['source_motion_limits'][name],effort_cap=cap,unbounded_command=float(target[name])+float(j['bias_force'])/x.stiffness))) from exc
+     x.effort=0.
     published_positions[name]=float(x.position);m.joints.append(x)
    self.pub.publish(m)
    if WAIST:
@@ -1334,8 +1338,8 @@ finally:
     script=inspect.getsource(validate_pregrasp_segments)+"\n"+script
     if (waist_target is not None or (circle_contract or {}).get("approach_staging")) and use_native_joint_feedback:
         import inspect
-        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint,clearance_posture_error
-        script=inspect.getsource(clearance_posture_error)+"\n"+inspect.getsource(position_mode_setpoint)+"\n"+script
+        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint,position_mode_feedback_target,clearance_posture_error
+        script=inspect.getsource(clearance_posture_error)+"\n"+inspect.getsource(position_mode_feedback_target)+"\n"+inspect.getsource(position_mode_setpoint)+"\n"+script
         if (circle_contract or {}).get("approach_staging"):
             from scripts.research.issue46.native_runtime.native_base_micro_probe import physical_fault,native_pose
             script=inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)+"\n"+script
