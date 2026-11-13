@@ -32,9 +32,10 @@ class BodyClockPauseTests(unittest.TestCase):
         import time
         tree=ast.parse(inspect.getsource(body.run_height_probe))
         sample=next(n for n in tree.body[0].body if isinstance(n,ast.FunctionDef) and n.name=='sample')
+        fresh_mode=next(n for n in tree.body[0].body if isinstance(n,ast.FunctionDef) and n.name=='fresh_mode_sample')
         calls=[];result={};identity={'generation':1,'process_pid':42,'contacts':[{'efc_address':1,'body1':side+'_ankle_roll_link','body2':'world','local_force_torque':[100.]} for side in ('left','right')]}
         row=dict(get_mode_desc='STAND_DEFAULT',common_mode_desc='STAND_DEFAULT',get_mode_status_value=100,common_mode_status_value=100,get_mode_header_code=0,fsm_state=7,body_status=1,sample_monotonic_s=1.)
-        replies=iter([RuntimeError(failure),row,row])
+        replies=iter([dict(row,get_mode_desc=None,get_mode_header_code=None,get_mode_status_value=None) if failure=='MISSING_MODE_READBACK' else RuntimeError(failure),row,row])
         def read():
             value=next(replies);calls.append('read')
             if isinstance(value,Exception):raise value
@@ -42,7 +43,7 @@ class BodyClockPauseTests(unittest.TestCase):
         n=S(pump=lambda:None,sample=read,latest_row=identity,trace=[])
         def stop(*args):calls.append('stop');return {'pass':True}
         env=dict(time=time,deadline=time.monotonic()+10.,n=n,process=S(poll=lambda:None),body_pause_zero_required=body.body_pause_zero_required,result=result,command=lambda v:calls.append(('command',v)),settle_native_body=stop,contract=S(MC_FSM_ACTIVE_STATES=(7,)))
-        exec(compile(ast.fix_missing_locations(ast.Module(body=[sample],type_ignores=[])),'body_clock_sample','exec'),env)
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[fresh_mode,sample],type_ignores=[])),'body_clock_sample','exec'),env)
         self.assertEqual(env['sample'](),row)
         self.assertEqual(calls,['read',('command',0.),'read','stop','read'])
         self.assertTrue(result['clock_pauses'][0]['zero_before_reacquire'])
@@ -51,6 +52,20 @@ class BodyClockPauseTests(unittest.TestCase):
 
     def test_clock_pause_zeros_before_readback_and_requires_stop(self):
         self.exercise_pause()
+
+    def test_clock_invalidated_get_mode_after_publisher_start_is_zero_only(self):
+        self.exercise_pause('MISSING_MODE_READBACK')
+
+    def test_confirmed_nonstand_is_not_missing_telemetry(self):
+        row=dict(get_mode_desc='WALK',get_mode_header_code=0,get_mode_status_value=100)
+        from types import SimpleNamespace as S
+        tree=ast.parse(inspect.getsource(body.run_height_probe))
+        fn=next(n for n in tree.body[0].body if isinstance(n,ast.FunctionDef) and n.name=='fresh_mode_sample')
+        scope=dict(n=S(sample=lambda:row))
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'fresh_mode_read','exec'),scope)
+        self.assertEqual(scope['fresh_mode_sample'](),row)
+        # Existing semantic gate remains authoritative after readback.
+        self.assertIn('row["get_mode_desc"]!="STAND_DEFAULT"',inspect.getsource(body.run_height_probe))
 
     def test_common_state_gap_also_stops_and_requires_new_fresh_state(self):
         self.exercise_pause("CRITICAL_ROS_TELEMETRY_STALE:{'common':0.449}")

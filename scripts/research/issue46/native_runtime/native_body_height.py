@@ -133,10 +133,17 @@ def run_height_probe(n, contract):
         if process is None or process.poll() is not None:raise RuntimeError("BODY_PUBLISHER_NOT_ALIVE")
         process.stdin.write(str(value)+"\n");process.stdin.flush()
         result["commands"].append(dict(t=time.monotonic(),stand_height=value,evidence="PIPE_WRITE_NOT_MC_RECEIPT"))
+    def fresh_mode_sample():
+        row=n.sample()
+        if any(row.get(k) is None for k in ('get_mode_desc','get_mode_header_code','get_mode_status_value')):
+            # Clock-epoch cache invalidation is missing evidence, not a
+            # confirmed non-STAND result. The caller must zero and reacquire.
+            raise RuntimeError('CRITICAL_ROS_TELEMETRY_STALE:get_mode')
+        return row
     def sample():
         if time.monotonic()>=deadline:raise RuntimeError("BODY_HEIGHT_WATCHDOG")
         n.pump()
-        try:row=n.sample()
+        try:row=fresh_mode_sample()
         except RuntimeError as exc:
             transient=str(exc)=="CLOCK_GENERATION_PENDING" or str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
             if not transient or process is None or result.get('clock_pauses'):raise
@@ -147,7 +154,7 @@ def run_height_probe(n, contract):
             fresh_until=min(deadline,pause_started+1.)
             while time.monotonic()<fresh_until:
                 n.pump()
-                try:row=n.sample();break
+                try:row=fresh_mode_sample();break
                 except RuntimeError as pending:
                     if str(pending)!="CLOCK_GENERATION_PENDING" and not str(pending).startswith("CRITICAL_ROS_TELEMETRY_STALE:"):raise
                 time.sleep(.005)
@@ -156,11 +163,7 @@ def run_height_probe(n, contract):
             stopped=settle_native_body(n,None,deadline,result,'clock_pause_stop')
             if not stopped.get('pass'):raise RuntimeError('BODY_CLOCK_PAUSE_NOT_STOPPED')
             result['clock_pauses']=[dict(start_monotonic_s=pause_started,end_monotonic_s=time.monotonic(),cause=str(exc),zero_before_reacquire=True,stop=stopped)]
-            row=n.sample()
-        if process is None and not result["commands"] and (row.get("get_mode_desc") is None or row.get("get_mode_header_code") is None):
-            # A new observer/clock epoch has no applied-mode evidence yet.
-            # Treat absence as zero-only readiness, never as accepted STAND.
-            raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:get_mode")
+            row=fresh_mode_sample()
         if row["get_mode_desc"]!="STAND_DEFAULT" or row["common_mode_desc"]!="STAND_DEFAULT" or row["get_mode_status_value"]!=100 or row["common_mode_status_value"]!=100 or row["get_mode_header_code"]!=0:
             result['rejected_body_mode']={k:row.get(k) for k in ('sample_monotonic_s','sim_time_s','get_mode_desc','common_mode_desc','get_mode_status_value','common_mode_status_value','get_mode_header_code','fsm_state','body_status','source_clock_generation','state_age_s')}
             raise RuntimeError("BODY_HEIGHT_MODE_NOT_STAND:"+json.dumps(result['rejected_body_mode']))
