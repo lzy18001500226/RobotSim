@@ -238,3 +238,26 @@ class MeasuredTurnRefinementTests(unittest.TestCase):
         self.assertAlmostEqual(final,1.913119320969793)
         with self.assertRaises(RuntimeError):measured_turn_refinement(out,stopped,1.9,{'pass':True})
         with self.assertRaises(RuntimeError):measured_turn_refinement(mission,stopped,1.9,{'pass':False})
+
+
+class HeldWaistReturnTests(unittest.TestCase):
+    def rows(self):
+        return [dict(sim_time_s=10.+i*.02,host_monotonic_ns=10000000000+i*20000000,generation=1,
+            joints={name:dict(q=.02,qvel=.01) for name in restore.WAIST}) for i in range(13)]
+
+    def test_loaded_neutral_waist_requires_continuous_measured_window(self):
+        rows=self.rows();baseline={name:0. for name in restore.WAIST}
+        self.assertTrue(restore.held_waist_return_ready(rows,baseline))
+        self.assertFalse(restore.held_waist_return_ready(rows[:5],baseline))
+        for q,velocity in ((.307,.01),(.02,.051),(float('nan'),.0)):
+            bad=copy.deepcopy(rows);bad[5]['joints']['waist_pitch_joint'].update(q=q,qvel=velocity)
+            self.assertFalse(restore.held_waist_return_ready(bad,baseline))
+
+    def test_stale_duplicates_gap_and_generation_switch_cannot_qualify(self):
+        baseline={name:0. for name in restore.WAIST}
+        for change in ('duplicate','generation','gap'):
+            rows=self.rows()
+            if change=='duplicate':rows[5]['host_monotonic_ns']=rows[4]['host_monotonic_ns']
+            if change=='generation':rows[5]['generation']=2
+            if change=='gap':rows=rows[:4]+rows[8:]
+            self.assertFalse(restore.held_waist_return_ready(rows,baseline))
