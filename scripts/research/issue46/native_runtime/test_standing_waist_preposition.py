@@ -134,8 +134,8 @@ if __name__=="__main__":unittest.main()
 class WaistCallbackMemoryBoundaryTests(unittest.TestCase):
     def state(self, source_ns):
         names=w.WAIST
-        request=dict(schema='robotsim.waist-preposition.v1',duration_s=4.,lease_s=300.,generation=1,created_host_ns=9000000000,source_limits={n:(-.3,.3,3.) for n in names},target_rad={n:.1 for n in names},start_rad={n:0. for n in names},effort_caps_nm={n:36. for n in names})
-        owner=SimpleNamespace(waist_request=request,waist_report_at=0.,waist_native=dict(generation=1,host_monotonic_ns=source_ns,joints={n:dict(q=0.,qvel=0.,bias_force=0.) for n in names}),get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(to_msg=lambda:SimpleNamespace(sec=10,nanosec=0))))
+        request=dict(schema='robotsim.waist-preposition.v1',duration_s=4.,lease_s=300.,generation=1,created_host_ns=9000000000,start_sim_time_s=20.,source_limits={n:(-.3,.3,3.) for n in names},target_rad={n:.1 for n in names},start_rad={n:0. for n in names},effort_caps_nm={n:36. for n in names})
+        owner=SimpleNamespace(waist_request=request,waist_report_at=0.,waist_native=dict(generation=1,host_monotonic_ns=source_ns,sim_time_s=21.,joints={n:dict(q=0.,qvel=0.,bias_force=0.) for n in names}),get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(to_msg=lambda:SimpleNamespace(sec=10,nanosec=0))))
         msg=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=10,nanosec=0)),joints=[SimpleNamespace(name=n,position=0.,velocity=0.,effort=0.,stiffness=40.,damping=5.) for n in names])
         return owner,msg
     def test_callback_operates_with_filesystem_unavailable(self):
@@ -198,3 +198,22 @@ class UnownedWaistInputPauseTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'STALE_MC_WAIST_RELAY'):w.bootstrap_unowned_waist_ready(n)
         n=SimpleNamespace(waist_request={'captured':True},waist_last_receipt=0.)
         with patch('time.monotonic',return_value=2.):self.assertTrue(w.bootstrap_unowned_waist_ready(n))
+
+
+class WaistSimulationClockTests(unittest.TestCase):
+    def test_slow_physics_does_not_rush_target_on_host_clock(self):
+        request=dict(start_sim_time_s=20.,duration_s=4.)
+        self.assertAlmostEqual(w.waist_trajectory_fraction(request,dict(sim_time_s=21.)),.15625)
+        # Host time/age is intentionally not a motion-progress input.
+        owner,msg=WaistCallbackMemoryBoundaryTests().state(14000000000)
+        with patch('time.monotonic',return_value=14.),patch('time.monotonic_ns',return_value=14000000000):
+            w.override_waist(owner,msg)
+        self.assertAlmostEqual(msg.joints[0].position,.015625)
+    def test_sim_reset_and_nonfinite_clock_fail_closed(self):
+        for current in (19.,float('nan'),float('inf')):
+            with self.assertRaisesRegex(RuntimeError,'SIM_CLOCK_INVALID'):
+                w.waist_trajectory_fraction(dict(start_sim_time_s=20.,duration_s=4.),dict(sim_time_s=current))
+    def test_missing_clock_cannot_fall_back_to_host_time(self):
+        with self.assertRaises(KeyError):w.waist_trajectory_fraction(dict(duration_s=4.),dict(sim_time_s=21.))
+    def test_completion_requires_all_physical_seconds(self):
+        self.assertEqual(w.waist_trajectory_fraction(dict(start_sim_time_s=20.,duration_s=4.),dict(sim_time_s=24.)),1.)

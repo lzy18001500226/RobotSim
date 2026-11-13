@@ -114,13 +114,27 @@ def waist_motion_duration(start, target):
     return duration
 
 
+def waist_trajectory_fraction(request, row):
+    """Advance a physical trajectory on measured simulation time only.
+
+    Host monotonic time remains the lease/freshness/watchdog clock. Advancing
+    targets on that clock would rush motion whenever rendering/physics is slow.
+    """
+    start=float(request['start_sim_time_s']);current=float(row['sim_time_s'])
+    duration=float(request['duration_s'])
+    if not all(math.isfinite(v) for v in (start,current,duration)) or duration<=0. or current<start-1e-9:
+        raise RuntimeError('WAIST_TRAJECTORY_SIM_CLOCK_INVALID')
+    u=min(1.,max(0.,(current-start)/duration))
+    return u*u*(3.-2.*u)
+
+
 def override_waist(self, message):
     if getattr(self,"waist_request",None) is None:return message
     request=self.waist_request;now=time.monotonic()
     if request.get("schema")!="robotsim.waist-preposition.v1" or not 4.<=request["duration_s"]<=12. or not 0.<=(time.monotonic_ns()-request["created_host_ns"])*1e-9<=float(request.get("lease_s",60.)):raise RuntimeError("WAIST_POSTURE_REQUEST_EXPIRED_OR_INVALID")
     row=self.waist_native
     if row["generation"]!=request["generation"] or not 0.<=(time.monotonic_ns()-row["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("WAIST_POSTURE_NATIVE_STATE_NOT_FRESH")
-    u=min(1.,max(0.,(time.monotonic_ns()-request["created_host_ns"])*1e-9/request["duration_s"]));u=u*u*(3.-2.*u)
+    u=waist_trajectory_fraction(request,row)
     actual={};published={};source_gains={j.name:{"stiffness":float(j.stiffness),"damping":float(j.damping)} for j in message.joints}
     mc_source_stamp_ns=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec)
     for joint in message.joints:
@@ -162,7 +176,7 @@ def override_forearm(self,target,name):
 
 def extend_bootstrap(script):
     if script.count(" def on_waist(self,m):")!=1:raise ValueError("MC waist relay method changed")
-    script=script.replace("class Hold(Node):",inspect.getsource(position_mode_setpoint)+"\n"+inspect.getsource(override_waist)+"\n"+inspect.getsource(override_forearm)+"\n"+inspect.getsource(refresh_bootstrap_waist_io)+"\n"+inspect.getsource(bootstrap_unowned_waist_ready)+"\n"+inspect.getsource(emit_manual_waist)+"\nclass Hold(Node):",1)
+    script=script.replace("class Hold(Node):",inspect.getsource(position_mode_setpoint)+"\n"+inspect.getsource(waist_trajectory_fraction)+"\n"+inspect.getsource(override_waist)+"\n"+inspect.getsource(override_forearm)+"\n"+inspect.getsource(refresh_bootstrap_waist_io)+"\n"+inspect.getsource(bootstrap_unowned_waist_ready)+"\n"+inspect.getsource(emit_manual_waist)+"\nclass Hold(Node):",1)
     old="  self.waist_pub.publish(m);self.waist_last_receipt=time.monotonic();self.waist_relay_count+=1"
     if script.count(old)!=1:raise ValueError("single waist relay publication changed")
     script=script.replace(old,"  self.waist_source_template=m;self.waist_last_receipt=time.monotonic();self.waist_relay_count+=1\n  if getattr(self,'waist_request',None) is None:self.waist_pub.publish(m)",1)
@@ -235,7 +249,7 @@ def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=Fa
         proof=dict(classification='ACTUAL_STATE_WORLD_TORSO_FRAME_STATIC_PREFLIGHT',mj_step_calls=0,pelvis_yaw_rad=root_yaw,torso_world_yaw_target_rad=desired,waist_target_rad=target,samples=21,violations=bad)
         pg.write_new_text(output/'world_torso_waist_static_preflight.json',json.dumps(proof,indent=2)+'\n')
         row=read_native(output/'native_latest.json')
-    request=dict(schema="robotsim.waist-preposition.v1",generation=row["generation"],created_host_ns=time.monotonic_ns(),duration_s=waist_motion_duration({n:row["joints"][n]["q"] for n in WAIST},target),lease_s=300.,start_rad={n:row["joints"][n]["q"] for n in WAIST},target_rad=target,source_limits={n:limits[n] for n in WAIST},effort_caps_nm=effort_caps)
+    request=dict(schema="robotsim.waist-preposition.v1",generation=row["generation"],created_host_ns=time.monotonic_ns(),start_sim_time_s=float(row["sim_time_s"]),duration_s=waist_motion_duration({n:row["joints"][n]["q"] for n in WAIST},target),lease_s=300.,start_rad={n:row["joints"][n]["q"] for n in WAIST},target_rad=target,source_limits={n:limits[n] for n in WAIST},effort_caps_nm=effort_caps)
     pending=output/"standing_waist_request.tmp"
     pg.write_new_text(pending,json.dumps(request,indent=2)+"\n")
     os.replace(pending,output/"standing_waist_request.json")
@@ -246,8 +260,11 @@ def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=Fa
         if fault:raise RuntimeError("WAIST_PREPOSITION_PHYSICAL:"+fault)
         feet=[sum(max(0.,c["local_force_torque"][0]) for c in actual["contacts"] if c.get("efc_address",-1)>=0 and side+"_ankle_roll_link" in (c["body1"],c["body2"]) and "world" in (c["body1"],c["body2"])) for side in ("left","right")]
         if min(feet)<5.:raise RuntimeError("WAIST_PREPOSITION_SUPPORT_LOST")
-        u=min(1.,max(0.,(time.monotonic_ns()-request["created_host_ns"])*1e-9/request["duration_s"]));u=u*u*(3.-2.*u)
-        if any(abs(actual["joints"][n]["q"]-(request["start_rad"][n]+u*(target[n]-request["start_rad"][n])))>.05 for n in WAIST):raise RuntimeError("WAIST_PREPOSITION_TRACKING_ERROR")
+        u=waist_trajectory_fraction(request,actual)
+        tracking_error={n:float(actual["joints"][n]["q"])-(request["start_rad"][n]+u*(target[n]-request["start_rad"][n])) for n in WAIST}
+        if any(abs(v)>.05 for v in tracking_error.values()):
+            pg.write_new_text(output/'standing_waist_tracking_failure.json',json.dumps(dict(request=request,source_host_ns=actual['host_monotonic_ns'],sim_time_s=actual['sim_time_s'],fraction=u,error_rad=tracking_error,threshold_rad=.05),indent=2)+'\n')
+            raise RuntimeError("WAIST_PREPOSITION_TRACKING_ERROR")
         feedback=output/"standing_waist_feedback.json"
         if feedback.exists():
             f=json.loads(feedback.read_text())
