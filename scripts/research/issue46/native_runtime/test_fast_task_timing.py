@@ -212,4 +212,16 @@ class TerminalReapproachContractTests(unittest.TestCase):
         self.assertIn('TERMINAL_REAPPROACH_STOP_OR_TIME_UNQUALIFIED',code)
         self.assertIn('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED',code)
         self.assertIn('n.publish(0.12',code)
+class CarryShoulderPlanningReserveTests(unittest.TestCase):
+    def test_loaded_gait_reserve_stays_inside_unchanged_source_bounds(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import carry_tracking_bounds
+        source=np.array([[-2.993,.041]]);names=['right_shoulder_roll_joint'];old=source.copy()
+        selected=carry_tracking_bounds(source,names,{'phase':'CARRY_HOLD'})
+        self.assertAlmostEqual(selected[0,1],-.039)
+        # Recorded physical overshoot relative to preceding commanded target.
+        self.assertLess(selected[0,1]+(.06501930925159885-.02558423639497594),.061)
+        np.testing.assert_array_equal(source,old)
+        np.testing.assert_array_equal(carry_tracking_bounds(source,names,{'phase':'CARRY_HOLD','placement_active':True}),source)
+        np.testing.assert_array_equal(carry_tracking_bounds(source,names,{'phase':'LIFTING'}),source)
 if __name__=="__main__":unittest.main()

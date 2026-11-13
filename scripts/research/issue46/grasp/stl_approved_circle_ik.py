@@ -402,6 +402,15 @@ def position_mode_tracking_bounds(source, bias, kp, margin=.01):
     if np.any(result[:,1]<=result[:,0]+.002):raise RuntimeError("NO_SOURCE_POSITION_MODE_TRACKING_MARGIN")
     return result
 
+def carry_tracking_bounds(bounds,names,phase):
+    """Keep a locally planned shoulder reserve during loaded gait only."""
+    result=np.asarray(bounds,dtype=float).copy()
+    if phase is not None and phase.get('phase')=='CARRY_HOLD' and not phase.get('placement_active'):
+        index=names.index('right_shoulder_roll_joint');result[index,1]-=.08
+        if result[index,0]>=result[index,1]:raise ValueError('empty carry shoulder planning interval')
+    return result
+
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -427,6 +436,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         tracking_margin=float(reference["approach_staging"].get("source_tracking_margin_rad",.01))
         if not .01<=tracking_margin<=.03:raise ValueError("invalid inward planning reserve")
         bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference),margin=tracking_margin)
+    bounds=carry_tracking_bounds(bounds,ik.ARM,phase)
     position_limit=.001;axis_limit=.001;weights=np.ones(6)
     if phase is not None and phase.get('placement_active'):
         request=phase['placement_request'];position_limit=float(request.get('placement_position_tolerance_m',.001));angle=float(request.get('placement_axis_tolerance_rad',2.*np.arcsin(.005)))
