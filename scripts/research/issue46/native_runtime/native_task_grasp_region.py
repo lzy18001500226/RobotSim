@@ -515,7 +515,7 @@ def configuration_visibility(study, q, model, data, renderer, camera):
         "sim_time_s": 0.}
     rgb, depth, K, T = vision.render(model, data, renderer, camera, synthetic)
     try:
-        estimate, _ = vision.estimate(rgb, depth, K, T)
+        estimate, _ = vision.estimate(rgb, depth, K, T, supported_height_m=.22)
         box = estimate["rgb_component"]["bbox_xyxy"]
         clear = box[0] > 0 and box[1] > 0 and box[2] < vision.WIDTH and box[3] < vision.HEIGHT
         return {"pass": bool(clear), "bbox_xyxy": box,
@@ -791,12 +791,12 @@ def execute(run, container, environment, output, scene, cache, reference, limits
     try:
         warm = read_fresh_native_row(output/"native_latest.json")
         rgb, depth, K, T = vision.render(model, data, renderer, camera, warm)
-        vision.estimate(rgb, depth, K, T)  # discard cold setup, as existing sensor
+        vision.estimate(rgb, depth, K, T, supported_height_m=.22)  # discard cold setup, as existing sensor
         after_source_ns = warm["host_monotonic_ns"]
         def capture(native):
             rgb, depth, K, T = vision.render(model, data, renderer, camera, native)
             try:
-                estimated, _ = vision.estimate(rgb, depth, K, T)
+                estimated, _ = vision.estimate(rgb, depth, K, T, supported_height_m=.22)
             except ValueError:
                 # Preserve the exact failed sensor input before safe shutdown.
                 Image.fromarray(rgb).save(output/"failed_control_rgb.png")

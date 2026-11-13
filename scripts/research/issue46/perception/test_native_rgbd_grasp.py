@@ -144,6 +144,25 @@ class SensorTests(unittest.TestCase):
         self.assertAlmostEqual(result['top_world_z_m'],.85,delta=.0003)
         self.assertIsNotNone(result['disconnected_cap_association'])
 
+    def test_known_supported_height_needs_a_real_local_table_plane(self):
+        from scripts.research.issue46.perception.native_rgbd_grasp import supported_cylinder_top
+        rgb,depth,K,T,center=synthetic_cylinder(.035)
+        y,x=np.indices(depth.shape)
+        rays=np.stack(((x-K['cx'])/K['fx'],(y-K['cy'])/K['fy'],np.ones_like(x)),axis=-1)@T[:3,:3].T
+        table=(.55-T[2,3])/rays[:,:,2]
+        table=np.where(table>0,table,np.inf)
+        depth=np.minimum(depth,table)
+        top,evidence=supported_cylinder_top(depth,K,T,np.r_[center[:2],.035],.56,.30)
+        self.assertAlmostEqual(top,.85,places=6)
+        self.assertLess(evidence['support_plane_std_m'],.001)
+        self.assertGreaterEqual(evidence['support_plane_pixels'],30)
+        # A visible object taller/higher than the declared supported height
+        # cannot be pulled down to the table by this optional prior.
+        with self.assertRaisesRegex(ValueError,'ABOVE_DECLARED_SUPPORTED_HEIGHT'):
+            estimate(rgb,depth,K,T,supported_height_m=.20)
+        with self.assertRaisesRegex(ValueError,'INSUFFICIENT'):
+            supported_cylinder_top(np.full(depth.shape,np.inf),K,T,np.r_[center[:2],.035],.56,.30)
+
     def test_disconnected_cap_must_match_barrel_in_3d(self):
         from scripts.research.issue46.perception.native_rgbd_grasp import occluded_cap_points
         mask=np.zeros((30,30),dtype=bool);mask[5:20,5:20]=True

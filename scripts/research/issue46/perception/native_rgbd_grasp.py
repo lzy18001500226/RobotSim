@@ -154,7 +154,34 @@ def occluded_cap_points(color_mask, barrel_mask, depth, K, T, circle, barrel_upp
     if len(candidates)>1:raise ValueError('AMBIGUOUS_DISCONNECTED_CYLINDER_CAP')
     return candidates[0] if candidates else (None,None)
 
-def estimate(rgb,depth,K,T):
+def supported_cylinder_top(depth, K, T, circle, visible_bottom, known_height_m):
+    """Infer a supported upright object's top from a measured local table plane.
+
+    Allowed only for the pre-contact task that declares object height and table
+    support. It is not valid for an airborne bottle. No scene/object pose input.
+    """
+    if not .05<=known_height_m<=.50:raise ValueError('KNOWN_OBJECT_HEIGHT_OUT_OF_TASK_RANGE')
+    y,x=np.indices(depth.shape);valid=np.isfinite(depth)&(depth>.08)&(depth<1.2)
+    z=np.where(valid,depth,0.)
+    points=np.stack(((x-K['cx'])*z/K['fx'],(y-K['cy'])*z/K['fy'],z),axis=-1)@T[:3,:3].T+T[:3,3]
+    radial=np.linalg.norm(points[:,:,:2]-circle[:2],axis=-1)
+    low=visible_bottom-known_height_m
+    region=valid&(radial>circle[2]+.01)&(radial<circle[2]+.15)&(points[:,:,2]<=visible_bottom+.003)&(points[:,:,2]>=low)
+    candidates=points[region]
+    if len(candidates)<30:raise ValueError('INSUFFICIENT_LOCAL_SUPPORT_PLANE')
+    counts,bins=np.histogram(candidates[:,2],bins=np.arange(low,visible_bottom+.005,.001))
+    center=bins[int(np.argmax(counts))]+.0005
+    plane=candidates[np.abs(candidates[:,2]-center)<=.0015]
+    if len(plane)<30 or np.std(plane[:,2])>.001:raise ValueError('LOCAL_SUPPORT_PLANE_RESIDUAL')
+    if np.linalg.eigvalsh(np.cov(plane[:,:2].T))[0]<.01**2:raise ValueError('LOCAL_SUPPORT_PLANE_SPATIAL_SUPPORT')
+    bottom=float(np.median(plane[:,2]));top=bottom+known_height_m
+    return top,{'source':'RGBD_LOCAL_TABLE_PLANE_PLUS_DECLARED_HEIGHT',
+                'known_object_height_m':known_height_m,'support_plane_z_m':bottom,
+                'support_plane_pixels':len(plane),'support_plane_std_m':float(np.std(plane[:,2])),
+                'validity':'UPRIGHT_TABLE_SUPPORTED_PRECONTACT_ONLY'}
+
+
+def estimate(rgb,depth,K,T, *, supported_height_m=None):
     """Task-blue, upright variable-radius cylinder. No ground-truth input."""
     red,green,blue=(rgb[...,i].astype(np.int16) for i in range(3))
     mask=(blue>=70)&(blue-red>=28)&(blue-green>=18)&np.isfinite(depth)&(depth>.08)&(depth<1.2)
@@ -205,10 +232,15 @@ def estimate(rgb,depth,K,T):
     top=points[points[:,2]>=hi-.0015,2]
     cap,cap_association=occluded_cap_points(color_mask,mask,depth,K,T,fit.x,float(hi))
     if cap is not None:top=cap[:,2]
-    if len(top)<20:raise ValueError('INSUFFICIENT_TOP_PLANE_SUPPORT')
-    top_z=float(np.median(top))
-    if np.median(residual)>.002 or angle_support<.6 or np.std(top)>.003:raise ValueError('CYLINDER_FIT_SUPPORT_UNQUALIFIED:'+json.dumps({'residual_m':float(np.median(residual)),'angular_support_rad':angle_support,'top_std_m':float(np.std(top)),'fit':fit.x.tolist(),'height_range':[float(lo),float(hi)],'component':info}))
-    return {'center_xy_world_m':fit.x[:2].tolist(),'radius_m':float(fit.x[2]),'diameter_m':float(2*fit.x[2]),'top_world_z_m':top_z,'visible_bottom_world_z_m':float(lo),'visible_height_m':float(top_z-lo),'axis_world':[0.,0.,1.],'axis_assumption':'UPRIGHT_GRAVITY_ALIGNED_TASK_OBJECT','median_surface_residual_m':float(np.median(residual)),'side_inlier_fraction':float(np.mean(inliers)),'angular_support_rad':angle_support,'depth_pixels':len(points),'excluded_boundary_pixels':int(mask.sum()-interior.sum()),'rgb_component':info,'disconnected_cap_association':cap_association},mask
+    height_evidence={'source':'DIRECT_RGBD_TOP_PLANE'}
+    if supported_height_m is not None:
+        top_z,height_evidence=supported_cylinder_top(depth,K,T,fit.x,float(lo),supported_height_m)
+        if float(hi)>top_z+.005:raise ValueError('VISIBLE_CYLINDER_ABOVE_DECLARED_SUPPORTED_HEIGHT')
+    else:
+        if len(top)<20:raise ValueError('INSUFFICIENT_TOP_PLANE_SUPPORT')
+        top_z=float(np.median(top))
+    if np.median(residual)>.002 or angle_support<.6 or (supported_height_m is None and np.std(top)>.003):raise ValueError('CYLINDER_FIT_SUPPORT_UNQUALIFIED:'+json.dumps({'residual_m':float(np.median(residual)),'angular_support_rad':angle_support,'top_std_m':float(np.std(top)),'fit':fit.x.tolist(),'height_range':[float(lo),float(hi)],'component':info}))
+    return {'center_xy_world_m':fit.x[:2].tolist(),'radius_m':float(fit.x[2]),'diameter_m':float(2*fit.x[2]),'top_world_z_m':top_z,'visible_bottom_world_z_m':float(lo),'visible_height_m':float(top_z-lo),'axis_world':[0.,0.,1.],'axis_assumption':'UPRIGHT_GRAVITY_ALIGNED_TASK_OBJECT','median_surface_residual_m':float(np.median(residual)),'side_inlier_fraction':float(np.mean(inliers)),'angular_support_rad':angle_support,'depth_pixels':len(points),'excluded_boundary_pixels':int(mask.sum()-interior.sum()),'rgb_component':info,'disconnected_cap_association':cap_association,'height_evidence':height_evidence},mask
 
 def capture_once(scene,row,output):
     from PIL import Image
