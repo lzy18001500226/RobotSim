@@ -65,11 +65,17 @@ def launch_first_person_observer(episode):
     return observer
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--visual-stance-adjustment",action="store_true",help="known-table dock then RGBD-directed unloaded native stance correction");parser.add_argument("--initial-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="scenario initialization only, never a control target");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));parser.add_argument("--grasp-only",action="store_true",help="stop after measured grasp/lift/hold, no transfer");parser.add_argument("--far-observe-approach",action="store_true");parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference");args=parser.parse_args()
+    if args.lateral_motion_direction:
+        if not args.from_start or not args.task_grasp_region or args.bottle_height_m!=.22 or getattr(args,"grasp_only",False):raise ValueError("lateral diagnostics require full START H220 observation")
+        CMD.extend(["--lateral-motion-direction",args.lateral_motion_direction,"--lateral-motion-profile",args.lateral_motion_profile])
     if any(args.task_bottle_offset_xy_m) and not args.task_grasp_region:
         raise ValueError("task initialization offset needs RGBD task scope")
+    if args.grasp_only:
+        if not args.task_grasp_region or (args.from_start and not args.far_observe_approach):raise ValueError("full START grasp-only requires far RGBD approach")
+        CMD.append("--grasp-only")
     if args.task_grasp_region:
-        if not args.from_start or not args.to_delivery_table or args.bottle_height_m!=.22 or args.carry_angular_cap!=.60:
+        if (not args.from_start and not args.grasp_only) or not args.to_delivery_table or args.bottle_height_m!=.22 or args.carry_angular_cap!=.60:
             raise ValueError("task region is the complete H220 START transfer")
         CMD.append("--task-grasp-region")
         CMD[CMD.index("--post-lift-retract-world-m")+2]="-0.04"
@@ -95,9 +101,18 @@ def main():
         CMD[CMD.index("--carry-transit-command-speed")+1]="0.20"
         CMD.extend(["--standing-grasp-posture",str(REPO/"simulation/mujoco/scenes/raicom2026/config/reviewed_h220_turn_forward_bend_pickup_functional.json"),"--restore-postured-carry"])
         CMD[CMD.index("--grasp-height-above-center-m")+1]="0.01"
+    if args.visual_stance_adjustment:
+        if not args.from_start or args.bottle_height_m!=.22:raise ValueError('visual stance requires full START H220 task')
+        CMD.append('--visual-stance-adjustment')
+    if any(args.initial_bottle_offset_xy_m):
+        if not args.visual_stance_adjustment:raise ValueError('unknown initial scenario requires sensor-directed control')
+        CMD.extend(['--initial-bottle-offset-xy-m',*map(str,args.initial_bottle_offset_xy_m)])
     if args.from_start:
         if not args.to_delivery_table:raise ValueError("from START requires complete delivery mission")
         CMD.extend(["--execute-pickup-navigation","--dock-command-speed-cap","0.20","--dock-braking-delay-s","0.80","--dock-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06"),"--refine-position-tolerance-m",("0.25" if args.bottle_height_m==.22 else "0.06")])
+    if args.far_observe_approach:
+        if not args.from_start or not args.task_grasp_region or not args.grasp_only:raise ValueError("far observation requires full START RGBD grasp-only")
+        CMD.append("--far-observe-approach")
     if args.task_grasp_region:
         from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
         task_profile=pg.create_unique_output_directory(ROOT,prefix="rgbd-task-short-turn-route").native_path

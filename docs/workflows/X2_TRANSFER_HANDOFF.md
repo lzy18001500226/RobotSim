@@ -2,6 +2,39 @@
 
 更新：2026-11-11，22cm完整START物理验收已通过。本页是当前任务记录，旧失败保留在原reviews，不改写历史结果。
 
+## 最新接续：远处观察与斜向接近，11点抓取覆盖（2026-11-13）
+
+本轮Goal已完成11个D70/H220mm/0.200kg瓶位的**逐点累计物理覆盖**：每点均由真实
+START[-1.5,-1.5]出发，先在距桌800mm、较桌中线偏机器人右120mm的空间观察；
+控制只读取新鲜模拟RGB-D瓶位，按当前实际站姿与源范围IK选择右手抓取区，
+用既有MC前进/转向接近，停稳后重新观察，不以精确横移或名义坐标到达替代可抓判定。
+左侧目标先粗略对准行进方向；近桌前向修正拆为有碰撞检查的40mm中间路点。
+必要时先在宽敞处收小臂，再执行下蹲/转腰/前弯；不新增预设持瓶扭腕。
+
+11点均有双pad实际接触、桌面卸载、>=50mm抬升与>=1秒悬空验收，随后收臂并持稳8秒。
+各点持稳窗最小抬升58.856–59.394mm，平均向上支持1.962016–1.962557N，最大桌面反力0N。
+**不同点对应完整保留的不同开发源快照；不是最终提交统一版本的11点重测，不是统计成功率。**
+11点后退/搬运/第二桌放置均NOT RUN；旧单点搬运PASS不能代替本轮覆盖。
+人工视觉审核、570g瓶和真机均NOT RUN。冻结模型、源限制、effort、原接触设置未改。
+真实物理引擎为既有原生MuJoCo3.3.7；静态IK/复核渲染为3.3.6，两者不混报。
+
+证据根：`reviews/issue-46/far-observe-diagonal-all11-20261112T172727Z/`。
+先看`index.html`（11点滑块）、`all11_actual_grasp_review.mp4`、`REPORT_ZH.md`、
+`all11_verified_measurements.json`与`matrix.json`；44条尝试及全部失败保持。
+各point目录的`command.json`和`executed_source.tar.gz`绑定实际执行argv、HEAD和完整源哈希。
+现有dirty基线依赖和绝对参考路径仍需保留；不是新机器安装包。不要解压覆盖当前工作树。
+
+本机单点新增实测入口（新子目录，不覆盖旧证据）：
+
+```bash
+cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030
+PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -B scripts/research/issue46/grasp/table_edge_grasp_trials.py --output-dir /home/lzy18001500226/projects/RobotSim/reviews/issue-46/far-observe-diagonal-all11-20261112T172727Z --case 5 --far-observe --visible
+```
+
+本轮在人工审核前停止：PR106保持Draft、Issue46保持Open，不合并main、不新建worktree、不清理文件。
+研究处置：far_observe_approach、native_task_grasp_region和当前runner保留为研究消费者；
+先审核实际11点视频，再在明确新任务中提炼稳定动作接口/代表点搬运回归，生产代码不得反向依赖研究脚本。
+
 ## 当前Goal：桌边8cm网格与实时相机（2026-11-12，本地时间）
 
 沿用同一工作树、分支；输入HEAD f31b231。用户明确授权新Goal，不再使用上一轮5点/随机点计划。

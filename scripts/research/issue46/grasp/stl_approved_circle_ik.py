@@ -232,6 +232,19 @@ def tracking_task(row, reference, phase=None):
     return anchor+offset,axis
 
 
+def arm_search_bounds(source, start, *, full_source=False, margin=0.):
+    """Select a planning neighborhood without altering any source joint limit."""
+    source=np.asarray(source,dtype=float);start=np.asarray(start,dtype=float)
+    if source.shape!=(len(start),2) or not np.isfinite(source).all() or not np.isfinite(start).all() or not 0.<=margin<=.03:
+        raise ValueError("invalid arm planning bounds")
+    result=source.copy();result[:,0]+=margin;result[:,1]-=margin
+    if not full_source:
+        result[:,0]=np.maximum(result[:,0],start-1.1)
+        result[:,1]=np.minimum(result[:,1],start+1.1)
+    if np.any(result[:,0]>=result[:,1]):raise ValueError("empty source-valid arm planning interval")
+    return result
+
+
 def joint_planning_bounds(model, names, source_ranges=None):
     """Intersect planning constraints; never mutate compiled model limits."""
     result=[]
@@ -278,10 +291,10 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
         def jacobian(q):
             residual(q)
             return circle_task_jacobian(model,data,hand,np.asarray(center),np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis),dofs)
-        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         arm=solved.x;e=residual(arm);mujoco.mj_forward(model,data);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
-        samples.append({'rise_m':float(dz),'position_error_m':float(np.linalg.norm(e[:3])),'axis_residual':float(np.linalg.norm(e[3:])),'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'right_arm_rad':arm.tolist(),'pass':bool(passed)})
+        samples.append({'rise_m':float(dz),'solver_evaluations':int(solved.nfev),'solver_status':int(solved.status),'position_error_m':float(np.linalg.norm(e[:3])),'axis_residual':float(np.linalg.norm(e[3:])),'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'right_arm_rad':arm.tolist(),'pass':bool(passed)})
     mu=min(float(model.geom_friction[g,0]) for g in range(model.ngeom) if int(model.geom_bodyid[g]) in (bottle,ik.native.bid(model,'R_hand_narrow3_Link'),ik.native.bid(model,'R_hand_wide3_Link')))
     mass=float(model.body_mass[bottle]);weight=mass*float(np.linalg.norm(model.opt.gravity))
     if not mu>0 or not mass>0:raise ValueError('invalid known payload/friction for diagnostic force budget')
@@ -411,7 +424,9 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         mujoco.mj_jac(model,data,linear,angular,point,hand)
         return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
     if reference.get("approach_staging"):
-        bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference))
+        tracking_margin=float(reference["approach_staging"].get("source_tracking_margin_rad",.01))
+        if not .01<=tracking_margin<=.03:raise ValueError("invalid inward planning reserve")
+        bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference),margin=tracking_margin)
     position_limit=.001;axis_limit=.001;weights=np.ones(6)
     if phase is not None and phase.get('placement_active'):
         request=phase['placement_request'];position_limit=float(request.get('placement_position_tolerance_m',.001));angle=float(request.get('placement_axis_tolerance_rad',2.*np.arcsin(.005)))
@@ -430,16 +445,24 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
 
         q=np.clip(q+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
     error=residual(q)
+    refinement_evaluations=0
     if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:
         # Bound-aware recovery can redistribute axial-roll redundancy instead
         # of repeatedly clipping the same wrist joint at its source limit.
-        opt=least_squares(lambda q:residual(q)*weights,q,jac=lambda q:jacobian(q)*weights[:,None],bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
-        q=opt.x;error=residual(q)
-    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'q':q.tolist()}))
+        # The real-time consumer needs the existing task tolerance, not a fully
+        # optimized least-squares minimum. Saved point10 states already qualify
+        # after40 evaluations; running200 every cycle expired valid targets.
+        # Retain the longer recovery for difficult bounded configurations.
+        for evaluation_budget in (40,200):
+            opt=least_squares(lambda q:residual(q)*weights,q,jac=lambda q:jacobian(q)*weights[:,None],bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=evaluation_budget,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+            refinement_evaluations+=int(opt.nfev)
+            q=opt.x;error=residual(q)
+            if np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit:break
+    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'refinement_evaluations':refinement_evaluations,'q':q.tolist()}))
     actual=np.array([row['joints'][n]['q'] for n in ik.ARM])
     actual_error=residual(actual);J=jacobian(actual)
     correction=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error)
-    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
+    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'refinement_evaluations':refinement_evaluations,'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
 
 
 def bounded_tracking_velocity(previous, target, dt, speed_limits):
@@ -610,7 +633,8 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     lift=initial.copy();lift[2]=high
     near=object_center.copy();near[:2]-=.12*direction;near[2]=high
     source=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
-    lo=np.maximum(source[:,0]+.03,start[2:]-1.1);hi=np.minimum(source[:,1]-.03,start[2:]+1.1)
+    search=arm_search_bounds(source,start[2:],full_source=state.get("source_arm_planning_range",False),margin=.03)
+    lo,hi=search[:,0],search[:,1]
     dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
     qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
     points=[start.copy()];targets=[]
@@ -642,7 +666,19 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
         error=residual(fitted.x)
         if np.linalg.norm(error[:3])>.001 or point_index>0 and np.linalg.norm(error[3:])>.001:raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,float(np.linalg.norm(error[:3])),float(np.linalg.norm(error[3:])))))
         points.append(np.r_[start[:2],fitted.x]);targets.append(target.tolist())
-    points.append(finish.copy());violations=[]
+    points.append(finish.copy())
+    # Preserve the exact joint-space path, but subdivide its task segments.
+    # Keep the executor's 1.1rad bound and two-clearance-waypoint contract.
+    dense=[points[0]]
+    for a,b in zip(points,points[1:]):
+        count=max(1,int(np.ceil(np.max(np.abs(b[2:]-a[2:]))/1.0)))
+        dense.extend(a+(b-a)*j/count for j in range(1,count+1))
+    if len(dense)-2>2:raise RuntimeError("APPROACH_EXCEEDS_TWO_BOUNDED_CLEARANCE_WAYPOINTS")
+    points=dense;targets=[]
+    for waypoint in points[1:-1]:
+        ik.set_pose(model,data,state,waypoint,np.zeros(3),0.,opening,np.zeros(3),0.,None)
+        targets.append((data.xpos[hand]+data.xmat[hand].reshape(3,3)@center).tolist())
+    violations=[]
     for segment,(a,b) in enumerate(zip(points,points[1:])):
         for u in np.linspace(0.,1.,31):
             d=mujoco.MjData(model);ik.set_pose(model,d,state,a+u*(b-a),np.zeros(3),0.,opening,np.zeros(3),0.,None)
@@ -687,6 +723,7 @@ def main():
     parser.add_argument("--waist-yaw-offset-rad",type=float,default=0.,help="bounded <=0.25rad torso-side posture; source limits and collision sweep remain mandatory")
     parser.add_argument("--optimize-waist-posture",action="store_true",help="coupled source-bounded waist yaw/pitch and arm solve; requires coordinated physical handoff if executed")
     parser.add_argument("--full-source-posture-diagnostic",action="store_true",help="offline only: distinguish the solver trust region from actual source joint limits; no runtime handoff")
+    parser.add_argument("--source-arm-planning-range",action="store_true",help="use unchanged full source arm ranges for this task search; no source or tracking limit changes")
     args = parser.parse_args()
     if args.carry_left_roll_source_range is not None and (not args.physical_lift_test or args.post_lift_retract_world_m is None):raise ValueError("left carry park requires screened physical lift/retract")
     if args.full_source_posture_diagnostic and (not args.optimize_waist_posture or args.runtime_handoff):raise ValueError('full-source diagnostic is offline only and requires the coupled posture solver')
@@ -696,6 +733,7 @@ def main():
     base_offset=np.asarray(args.base_offset_xyz_m,dtype=float)
     if base_offset.shape!=(3,) or not np.isfinite(base_offset).all(): raise ValueError("base offset must be finite")
     state=json.loads(json.dumps(state))
+    state["source_arm_planning_range"]=args.source_arm_planning_range
     state["base_pose_world"]["xyz_m"]=(np.asarray(state["base_pose_world"]["xyz_m"])+base_offset).tolist()
     samples = scene["circle_review"]["samples"]
     if scene["circle_review"]["classification"] != "STATIC_VARIABLE_DIAMETER_SUPPORT_CIRCLE_REVIEW_ONLY":
@@ -839,7 +877,7 @@ def main():
         cylinder=ik.native.bid(model,"test_cylinder")
         source_bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
         cache_margin=.01 if warm is not None else 0.
-        bounds=np.column_stack((np.maximum(source_bounds[:,0]+cache_margin,approach_start[2:]-1.1),np.minimum(source_bounds[:,1]-cache_margin,approach_start[2:]+1.1)))
+        bounds=arm_search_bounds(source_bounds,approach_start[2:],full_source=state.get("source_arm_planning_range",False),margin=cache_margin)
         def residual(arm):
             trial=np.r_[q[:2],arm]
             ik.set_pose(model,data,state,trial,np.zeros(3),0.,command,np.zeros(3),0.,None)
@@ -891,7 +929,11 @@ def main():
         if (sweep or state.get("forearm_already_raised")) and args.right_arm_seed:
             try:
                 approach_staging=staged_clear_approach(model,state,approach_start,solved,open_command,center,object_center,local_axis)
-                if approach_staging["pass_result"]:sweep=[]
+                if approach_staging["pass_result"]:
+                    # Saved shoulder transient was +0.01446rad relative to its
+                    # target: 20mrad inward reserve leaves about5.5mrad extra.
+                    if state.get("source_arm_planning_range"):approach_staging["source_tracking_margin_rad"]=.02
+                    sweep=[]
             except RuntimeError as exc:approach_staging=dict(pass_result=False,failure=str(exc))
         row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
         rows.append({"position_mode_margin":position_mode_margin,"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
@@ -904,6 +946,7 @@ def main():
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":open_command,"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
     if rows[0].get("approach_staging",{}):record["approach_staging"]=rows[0]["approach_staging"]
+    record["source_arm_planning_range"]=args.source_arm_planning_range
     record["source_joint_limits_rad"]={name:value for name,value in zip(ik.ACTIVE,joint_planning_bounds(model,ik.ACTIVE,state.get("runtime_source_motion_limits")).tolist())}
     record["target_source"]=args.target_source
     record["free_bottle_axis_roll"]=args.free_bottle_axis_roll

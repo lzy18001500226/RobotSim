@@ -56,6 +56,13 @@ def same_episode_registered_body_source(proof, native_row):
                 for x in proof.get('source_responses',[])))
 
 
+def body_pause_zero_required(publisher_running, source_disabled, low_stop_pass):
+    """A confirmed released source is read-only; never write its closed pipe."""
+    if publisher_running:return True
+    if source_disabled and low_stop_pass:return False
+    raise RuntimeError("BODY_PUBLISHER_NOT_ALIVE")
+
+
 def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="native_body_height", reference_result=None, task_shortfall_tolerance_m=.01):
     if not .01<=task_shortfall_tolerance_m<=.015 or task_shortfall_tolerance_m>.01 and label not in ("body_crouch_pickup","body_crouch_delivery"):raise ValueError("bounded task lowering tolerance only")
     if drop_m not in (.03,.10,.13):raise ValueError("only measured30mm or bounded task100/130mm native-height probes are supported")
@@ -77,7 +84,7 @@ def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="n
     anchor='    if MICRO.get("carry"):\n        return run_carry_navigation(n,contract)'
     if code.count(anchor)!=1:raise ValueError("existing observer routing changed")
     code=code.replace(anchor,'    if MICRO.get("body_height_probe"):\n        return run_height_probe(n,contract)\n'+anchor,1)
-    code+="\n"+inspect.getsource(same_episode_registered_body_source)+"\n"+inspect.getsource(run_height_probe)
+    code+="\n"+inspect.getsource(same_episode_registered_body_source)+"\n"+inspect.getsource(body_pause_zero_required)+"\n"+inspect.getsource(run_height_probe)
     code+='\nSOURCE="robotsim_body_height"\nMICRO.update('+repr(dict(body_height_probe=dict(drop_m=drop_m,max_runtime_s=60.,held_grip=(label in ("body_restore_carry","body_crouch_delivery") or mode=="observe" and reference_result is not None),height_command_rate=.03,mode=mode,label=label,reference_result=reference_result,task_shortfall_tolerance_m=task_shortfall_tolerance_m),robot_bodies=robot_bodies))+')\nrun_probe()\n'
     compile(code,"existing_observer_native_body_height","exec")
     return code
@@ -120,6 +127,7 @@ def run_height_probe(n, contract):
         reply=raw(f.result()) if f.done() and f.result() is not None else None
         result["source_responses"].append(dict(action=action,raw=reply,t=time.monotonic()))
         if reply is None or reply["response"]["header"]["code"]!=0:raise RuntimeError("BODY_SOURCE_REQUEST_NOT_ACCEPTED")
+        if action==2002:result["source_disable_confirmed"]=True
     def command(value):
         if value not in (-rate,0.,rate):raise RuntimeError("BODY_RATE_BOUND")
         if process is None or process.poll() is not None:raise RuntimeError("BODY_PUBLISHER_NOT_ALIVE")
@@ -132,7 +140,9 @@ def run_height_probe(n, contract):
         except RuntimeError as exc:
             transient=str(exc)=="CLOCK_GENERATION_PENDING" or str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
             if not transient or process is None or result.get('clock_pauses'):raise
-            command(0.)
+            need_zero=body_pause_zero_required(process.poll() is None,result.get("source_disable_confirmed",False),result.get("low_stop",{}).get("pass",False))
+            if need_zero:command(0.)
+            else:result["post_release_readonly_reacquire"]=True
             pause_started=time.monotonic();identity=(n.latest_row['generation'],n.latest_row['process_pid'])
             fresh_until=min(deadline,pause_started+1.)
             while time.monotonic()<fresh_until:
@@ -161,7 +171,11 @@ def run_height_probe(n, contract):
         try:return sample()
         except RuntimeError as exc:
             if str(exc)!='CLOCK_GENERATION_PENDING' or result.get(key,{}).get('pass') is not True:raise
-            identity=(n.latest_row['generation'],n.latest_row['process_pid']);command(0.)
+            identity=(n.latest_row['generation'],n.latest_row['process_pid'])
+            if process is None:
+                if key!="initial_stop" or result.get("commands"):raise RuntimeError("BODY_READONLY_RECHECK_NOT_INITIAL_ZERO_PHASE")
+                result["initial_readonly_clock_recheck"]=True
+            elif body_pause_zero_required(process.poll() is None,result.get("source_disable_confirmed",False),result.get("low_stop",{}).get("pass",False)):command(0.)
             fresh_stop=settle_native_body(n,None,deadline,result,key+'_new_epoch')
             if not fresh_stop.get('pass'):raise RuntimeError('BODY_STOP_EPOCH_NOT_REQUALIFIED')
             row=sample()
@@ -192,9 +206,14 @@ def run_height_probe(n, contract):
                     result.setdefault('initial_readiness_waits',[]).append(dict(cause=str(exc),t=time.monotonic(),motion_publishers_started=False))
             time.sleep(.01)
         if first is None:raise RuntimeError("BODY_INITIAL_FRESH_STATE_UNCONFIRMED")
-        result["initial_stop"]=settle_native_body(n,first["body_status"],deadline,result,"initial_stop")
+        # This fresh observer has no height publisher yet. Reuse the existing
+        # zero-only telemetry acquisition protocol, not an active-motion retry.
+        if process is not None:raise RuntimeError("BODY_READONLY_PHASE_HAS_HEIGHT_PUBLISHER")
+        MICRO["body_readonly_zero_phase"]=True
+        try:result["initial_stop"]=settle_native_body(n,first["body_status"],deadline,result,"initial_stop")
+        finally:MICRO.pop("body_readonly_zero_phase",None)
         if not result["initial_stop"].get("pass"):raise RuntimeError("BODY_INITIAL_COMPOSITE_STOP_FAILED")
-        initial=sample();height=initial["pose"]["z"];result["initial_height_m"]=height
+        initial=sample_after_qualified_stop("initial_stop");height=initial["pose"]["z"];result["initial_height_m"]=height
         if mode=="observe":
             if config.get('reference_result'):
                 proof=json.loads(Path(config['reference_result']).read_text())

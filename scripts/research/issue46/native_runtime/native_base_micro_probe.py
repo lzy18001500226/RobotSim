@@ -516,12 +516,12 @@ def run_probe(smoke_only=False):
             self.feedback_executor = None
 
         def pump(self):
+            pump_started=time.monotonic()
             if getattr(self, "feedback_executor", None) is None:
                 drain_ready_callbacks(self,rclpy)
             elif self.feedback_executor_error is not None or not self.feedback_thread.is_alive():
                 raise RuntimeError("FEEDBACK_EXECUTOR_FAILURE:"+str(self.feedback_executor_error))
             self.refresh_native_pose()
-            self.latest_row=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
             now=time.monotonic()
             with self.telemetry_lock:
                 if self.pumped_epoch!=self.source_epoch:
@@ -532,12 +532,15 @@ def run_probe(smoke_only=False):
                 ("get_mode", self.get_mode, GetMcAction.Request),
                 ("source", self.current, GetCurrentInputSource.Request),
             ):
+                now=time.monotonic()
                 pending=self.pending.get(name)
                 if pending:
                     f, started=pending
                     if f.done():
-                        if f.result() is not None:
-                            self.readbacks[name]=(now, raw(f.result()))
+                        value=f.result()
+                        if value is not None:
+                            response=raw(value)
+                            self.readbacks[name]=(time.monotonic(),response)
                         self.pending.pop(name, None)
                     elif now-started>.25:
                         f.cancel()
@@ -547,6 +550,17 @@ def run_probe(smoke_only=False):
                     q=req()
                     q.request.header.stamp=self.get_clock().now().to_msg()
                     self.pending[name]=(client.call_async(q),now)
+            # Service/DDS work above can block. Read the physical snapshot last;
+            # retain its acquisition stamp rather than testing a pre-RPC cache.
+            fresh=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
+            previous=getattr(self,"latest_row",None)
+            if previous is not None and (fresh["generation"],fresh["process_pid"])!=(previous["generation"],previous["process_pid"]):
+                raise RuntimeError("NATIVE_EPISODE_CHANGED_DURING_PUMP")
+            self.latest_row=fresh
+            elapsed=time.monotonic()-pump_started
+            if elapsed>.05:self.events.append(dict(event="PUMP_READBACK_DELAY",elapsed_s=elapsed,native_source_ns=fresh["host_monotonic_ns"]))
+            if getattr(self,"moving",False) and elapsed>.20:
+                raise RuntimeError("MOTION_FEEDBACK_PUMP_OVERRUN")
 
         def sample(self, start=None):
             with self.telemetry_lock:
@@ -580,7 +594,7 @@ def run_probe(smoke_only=False):
                     if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
-                limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .20
+                limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .60 if MICRO.get("pickup_stance_profile") else .20
                 fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
@@ -591,7 +605,7 @@ def run_probe(smoke_only=False):
                 cm=self.messages["common"]
                 mode=cm["action_info"]["action_desc"];status=int(cm["action_info"]["status"]["value"])
                 fsm=int(cm["fsm_state"]["current_state"]);body=int(cm["body_status"]["value"])
-                if mode not in ("STAND_DEFAULT",MICRO.get("carry",{}).get("motion_mode","LOCOMOTION_DEFAULT")) or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
+                if mode not in ("STAND_DEFAULT",MICRO.get("carry",{}).get("motion_mode","LOCOMOTION_STEP" if MICRO.get("pickup_stance_profile") else "LOCOMOTION_DEFAULT")) or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
                     raise RuntimeError("MC_PROTECTION_OR_UNEXPECTED_STATE:"+str((mode,status,fsm,body)))
                 leg=self.messages["leg_state"]["joints"]
                 targets=self.messages["leg_command"]["joints"]
@@ -697,7 +711,7 @@ def run_probe(smoke_only=False):
                 except RuntimeError as exc:
                     # Initial zero-only readiness may reacquire telemetry; any
                     # already-commanded motion or native/physical fault stays fail-closed.
-                    initial_zero_only=bool(MICRO.get("carry")) and not self.moving and not any(
+                    initial_zero_only=bool(MICRO.get("carry") or MICRO.get("visual_stance") or MICRO.get("task_region") or MICRO.get("body_readonly_zero_phase")) and not self.moving and not any(
                         any(float(c.get(k,0.)) for k in ("forward","lateral","angular")) for c in self.command_log)
                     if (initial_zero_only and str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
                             and time.monotonic()<hard_until):
@@ -744,7 +758,7 @@ def run_probe(smoke_only=False):
             self.source_requested_enabled=enabled
 
         def stand_once(self, requested="STAND_DEFAULT"):
-            if requested!="STAND_DEFAULT" and not (requested in ("LOCOMOTION_STEP","LOCOMOTION_DEFAULT") and MICRO.get("carry",{}).get("motion_mode")==requested):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
+            if requested!="STAND_DEFAULT" and not (requested in ("LOCOMOTION_STEP","LOCOMOTION_DEFAULT") and MICRO.get("carry",{}).get("motion_mode")==requested) and not (MICRO.get("pickup_stance_profile") and requested=="LOCOMOTION_STEP"):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
             self.publish()
             q=SetMcAction.Request();q.header.stamp=self.get_clock().now().to_msg()
             q.source=SOURCE;q.command.action_desc=requested

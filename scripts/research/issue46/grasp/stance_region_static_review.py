@@ -145,21 +145,23 @@ class Study:
             result[self.model.jnt_qposadr[j]]=value
         return self.followers(result)
 
-    def solve(self,base,target,seeds,bounds=None,max_nfev=65):
+    def solve(self,base,target,seeds,bounds=None,max_nfev=65,*,fixed_waist=False):
         bounds=self.source_bounds if bounds is None else bounds
-        lo,hi=bounds[:,0]+.011,bounds[:,1]-.011
+        free=np.arange(2 if fixed_waist else 0,len(ACTIVE))
+        lo,hi=bounds[free,0]+.011,bounds[free,1]-.011
         best=None
         for seed in seeds:
-            q=base.copy()
+            q=base.copy();full=np.asarray(seed,dtype=float).copy()
+            if fixed_waist:full[:2]=base[self.qadr[:2]]
             def fun(x):
-                q[self.qadr]=x;self.apply(q,False)
-                return np.r_[grasp.axis_grasp_error(self.data.xpos[self.hand],self.data.xmat[self.hand].reshape(3,3),self.center,target,self.axis,self.local_axis),1e-6*(x-seed)]
+                full[free]=x;q[self.qadr]=full;self.apply(q,False)
+                return np.r_[grasp.axis_grasp_error(self.data.xpos[self.hand],self.data.xmat[self.hand].reshape(3,3),self.center,target,self.axis,self.local_axis),1e-6*(x-np.asarray(seed)[free])]
             def jac(x):
                 fun(x)
-                return np.vstack([grasp.circle_task_jacobian(self.model,self.data,self.hand,self.center,self.local_axis,self.dofs),np.eye(len(ACTIVE))*1e-6])
-            result=least_squares(fun,np.clip(seed,lo+1e-6,hi-1e-6),jac=jac,bounds=(lo,hi),max_nfev=max_nfev,ftol=1e-7,xtol=1e-7,gtol=1e-7)
+                return np.vstack([grasp.circle_task_jacobian(self.model,self.data,self.hand,self.center,self.local_axis,self.dofs[free]),np.eye(len(free))*1e-6])
+            result=least_squares(fun,np.clip(full[free],lo+1e-6,hi-1e-6),jac=jac,bounds=(lo,hi),max_nfev=max_nfev,ftol=1e-7,xtol=1e-7,gtol=1e-7)
             e=fun(result.x)[:6];entry={'q':q.copy(),'position_error_m':float(np.linalg.norm(e[:3])),'axis_error_rad':angle_error(e),'nfev':result.nfev}
-            entry['pass']=entry['position_error_m']<=.001 and entry['axis_error_rad']<=math.radians(1)
+            entry['pass']=entry['position_error_m']<=(.0001 if fixed_waist else .001) and entry['axis_error_rad']<=(.001 if fixed_waist else math.radians(1))
             if best is None or entry['position_error_m']+.1*entry['axis_error_rad']<best['position_error_m']+.1*best['axis_error_rad']:best=entry
             if entry['pass']:return entry
         return best
@@ -181,11 +183,13 @@ class Study:
             if dist<minimum:minimum=dist;pair=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,g) for g in (a,b)]
         return {'pass':not bad,'minimum_external_clearance_m_capped_50mm':minimum,'limiting_pair':pair,'violations':sorted(bad,key=lambda x:x['distance_m'])[:4]}
 
-    def candidate(self,xy,yaw,label):
+    def candidate(self,xy,yaw,label,*,source_arm_range=False,runtime_arm_only=False,arm_target_inset_rad=0.):
         began=time.monotonic();base=self.relocate(self.templates[label],xy,yaw);start=base[self.qadr].copy()
-        bounds=self.source_bounds.copy();exc=np.array([.25,.18]+[1.1]*7);bounds[:,0]=np.maximum(bounds[:,0],start-exc);bounds[:,1]=np.minimum(bounds[:,1],start+exc)
+        bounds=self.source_bounds.copy();exc=np.array([.25,.18]+[np.inf if source_arm_range else 1.1]*7);bounds[:,0]=np.maximum(bounds[:,0],start-exc);bounds[:,1]=np.minimum(bounds[:,1],start+exc)
+        if not 0.<=arm_target_inset_rad<=.03:raise ValueError("task arm target inset")
+        bounds[2:,0]+=arm_target_inset_rad;bounds[2:,1]-=arm_target_inset_rad
         seed=self.grasp_seed.copy();seed[0]-=yaw-self.nominal_yaw
-        endpoint=self.solve(base,self.section,[seed,start],bounds)
+        endpoint=self.solve(base,self.section,[seed,start],bounds,fixed_waist=runtime_arm_only)
         row={'posture':label,'endpoint_ik':{k:v for k,v in endpoint.items() if k!='q'},'stage':'IK_UNRESOLVED','path':[],'minimum_external_clearance_m_capped_50mm':.05}
         if not endpoint['pass']:return row
         def check(q,phase,allow=False):
@@ -199,7 +203,7 @@ class Study:
             if not check(self.relocate(q,xy,yaw),'PREPARATION'):return row
         final=endpoint['q'];self.apply(final,False);R=self.data.xmat[self.hand].reshape(3,3);direction=R@self.center;direction[2]=0.;direction/=np.linalg.norm(direction)
         pretarget=self.section-.12*direction+np.array([0.,0.,.06])
-        pre=self.solve(base,pretarget,[final[self.qadr],start],bounds)
+        pre=self.solve(base,pretarget,[final[self.qadr],start],bounds,fixed_waist=runtime_arm_only)
         if not pre['pass']:row['stage']='PREGRASP_IK_UNRESOLVED';return row
         count=max(2,int(math.ceil(np.max(np.abs(pre['q'][self.qadr]-start))/.06)))
         for u in np.linspace(0.,1.,count+1):
@@ -207,7 +211,7 @@ class Study:
             if not check(q,'REACH'):return row
         seed=pre['q'][self.qadr]
         for u in np.linspace(0.,1.,17)[1:]:
-            target=(1-u)*pretarget+u*self.section;step=self.solve(base,target,[seed],bounds,max_nfev=45)
+            target=(1-u)*pretarget+u*self.section;step=self.solve(base,target,[seed],bounds,max_nfev=45,fixed_waist=runtime_arm_only)
             if not step['pass']:row['stage']='APPROACH_IK_UNRESOLVED';return row
             seed=step['q'][self.qadr]
             if not check(step['q'],'APPROACH'):return row
@@ -222,7 +226,7 @@ class Study:
         if set(pad_distances)!=PADS or any(not -.001<=v<=.0006 for v in pad_distances.values()):row['stage']='PAD_CONTACT_NOT_ESTABLISHED';return row
         closed=q.copy();seed=closed[self.qadr]
         for dz in np.linspace(.005,.06,12):
-            shifted=closed.copy();shifted[self.obj+2]+=dz;step=self.solve(shifted,self.section+[0.,0.,dz],[seed],bounds,max_nfev=45)
+            shifted=closed.copy();shifted[self.obj+2]+=dz;step=self.solve(shifted,self.section+[0.,0.,dz],[seed],bounds,max_nfev=45,fixed_waist=runtime_arm_only)
             if not step['pass']:row['stage']='LIFT_IK_UNRESOLVED';return row
             seed=step['q'][self.qadr]
             if not check(step['q'],'LIFT',True):return row

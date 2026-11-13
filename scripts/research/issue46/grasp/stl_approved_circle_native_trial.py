@@ -111,7 +111,12 @@ def runtime_plan_result(result, effective_dir):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--visual-stance-adjustment',action='store_true')
+    p.add_argument('--initial-bottle-offset-xy-m',type=float,nargs=2,default=(0.,0.))
     p.add_argument("--task-grasp-region",action="store_true")
+    p.add_argument("--far-observe-approach",action="store_true")
+    p.add_argument("--lateral-motion-direction",choices=("left","right"));p.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference")
+    p.add_argument("--grasp-only",action="store_true")
     p.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.))
     p.add_argument("--native-multiccd",action="store_true",help="separate SIMULATION_ONLY native337 contact-manifold comparison; no geometry/material/gain change")
     p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
@@ -311,6 +316,7 @@ def main():
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
+            if args.grasp_only or args.far_observe_approach:command.append("--source-arm-planning-range")
             if host_model_cache:command.extend(['--host-model-cache',str(host_model_cache)])
             if args.reuse_verified_grasp_plan:
                 reuse=verified_grasp_reuse(args.reuse_verified_grasp_plan)
@@ -430,6 +436,10 @@ def main():
         if not args.task_grasp_region:raise ValueError("task object initialization requires sensor-directed task")
         from scripts.research.issue46.scene.bottle_initial_pose_overlay import build as initial_pose_build
         claw=initial_pose_build(claw,args.task_bottle_offset_xy_m)
+    if any(args.initial_bottle_offset_xy_m):
+        if not args.visual_stance_adjustment:raise ValueError('object placement is an unknown initial scenario only')
+        from scripts.research.issue46.scene.bottle_initial_pose_overlay import build as initial_pose_build
+        claw=initial_pose_build(claw,args.initial_bottle_offset_xy_m)
     if args.body_height_probe_drop_m is not None:
         if args.execute_pickup_navigation or args.carry_away_1m or args.carry_goal_world_xy is not None or args.micro_base_probe or args.carry_delivery_config:
             raise ValueError("native height compatibility probe cannot execute a locomotion route or grasp")
@@ -448,8 +458,15 @@ def main():
             m=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"])
             d=mujoco.MjData(m);mujoco.mj_resetDataKeyframe(m,d,0);mujoco.mj_forward(m,d)
             task_observation=observation_goal(table_bounds(m,d))
+            if args.far_observe_approach:
+                task_observation["xy_m"][0]-=.30
+                task_observation["xy_m"][1]-=.12
             args.dock_world_xy=tuple(task_observation["xy_m"])
 
+    if args.grasp_only and not args.execute_pickup_navigation:
+        if not args.task_grasp_region:raise ValueError("grasp-only task initialization scope")
+        from scripts.research.issue46.scene.episode_start_overlay import build as observation_build
+        claw=observation_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json",observation_only=True)
     if args.native_multiccd:
         from scripts.research.issue46.scene.multiccd_solver_overlay import build as multiccd_build
         claw=multiccd_build(claw)
@@ -492,6 +509,9 @@ def main():
     if args.reviewed_foundationwalk_profile:argv.append("--reviewed-foundationwalk-profile")
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
     if args.execute_pickup_navigation:argv.append("--execute-pickup-navigation")
+    if args.lateral_motion_direction:argv.extend(["--lateral-motion-direction",args.lateral_motion_direction,"--lateral-motion-profile",args.lateral_motion_profile])
+    if args.grasp_only:argv.append("--grasp-only")
+    if args.far_observe_approach:argv.append("--far-observe-approach")
     if args.body_height_probe_drop_m is not None:
         argv.extend(["--body-height-probe-drop-m",str(args.body_height_probe_drop_m),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
     if args.dock_angular_speed_cap is not None:argv.extend(["--dock-angular-speed-cap",str(args.dock_angular_speed_cap)])
@@ -532,12 +552,18 @@ def main():
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
+    if args.visual_stance_adjustment:
+        if not args.execute_pickup_navigation or host_model_cache is None or args.target_source!='fresh-rgbd-snapshot':raise ValueError('sensor-only stance requires current RGBD/cache and START navigation')
+        from scripts.research.issue46.native_runtime.native_visual_stance import reference_contract
+        reference_dir=pg.create_unique_output_directory('/home/lzy18001500226/projects/RobotSim/reviews/issue-46',prefix='rgbd-stance-control-reference').native_path
+        pg.write_new_text(reference_dir/'reference.json',json.dumps(reference_contract(),indent=2)+'\n');pg.write_artifact_manifest(reference_dir)
+        argv.extend(['--visual-stance-adjustment','--visual-stance-host-cache',str(host_model_cache),'--visual-stance-reference',str(reference_dir/'reference.json')])
     if args.task_grasp_region:
-        if not args.execute_pickup_navigation or host_model_cache is None or args.target_source!="fresh-rgbd-snapshot":
+        if (not args.execute_pickup_navigation and not args.grasp_only) or host_model_cache is None or args.target_source!="fresh-rgbd-snapshot":
             raise ValueError("task region requires START, fresh RGBD and matched camera cache")
         from scripts.research.issue46.native_runtime.native_task_grasp_region import reference_contract
         reference_dir=pg.create_unique_output_directory("/home/lzy18001500226/projects/RobotSim/reviews/issue-46",prefix="rgbd-task-grasp-control-reference").native_path
-        pg.write_new_text(reference_dir/"reference.json",json.dumps(reference_contract(),indent=2)+"\n")
+        pg.write_new_text(reference_dir/"reference.json",json.dumps(reference_contract(far_observe=args.far_observe_approach),indent=2)+"\n")
         pg.write_artifact_manifest(reference_dir)
         argv.extend(["--task-grasp-region","--task-region-host-cache",str(host_model_cache),"--task-region-reference",str(reference_dir/"reference.json")])
     argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])

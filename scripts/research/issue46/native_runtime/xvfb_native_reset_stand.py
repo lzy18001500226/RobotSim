@@ -341,8 +341,15 @@ def tilt(q):
  return max(abs(p),abs(r))
 def call(n,c,req):
  if not c.wait_for_service(timeout_sec=5.0): raise RuntimeError('service unavailable')
- f=c.call_async(req); end=time.monotonic()+5.0
- while rclpy.ok() and not f.done() and time.monotonic()<end:rclpy.spin_once(n,timeout_sec=.01)
+ f=c.call_async(req)
+ # Match the pinned delivery example's executor helper, preserving one request
+ # and the existing five-second bound rather than retrying mode commands.
+ if getattr(n,'feedback_executor',None) is None:
+  rclpy.spin_until_future_complete(n,f,timeout_sec=5.0)
+ else:
+  # Micro already has one callback owner; do not attach a second executor.
+  end=time.monotonic()+5.0
+  while rclpy.ok() and not f.done() and time.monotonic()<end:time.sleep(.005)
  if not f.done() or f.result() is None:raise RuntimeError('service timeout')
  return f.result()
 
@@ -1233,6 +1240,15 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     result["gates"]["POST_LIFT_RETRACT"]="PASS"
     result["measured_lift_handoff_proof"]={"path":str(ready_path),"sha256":sha256(ready_path),"generation":ready["generation"],"controller_pid":ready["pid"]}
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
+    if getattr(args,"grasp_only",False):
+        result["gates"]["GRASP_ONLY_STATIC_HOLD"]="PASS"
+        result["experiment_scope"]="REAL_GRASP_LIFT_RETRACT_HOLD_NO_TRANSFER"
+        pg.write_new_text(output/"carry_release","end independent grasp-only episode; retain physical hold until shutdown\n")
+        until=time.monotonic()+6.
+        while time.monotonic()<until and not exit_path.exists():
+            native_grasp_audit.require_fresh_sample(output/"native_latest.json");time.sleep(.02)
+        if not exit_path.exists():raise RuntimeError("GRASP_ONLY_OWNER_DID_NOT_FINISH")
+        return owner_result()
     if getattr(args,"restore_postured_carry",False):
         from scripts.research.issue46.native_runtime.native_grasp_stand_restore import restore_postured_hold
         result["postured_standing_restore"]=restore_postured_hold(run,container,environment,output,ready,result)
@@ -1292,7 +1308,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         recorded["contact_policy"]="USER_APPROVED_SIMULATION_ONLY_INCIDENTAL_CONTACT_RECORDING; engine contact forces unchanged"
     result["carry_native_motion_audit"]=recorded
     if getattr(args,"carry_transit_speed_policy_050",False):
-        result["carry_native_strict020_diagnostic"]=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
+        result["carry_native_strict020_diagnostic"]=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns)
     review_prefix=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("review_prefix_only"))
     if not recorded["pass"] and not review_prefix:
         nav["pass_result"]=False
@@ -1371,6 +1387,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--visual-stance-adjustment',action='store_true')
+    parser.add_argument('--visual-stance-host-cache',type=Path)
+    parser.add_argument('--visual-stance-reference',type=Path)
     parser.add_argument("--table-overlay-result", required=True, type=Path)
     parser.add_argument("--table-overlay-result-sha256", required=True)
     parser.add_argument("--claw-control-overlay-result", type=Path, help="hash-pinned SIMULATION_ONLY claw actuator overlay derived from this table scene")
@@ -1479,6 +1498,9 @@ def main() -> None:
     parser.add_argument('--motion-calibration-input',type=Path,help='isolated unloaded motion calibration; no grasp execution')
     parser.add_argument('--motion-calibration-input-sha256')
     parser.add_argument("--task-grasp-region",action="store_true")
+    parser.add_argument("--far-observe-approach",action="store_true")
+    parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference")
+    parser.add_argument("--grasp-only",action="store_true",help="stop existing owner after physical grasp, retract and static hold; no carry route")
     parser.add_argument("--task-region-host-cache",type=Path)
     parser.add_argument("--task-region-reference",type=Path)
     args = parser.parse_args()
@@ -1754,7 +1776,7 @@ def main() -> None:
             if args.coordinated_circle_waist:
                 split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(motion_calibration is not None or args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else dict(checkpoint["initial_arm_command_rad"],**({"left_shoulder_roll_joint":.15} if args.standing_grasp_posture else {})),initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"],max_hold_s=300. if args.standing_grasp_posture else 90.)
+                bootstrap=arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else dict(checkpoint["initial_arm_command_rad"],**({"left_shoulder_roll_joint":.15,**({"right_shoulder_roll_joint":-.05} if args.far_observe_approach else {})} if args.standing_grasp_posture else {})),initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"],max_hold_s=(420. if args.far_observe_approach else 300.) if args.standing_grasp_posture else 90.)
                 if args.standing_grasp_posture:
                     from scripts.research.issue46.native_runtime.standing_waist_preposition import extend_bootstrap,bounded_logging_overlay
                     split=bounded_logging_overlay(split)
@@ -2188,6 +2210,10 @@ def main() -> None:
             raise RuntimeError(f"STAND_DEFAULT prearm failed: {prearm.stdout[-1200:]}")
         result["gates"]["PREARM"] = "PASS"
         result["gates"]["MC"] = "PASS"
+        if args.lateral_motion_direction or args.far_observe_approach:
+            from scripts.research.issue46.native_runtime.native_lateral_motion_probe import wait_simulator_leg_receipt
+            result["initial_sdk_leg_receipt"]=wait_simulator_leg_receipt(output)
+            result["gates"]["INITIAL_SDK_LEG_COMMAND_RECEIPT"]="PASS"
         pid = int(run(["docker", "exec", container, "bash", "-lc", "pgrep -x soc_sim"], timeout_s=4.0).stdout.strip().splitlines()[0])
         inspect = run(["docker", "exec", container, "bash", "-lc", f"python3 /workspace/evidence/native_mujoco_reset.py inspect --expected-pid {pid}"], timeout_s=8.0)
         inspected = json.loads(inspect.stdout); windows = inspected.get("windows", [])
@@ -2269,6 +2295,10 @@ def main() -> None:
         if sample.returncode != 0 or not sample_data.get("stability", {}).get("pass"):
             raise RuntimeError(f"post-reset stand is unstable: {sample.stdout[-1200:]}")
         result["gates"]["POST_RESET_STAND_STABILITY"] = "PASS"
+        if args.lateral_motion_direction or args.far_observe_approach:
+            from scripts.research.issue46.native_runtime.native_lateral_motion_probe import confirm_physical_standing
+            result["initial_native_standing_check"]=confirm_physical_standing(output)
+            result["gates"]["INITIAL_NATIVE_PHYSICAL_STANDING"]="PASS"
         if args.startup_opening_diagnostic:
             # No route/source/arm plan may execute after this diagnostic branch.
             observed=[];deadline=time.monotonic()+8.;initial_xy=None
@@ -2480,7 +2510,7 @@ def main() -> None:
             if result["gates"]["NATIVE_BODY_HEIGHT_RESPONSE_AND_RESTORE"]!="PASS":result["failure"]={"gate":"NATIVE_BODY_HEIGHT_RESPONSE_AND_RESTORE","detail":body_result}
             raise MicroProbeComplete()
         fixed_stance_only=args.fixed_reviewed_checkpoint and not args.execute_pickup_navigation
-        if args.use_official_cmd_vel_bridge and not fixed_stance_only:
+        if args.use_official_cmd_vel_bridge and (not fixed_stance_only or args.task_grasp_region):
             bridge_log = output / "official_cmd_vel_bridge.stdout"
             lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else " -p min_forward_velocity:="+str(args.dock_command_speed_cap) if args.dock_command_speed_cap is not None else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
             if args.dock_angular_speed_cap is not None:lateral_parameter+=" -p min_angular_velocity:="+str(args.dock_angular_speed_cap)+" -p max_angular_velocity:="+str(args.dock_angular_speed_cap)
@@ -2494,13 +2524,21 @@ def main() -> None:
                 + lateral_parameter
                 + "> /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
             )
-            if args.execute_pickup_navigation:
+            if args.execute_pickup_navigation or args.task_grasp_region:
                 from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
                 source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
                 pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
                 bridge_command=environment+f"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.0 -p max_forward_velocity:=0.20 -p max_backward_velocity:=0.20 -p min_lateral_velocity:=0.0 -p max_lateral_velocity:={0.20 if args.task_grasp_region else 0.0} -p min_angular_velocity:=0.0 -p max_angular_velocity:=0.60 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
+            if args.visual_stance_adjustment:
+                if not args.execute_pickup_navigation or not args.standing_grasp_posture:raise ValueError('unloaded visual stance only after pickup navigation')
+                bridge_command=bridge_command.replace('-p max_lateral_velocity:=0.0','-p max_lateral_velocity:=0.60')
             if motion_calibration is not None:
                 bridge_command=environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.0 -p max_forward_velocity:=0.20 -p max_backward_velocity:=0.20 -p min_lateral_velocity:=0.0 -p max_lateral_velocity:=0.60 -p min_angular_velocity:=0.0 -p max_angular_velocity:=0.60 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
+            if args.lateral_motion_direction and args.lateral_motion_profile=="side-start":
+                from scripts.research.issue46.native_runtime.native_lateral_motion_probe import side_start_bridge_command
+                bridge_command=side_start_bridge_command(bridge_command)
+                result["lateral_motion_input_profile"]={"name":"SIMULATION_ONLY_SIDE_START_PULSE_050","previous_micro_profile_cap_m_s":.20,"selected_side_cap_m_s":.50,"sdk_low_mode_side_bound_m_s":1.0,"physical_gates_unchanged":True}
+                pg.write_new_text(output/"side_start_bridge_command.json",json.dumps({"command":bridge_command,"profile":result["lateral_motion_input_profile"]},indent=2)+"\n")
             run(["docker", "exec", "-d", container, "bash", "-lc", bridge_command], timeout_s=5.0)
             bridge_text = wait_for(bridge_log, "cmd_vel_bridge started.", timeout_s=10.0)
             if "state=0" not in bridge_text:
@@ -2572,6 +2610,24 @@ def main() -> None:
                     ready=observed.returncode==0 and state.get('set_status') is None and state.get('mode_name')=='STAND_DEFAULT' and state.get('mode_status')==100 and state.get('stability',{}).get('pass') is True
                     result['gates']['POSTDOCK_READONLY_STAND']='PASS' if ready else 'FAIL'
                     if not ready:raise RuntimeError('postdock read-only standing qualification failed')
+                if args.lateral_motion_direction:
+                    if not args.execute_pickup_navigation or not args.task_grasp_region or not args.capture_mc_rl_debug:raise ValueError("lateral probe requires actual START arrival and debug capture")
+                    start_runtime_rl_debug_capture(container,environment,output,args,result)
+                    from scripts.research.issue46.native_runtime.native_lateral_motion_probe import execute as execute_lateral
+                    probe=execute_lateral(run,container,environment,output,args.lateral_motion_direction,control_generated["host_scene"]["path"],args.lateral_motion_profile)
+                    result["lateral_motion_probe"]=probe
+                    result["gates"]["LATERAL_FROM_START_ARRIVAL"]="PASS"
+                    result["gates"]["LATERAL_MOTION_SAFE_STOP"]="PASS" if probe.get("safe_stop_pass") else "FAIL"
+                    result["gates"]["TABLE_PARALLEL_REPOSITION"]="PASS" if probe.get("behavior_pass") else "FAIL"
+                    if probe.get("failure"):result["failure"]={"gate":"LATERAL_MOTION_PROBE","detail":probe["failure"]}
+                    result["experiment_scope"]="REAL_FROM_START_LATERAL_DIAGNOSTIC_NO_GRASP"
+                    raise MicroProbeComplete()
+                if args.visual_stance_adjustment:
+                    from scripts.research.issue46.native_runtime.native_visual_stance import execute as execute_visual_stance
+                    if args.visual_stance_host_cache is None or args.visual_stance_reference is None:raise ValueError('visual stance sensor/reference missing')
+                    reference=json.loads(args.visual_stance_reference.read_text())
+                    result['visual_stance_adjustment']=execute_visual_stance(run,container,environment,output,control_generated['host_scene']['path'],args.visual_stance_host_cache,reference,limits,bodies)
+                    result['gates']['RGBD_DIRECTED_BASE_STANCE']='PASS'
                 if args.task_grasp_region:
                     from scripts.research.issue46.native_runtime.native_task_grasp_region import execute as execute_task_region
                     if args.task_region_host_cache is None or args.task_region_reference is None:
@@ -2580,7 +2636,7 @@ def main() -> None:
                     result["task_grasp_region"]=execute_task_region(run,container,environment,output,control_generated["host_scene"]["path"],args.task_region_host_cache,reference,limits,bodies)
                     args.standing_grasp_posture=Path(result["task_grasp_region"]["posture_config"])
                     result["gates"]["RGBD_TASK_GRASP_REGION"]="PASS"
-                if args.standing_grasp_posture and args.execute_pickup_navigation:
+                if args.standing_grasp_posture and (args.execute_pickup_navigation or args.task_grasp_region):
                     from scripts.research.issue46.native_runtime.native_grasp_stand_restore import retire_owned_zero_bridge
                     result["pickup_bridge_retirement"]=retire_owned_zero_bridge(run,container,output,"pickup")
                 if args.standing_grasp_posture:

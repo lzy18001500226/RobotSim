@@ -103,10 +103,21 @@ def emit_manual_waist(self):
     self.waist_pub.publish(message)
 
 
+def waist_motion_duration(start, target):
+    """Bound a smoothstep pose trajectory's peak requested speed to 0.14rad/s.
+
+    This is planning time scaling, not a relaxed tracking or source limit.
+    """
+    distance=max(abs(float(target[n])-float(start[n])) for n in WAIST)
+    duration=max(4.,1.5*distance/.14)
+    if not math.isfinite(duration) or duration>12.:raise ValueError("WAIST_TRAJECTORY_OUTSIDE_BOUNDED_DURATION")
+    return duration
+
+
 def override_waist(self, message):
     if getattr(self,"waist_request",None) is None:return message
     request=self.waist_request;now=time.monotonic()
-    if request.get("schema")!="robotsim.waist-preposition.v1" or request["duration_s"]!=4. or not 0.<=(time.monotonic_ns()-request["created_host_ns"])*1e-9<=float(request.get("lease_s",60.)):raise RuntimeError("WAIST_POSTURE_REQUEST_EXPIRED_OR_INVALID")
+    if request.get("schema")!="robotsim.waist-preposition.v1" or not 4.<=request["duration_s"]<=12. or not 0.<=(time.monotonic_ns()-request["created_host_ns"])*1e-9<=float(request.get("lease_s",60.)):raise RuntimeError("WAIST_POSTURE_REQUEST_EXPIRED_OR_INVALID")
     row=self.waist_native
     if row["generation"]!=request["generation"] or not 0.<=(time.monotonic_ns()-row["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("WAIST_POSTURE_NATIVE_STATE_NOT_FRESH")
     u=min(1.,max(0.,(time.monotonic_ns()-request["created_host_ns"])*1e-9/request["duration_s"]));u=u*u*(3.-2.*u)
@@ -224,7 +235,7 @@ def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=Fa
         proof=dict(classification='ACTUAL_STATE_WORLD_TORSO_FRAME_STATIC_PREFLIGHT',mj_step_calls=0,pelvis_yaw_rad=root_yaw,torso_world_yaw_target_rad=desired,waist_target_rad=target,samples=21,violations=bad)
         pg.write_new_text(output/'world_torso_waist_static_preflight.json',json.dumps(proof,indent=2)+'\n')
         row=read_native(output/'native_latest.json')
-    request=dict(schema="robotsim.waist-preposition.v1",generation=row["generation"],created_host_ns=time.monotonic_ns(),duration_s=4.,lease_s=300.,start_rad={n:row["joints"][n]["q"] for n in WAIST},target_rad=target,source_limits={n:limits[n] for n in WAIST},effort_caps_nm=effort_caps)
+    request=dict(schema="robotsim.waist-preposition.v1",generation=row["generation"],created_host_ns=time.monotonic_ns(),duration_s=waist_motion_duration({n:row["joints"][n]["q"] for n in WAIST},target),lease_s=300.,start_rad={n:row["joints"][n]["q"] for n in WAIST},target_rad=target,source_limits={n:limits[n] for n in WAIST},effort_caps_nm=effort_caps)
     pending=output/"standing_waist_request.tmp"
     pg.write_new_text(pending,json.dumps(request,indent=2)+"\n")
     os.replace(pending,output/"standing_waist_request.json")
@@ -235,17 +246,17 @@ def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=Fa
         if fault:raise RuntimeError("WAIST_PREPOSITION_PHYSICAL:"+fault)
         feet=[sum(max(0.,c["local_force_torque"][0]) for c in actual["contacts"] if c.get("efc_address",-1)>=0 and side+"_ankle_roll_link" in (c["body1"],c["body2"]) and "world" in (c["body1"],c["body2"])) for side in ("left","right")]
         if min(feet)<5.:raise RuntimeError("WAIST_PREPOSITION_SUPPORT_LOST")
-        u=min(1.,max(0.,(time.monotonic_ns()-request["created_host_ns"])*1e-9/4.));u=u*u*(3.-2.*u)
+        u=min(1.,max(0.,(time.monotonic_ns()-request["created_host_ns"])*1e-9/request["duration_s"]));u=u*u*(3.-2.*u)
         if any(abs(actual["joints"][n]["q"]-(request["start_rad"][n]+u*(target[n]-request["start_rad"][n])))>.05 for n in WAIST):raise RuntimeError("WAIST_PREPOSITION_TRACKING_ERROR")
         feedback=output/"standing_waist_feedback.json"
         if feedback.exists():
             f=json.loads(feedback.read_text())
-            if f.get("request_created_host_ns")==request["created_host_ns"] and f["generation"]==row["generation"] and 0.<=(time.monotonic_ns()-f["source_host_ns"])*1e-9<=.20 and f["fraction"]>=1. and waist_position_ready({n:actual["joints"][n]["q"] for n in WAIST},target,float(proposal.get("task_roll_readiness_tolerance_rad",.025))) and max(abs(actual["joints"][n]["qvel"]) for n in WAIST)<.05:
+            if f.get("request_created_host_ns")==request["created_host_ns"] and f["generation"]==row["generation"] and 0.<=(time.monotonic_ns()-f["source_host_ns"])*1e-9<=.20 and (retain_current or f["fraction"]>=1.) and waist_position_ready({n:actual["joints"][n]["q"] for n in WAIST},target,float(proposal.get("task_roll_readiness_tolerance_rad",.025))) and max(abs(actual["joints"][n]["qvel"]) for n in WAIST)<.05:
                 return dict(request=request,feedback=f,actual_source_host_ns=actual["host_monotonic_ns"],task_roll_readiness_tolerance_rad=float(proposal.get("task_roll_readiness_tolerance_rad",.025)),strict_original_position_025_pass=waist_position_ready({n:actual["joints"][n]["q"] for n in WAIST},target),position_error_rad={n:actual["joints"][n]["q"]-target[n] for n in WAIST})
         time.sleep(.02)
     raise RuntimeError("WAIST_PREPOSITION_NOT_REACHED")
 
-def pre_raise_forearm(output, proposal, limits, effort_cap):
+def pre_raise_forearm(output, proposal, limits, effort_cap, *, elbow_only=False):
     """Source-bounded same-owner elbow raise before torso lowering/turning."""
     from scripts.agent import path_governance as pg
     from scripts.research.issue46.native_runtime.native_base_micro_probe import physical_fault,native_pose
@@ -256,7 +267,8 @@ def pre_raise_forearm(output, proposal, limits, effort_cap):
     scene=json.loads((output/'live_view_scene.json').read_text())['scene'];model=mujoco.MjModel.from_xml_path(scene['path']);data=mujoco.MjData(model);apply_recorded_native_frame(model,data,row)
     root=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,'pelvis');robots={i for i in range(model.nbody) if model.body_rootid[i]==root};ids={n:mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n) for n in row['joints']};rootadr=int(model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,'floating_base_joint')]);lower=json.loads(Path(proposal['native_lowering_reference']['path']).read_text());legs=[n for n in ids if any(x in n for x in ('hip_','knee_','ankle_'))];feet={'left_ankle_pitch_link','left_ankle_roll_link','right_ankle_pitch_link','right_ankle_roll_link'}
     R=row['bodies']['pelvis']['rotation'];yaw=math.atan2(R[3],R[0]);goals={**proposal['waist_target_rad'],'waist_roll_joint':row['joints']['waist_roll_joint']['q']};goals['waist_yaw_joint']=(proposal['torso_world_yaw_target_rad']-yaw+math.pi)%(2*math.pi)-math.pi;bad=[]
-    for stage in ('elbow','lower','waist'):
+    stages=('elbow',) if elbow_only else ('elbow','lower','waist')
+    for stage in stages:
         for index in range(21):
             f=index/20.;apply_recorded_native_frame(model,data,row)
             data.qpos[model.jnt_qposadr[ids[name]]]=row['joints'][name]['q']+(f if stage=='elbow' else 1.)*(target-row['joints'][name]['q'])
@@ -273,10 +285,23 @@ def pre_raise_forearm(output, proposal, limits, effort_cap):
                 if 'world' in names and any(n in feet for n in names):continue
                 if set(names)=={'pelvis','left_hip_roll_link'} and c.dist>=-.005:continue
                 bad.append(dict(stage=stage,fraction=f,pair=names,distance_m=float(c.dist)))
-    proof=dict(classification='ACTUAL_STANDING_STATE_ELBOW_LOWER_WAIST_STATIC_PREFLIGHT',mj_step_calls=0,samples=63,elbow_target_rad=target,waist_target_rad=goals,violations=bad)
-    pg.write_new_text(output/'pre_raise_full_sequence_static.json',json.dumps(proof,indent=2)+'\n')
+    proof=dict(classification='ACTUAL_STANDING_STATE_ELBOW_ONLY_STATIC_PREFLIGHT' if elbow_only else 'ACTUAL_STANDING_STATE_ELBOW_LOWER_WAIST_STATIC_PREFLIGHT',mj_step_calls=0,samples=21*len(stages),elbow_target_rad=target,waist_target_rad=goals,violations=bad)
+    pg.write_new_text(output/('pre_raise_elbow_only_static.json' if elbow_only else 'pre_raise_full_sequence_static.json'),json.dumps(proof,indent=2)+'\n')
     if bad:raise RuntimeError('PRE_RAISE_FULL_SEQUENCE_COLLISION:'+str(bad[:2]))
-    row=read_native(output/'native_latest.json');request=dict(schema='robotsim.forearm-pre-raise.v1',generation=row['generation'],created_host_ns=time.monotonic_ns(),duration_s=3.,start_rad=row['joints'][name]['q'],target_rad=target,source_limits=limits[name],effort_cap_nm=effort_cap)
+    previous=output/'pre_raise_forearm_result.json'
+    if previous.exists():
+        old=json.loads(previous.read_text());actual=read_native(output/'native_latest.json');req=old.get('request',{})
+        if not old.get('pass_result') or req.get('generation')!=actual['generation'] or req.get('process_pid')!=actual['process_pid'] or req.get('target_rad')!=target:
+            raise RuntimeError('PRE_RAISE_REUSE_NOT_SAME_EPISODE_AND_TARGET')
+        fault=physical_fault(actual,native_pose(actual),limits,robot_bodies=proposal['robot_bodies'],review_incidental_contacts=True)
+        if fault:raise RuntimeError('PRE_RAISE_REUSE_PHYSICAL:'+fault)
+        for c in actual['contacts']:
+            if 'test_cylinder' in (c['body1'],c['body2']) and any(n in proposal['robot_bodies'] for n in (c['body1'],c['body2'])) and c['local_force_torque'][0]>.1:raise RuntimeError('PRE_RAISE_REUSE_UNINTENDED_OBJECT_CONTACT')
+        if abs(actual['joints'][name]['q']-target)>=.025 or abs(actual['joints'][name]['qvel'])>=.05:raise RuntimeError('PRE_RAISE_REUSE_NOT_HELD')
+        result=dict(pass_result=True,reused_source_valid_elbow=True,full_remaining_preparation_rechecked=not elbow_only,original_result=str(previous),source_host_ns=actual['host_monotonic_ns'],generation=actual['generation'],process_pid=actual['process_pid'])
+        pg.write_new_text(output/'pre_raise_forearm_revalidation.json',json.dumps(result,indent=2)+'\n')
+        return result
+    row=read_native(output/'native_latest.json');request=dict(schema='robotsim.forearm-pre-raise.v1',generation=row['generation'],process_pid=row['process_pid'],created_host_ns=time.monotonic_ns(),duration_s=3.,start_rad=row['joints'][name]['q'],target_rad=target,source_limits=limits[name],effort_cap_nm=effort_cap)
     temp=output/'pre_raise_forearm_request.tmp';pg.write_new_text(temp,json.dumps(request)+'\n');os.replace(temp,output/'pre_raise_forearm_request.json')
     deadline=time.monotonic()+12.
     while time.monotonic()<deadline:
