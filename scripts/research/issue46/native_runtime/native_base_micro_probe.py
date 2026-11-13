@@ -1966,7 +1966,8 @@ def run_carry_navigation(n,contract):
                 if remaining<=functional_approach_limit(cfg,mission):break
                 if not result['post_stop_composite'].get('pass') or until-time.monotonic()<8.:raise RuntimeError('TERMINAL_REAPPROACH_STOP_OR_TIME_UNQUALIFIED')
                 bearing_error=(math.atan2(goal[1]-end['y'],goal[0]-end['x'])-end['yaw']+math.pi)%(2*math.pi)-math.pi
-                if abs(bearing_error)>.75:raise RuntimeError('TERMINAL_REAPPROACH_HEADING_NOT_QUALIFIED')
+                if abs(bearing_error)>.75:
+                    result['terminal_reapproach_deferred_to_actual_placement']=dict(reason='NOMINAL_GOAL_NEEDS_LARGE_REORIENTATION',measured_pose=end,original_placement_preflight_still_required=True);break
                 transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row)
                 closed_permits.append(transit_permit);cfg['previous_permit_filename']=cfg['permit_filename']
                 cfg['delivery_measured_stop_pass']=True;cfg['delivery_rearm_count']=cfg.get('delivery_rearm_count',0)+1

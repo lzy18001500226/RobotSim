@@ -224,4 +224,13 @@ class CarryShoulderPlanningReserveTests(unittest.TestCase):
         np.testing.assert_array_equal(source,old)
         np.testing.assert_array_equal(carry_tracking_bounds(source,names,{'phase':'CARRY_HOLD','placement_active':True}),source)
         np.testing.assert_array_equal(carry_tracking_bounds(source,names,{'phase':'LIFTING'}),source)
+class ReapproachVersusPlacementTests(unittest.TestCase):
+    def test_large_nominal_reorientation_never_forces_motion_and_keeps_placement_gate(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script);guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'abs(bearing_error)' in ast.unparse(n.test) and any(isinstance(x,ast.Break) for x in n.body))
+        self.assertTrue(any(isinstance(n,ast.Break) for n in guard.body))
+        self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='publish' for n in ast.walk(guard)))
+        self.assertIn('original_placement_preflight_still_required=True',ast.unparse(guard))
 if __name__=="__main__":unittest.main()
