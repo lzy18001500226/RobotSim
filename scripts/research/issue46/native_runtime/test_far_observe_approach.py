@@ -120,8 +120,15 @@ class FarApproachTests(unittest.TestCase):
         from scripts.research.issue46.native_runtime import native_task_grasp_region as task
         tree=ast.parse(inspect.getsource(task.execute))
         snapshot=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="make_stationary_snapshot")
-        png=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save"]
+        failures=[n for n in ast.walk(tree) if isinstance(n,ast.ExceptHandler)]
+        abort_nodes={id(n) for branch in failures for n in ast.walk(branch)}
+        png=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save" and id(n) not in abort_nodes]
         self.assertTrue(png);self.assertTrue(all(snapshot.lineno<n.lineno for n in png))
+        # Failed input may be saved before abort, but cannot create a snapshot.
+        for branch in failures:
+            if any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save" for n in ast.walk(branch)):
+                self.assertIsInstance(branch.body[-1],ast.Raise)
+                self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="make_stationary_snapshot" for n in ast.walk(branch)))
         self.assertNotIn('time.sleep(.03)',inspect.getsource(task.execute))
     def test_current_source_valid_posture_is_considered_before_more_base_motion(self):
         import inspect,ast

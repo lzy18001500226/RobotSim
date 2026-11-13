@@ -19,6 +19,16 @@ class GraspProfileTests(unittest.TestCase):
         c,s=np.cos(heading-yaw),np.sin(heading-yaw)
         reconstructed=anchor+np.array([[c,-s],[s,c]])@(root-foot)
         np.testing.assert_allclose(reconstructed,center[:2]+profile['root_offset_from_object_xy_m'])
+    def test_standing_reference_is_not_the_crouched_grasp_pose(self):
+        from scripts.research.issue46.native_runtime.grasp_profiles import standing_stance_from_profile
+        profile=load_profiles()[10];center=np.array([1.43,-1.,.66]);root=np.array([.9,-1.4]);foot=root+[-.02,.01];yaw=.2
+        anchor,heading=standing_stance_from_profile(profile,center,root,foot,yaw)
+        c,s=np.cos(heading-yaw),np.sin(heading-yaw)
+        reconstructed=anchor+np.array([[c,-s],[s,c]])@(root-foot)
+        np.testing.assert_allclose(reconstructed,center[:2]+profile['standing_root_offset_from_object_xy_m'])
+        self.assertGreater(np.linalg.norm(np.array(profile['standing_root_offset_from_object_xy_m'])-profile['root_offset_from_object_xy_m']),.04)
+        self.assertEqual(profile['provenance']['standing_region']['frame'],'NATIVE_STANDING_BEFORE_LOWERING')
+
     def test_reference_torso_heading_survives_base_arrival_yaw_error(self):
         import math
         from scripts.research.issue46.native_runtime.grasp_profiles import torso_world_heading

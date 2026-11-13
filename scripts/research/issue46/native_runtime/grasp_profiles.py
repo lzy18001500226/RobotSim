@@ -26,6 +26,13 @@ def stance_from_profile(profile,observed_center,current_root,foot_anchor,current
     return desired-rotation@(root-anchor),yaw
 
 
+def standing_stance_from_profile(profile, observed_center, current_root, foot_anchor, current_yaw):
+    """Reuse measured pre-lowering stance, distinct from postured grasp root."""
+    standing=dict(profile,root_offset_from_object_xy_m=profile['standing_root_offset_from_object_xy_m'],
+                  base_yaw_rad=profile['standing_base_yaw_rad'])
+    return stance_from_profile(standing,observed_center,current_root,foot_anchor,current_yaw)
+
+
 def torso_world_heading(profile):
     """Preserve a demonstrated torso heading when the actual base yaw differs."""
     value=float(profile['base_yaw_rad'])+float(profile['waist_yaw_rad'])

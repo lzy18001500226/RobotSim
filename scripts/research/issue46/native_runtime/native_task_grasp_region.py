@@ -606,6 +606,11 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         preferred=profile.get('preferred_approach_label')
         if preferred:
             candidates.sort(key=lambda candidate:0 if candidate[1]==preferred else 1)
+        from scripts.research.issue46.native_runtime.grasp_profiles import standing_stance_from_profile
+        standing_label=label+"_STANDING_REFERENCE"
+        profile_by_label[standing_label]=profile
+        standing_anchor,standing_yaw=standing_stance_from_profile(profile,center,root_xy,anchor,yaw)
+        candidates.insert(0,(standing_anchor,standing_label,standing_yaw,profile['waist_pitch_rad']))
         candidates.insert(0,(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']))
         # Keep the demonstrated forward/turn navigation targets below. A saved
         # *achieved* stopped grasp pose is not the old commanded motion goal:
