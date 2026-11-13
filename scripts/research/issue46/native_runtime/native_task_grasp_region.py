@@ -610,7 +610,10 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         standing_label=label+"_STANDING_REFERENCE"
         profile_by_label[standing_label]=profile
         standing_anchor,standing_yaw=standing_stance_from_profile(profile,center,root_xy,anchor,yaw)
-        candidates.insert(0,(standing_anchor,standing_label,standing_yaw,profile['waist_pitch_rad']))
+        # Retain the historical commanded approach targets ahead of the
+        # measured-stop fallback. A stopped grasp witness is not a navigation
+        # lookahead: using it first understeered the saved left-end approach.
+        candidates.append((standing_anchor,standing_label,standing_yaw,profile['waist_pitch_rad']))
         candidates.insert(0,(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']))
         # Keep the demonstrated forward/turn navigation targets below. A saved
         # *achieved* stopped grasp pose is not the old commanded motion goal:
