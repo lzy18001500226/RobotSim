@@ -1838,11 +1838,14 @@ def run_carry_navigation(n,contract):
                         trigger=max(.05,speed*mission["measured_braking_delay_sim_s"]+float(cfg["delivery"].get("delivery_arrival_reserve_m",.05)))
                         mission["current_stop_prediction"]=dict(speed_along_sim_m_s=speed,trigger_distance_m=trigger,
                             predicted_remaining_m=distance-speed*mission["measured_braking_delay_sim_s"])
-                    # Saved complete braking intervals coasted up to384mm.
-                    # Retain450mm trigger reserve near the physical table;
-                    # current-pose placement preflight still decides usability.
+                    # The loaded diagonal stop at238.4s continued ~418mm while
+                    # task-axis speed underpredicted cross-track gait motion.
+                    # Reserve600mm: observed coast plus the existing150ms sample
+                    # allowance at the600mm/s cap and remaining geometric margin.
+                    # This only sends zero earlier; physical stop/collisions and
+                    # actual-pose placement IK remain independent requirements.
                     if cfg["delivery"].get("conservative_terminal_stop"):
-                        trigger=max(trigger,.45)
+                        trigger=max(trigger,.60)
                     if distance<=trigger and (cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" or abs(final_yaw_error)<=.12):
                         result["goal_triggered_stop"]=True;mission["delivery_stop_trigger_pose"]=p;break
                     calibration=float(cfg["delivery"].get("measure_step_braking_after_progress_m",0.))

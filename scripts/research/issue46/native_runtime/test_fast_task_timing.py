@@ -169,7 +169,7 @@ class ConservativeTableStopTests(unittest.TestCase):
         script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
         tree=ast.parse(script);node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Constant) and v.value=="conservative_terminal_stop" for v in ast.walk(n.test)))
         ns=dict(cfg={"delivery":{"conservative_terminal_stop":True}},trigger=.22699435678032145);exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_stop_reserve","exec"),ns)
-        self.assertEqual(ns["trigger"],.45);self.assertGreater(ns["trigger"]-.38387407559438663,.06)
+        self.assertEqual(ns["trigger"],.60);self.assertGreater(ns["trigger"]-.418,.60*.15)
 class PlacementRadialLimitTests(unittest.TestCase):
     def test_actual_saved_box_solution_is_outside_original_circle(self):
         import numpy as np
