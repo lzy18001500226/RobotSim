@@ -69,7 +69,7 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
     raise RuntimeError("TASK_RGBD_ACQUISITION_TIMEOUT")
 
 def task_route_profile(profile, *, fast_task_timing=False):
-    """Select the short checked turn; preserve every physical/control bound."""
+    """Select the measured-clearance carry route; retain physical/control bounds."""
     import copy
     result = copy.deepcopy(profile)
     if (result.get("schema") != "robotsim.x2.two-table-delivery.v1"
@@ -86,12 +86,14 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
-        # Saved220513Z CW pure-yaw travelled4.73rad and drifted back to the
-        # pickup table. The earlier CCW failure used FORWARD_ARC, not pure yaw.
-        # Static221826Z checks the shortest pure-yaw envelope at the actual
-        # loaded retreat pose (+/-100mm); live gait/collision gates still decide.
-        result["delivery_turn_direction"]="SHORTEST"
+        # Saved220513Z reached the pickup table after only323mm retreat.
+        # Translating that measured route to700mm retreat clears every enabled
+        # external proxy by at least150mm (query cap); this is not a gait proof.
+        # Require actual600mm retreat before prediction can request braking.
+        result["delivery_turn_direction"]="CLOCKWISE"
         result["turn_translation_strategy"]="PURE_YAW"
+        result["retreat_target_m"]=.75
+        result["minimum_actual_retreat_m"]=.60
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
         # handoff only after a new physical stop and actual-pose placement IK.
@@ -123,7 +125,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="STATIC_CHECKED_SHORTEST_PURE_YAW_NOT_FORWARD_ARC",evidence="reviews/issue-46/measured-shortest-yaw-egress-static-20261113T221826Z/result.json")
+        result["task_turn_selection"].update(classification="MEASURED_RETREAT_CLEARANCE_CW_ROUTE_NOT_GAIT_CERTIFICATION",evidence="reviews/issue-46/measured-carry-egress-clearance-offline-20261113T223857Z/result.json")
     return result
 
 

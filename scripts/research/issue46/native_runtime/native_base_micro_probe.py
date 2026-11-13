@@ -980,6 +980,17 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def retreat_braking_gate(progress, predicted, compact_turn, delivery):
+    """Measured spatial clearance must precede a predicted braking request."""
+    target=float(delivery.get("retreat_target_m",.50 if compact_turn else .30))
+    minimum=float(delivery.get("minimum_actual_retreat_m",.03))
+    if not all(math.isfinite(v) for v in (progress,predicted,target,minimum)) or not .03<=minimum<=target<=.80:
+        raise ValueError("invalid measured retreat envelope")
+    return dict(target_m=target,minimum_actual_m=minimum,actual_m=progress,
+                predicted_settled_m=predicted,
+                request_stop=progress>=target or progress>=minimum and predicted>=target)
+
+
 def delivery_forward_progress(state, distance, now, active, epoch):
     """Accumulate the existing three-second no-progress budget across ALIGN."""
     if state is None:
@@ -1557,8 +1568,10 @@ def run_carry_navigation(n,contract):
                         velocity=max(0.,sum((x-mx)*(y-my) for x,y in zip(xs,ys))/var) if var else 0.
                     predicted=progress+velocity*cfg.get("retreat_brake_delay_s",0.)
                     mission["retreat_predicted_settled_progress_m"]=predicted
-                    retreat_goal=.50 if cfg.get("compact_turn") else .30
-                    if progress<retreat_goal and not (progress>=.03 and predicted>=retreat_goal):
+                    retreat_gate=retreat_braking_gate(progress,predicted,cfg.get("compact_turn"),cfg.get("delivery") or {})
+                    mission["retreat_braking_gate"]=retreat_gate
+                    retreat_goal=retreat_gate["target_m"]
+                    if not retreat_gate["request_stop"]:
                         output=SimpleNamespace(state=NavState.DRIVE,distance_m=retreat_goal-progress,
                                                yaw_error_rad=error,linear_x=-.12,
                                                angular_z=(0. if abs(error)<=.02 else math.copysign(min(.30 if cfg.get("compact_turn") else .1,cfg["angular_command_cap"]),error)))

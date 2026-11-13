@@ -6,6 +6,19 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_predicted_braking_cannot_replace_actual_pickup_table_clearance(self):
+        delivery=dict(retreat_target_m=.75,minimum_actual_retreat_m=.60)
+        self.assertFalse(m.retreat_braking_gate(.322885,.9,True,delivery)["request_stop"])
+        self.assertFalse(m.retreat_braking_gate(.59,.9,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.61,.76,True,delivery)["request_stop"])
+        self.assertFalse(m.retreat_braking_gate(.61,.72,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.75,.75,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.04,.51,True,{})["request_stop"])
+        for cfg in (dict(retreat_target_m=.50,minimum_actual_retreat_m=.60),dict(retreat_target_m=.9)):
+            with self.assertRaises(ValueError):m.retreat_braking_gate(.3,.5,True,cfg)
+        with self.assertRaises(ValueError):m.retreat_braking_gate(float('nan'),.5,True,{})
+
+
     def test_near_terminal_step_heading_requests_zero_not_precise_pivot(self):
         from scripts.research.issue46.native_runtime.native_micro_stop_contract import PHYSICAL_STOP_MAX_SAMPLE_GAP_S
         pose=dict(vx=-.127309,vy=.261719)
@@ -1097,7 +1110,8 @@ class CompactTurnTests(unittest.TestCase):
         self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
         self.assertIn('bound=.20 if cfg.get("compact_turn") else .05',code)
         self.assertIn('0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN"',code)
-        self.assertIn('retreat_goal=.50 if cfg.get("compact_turn") else .30',code)
+        self.assertIn('retreat_gate=retreat_braking_gate(',code)
+        self.assertEqual(m.retreat_braking_gate(0.,0.,True,{})['target_m'],.50)
         with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,compact_turn=True)
 
 class CompactClockRecoveryTests(unittest.TestCase):
