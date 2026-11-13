@@ -9,8 +9,28 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget')]
-        cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility')]
+        from scipy.optimize import least_squares
+        cls.ns={'np':np,'least_squares':least_squares};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
+
+    def test_task_feasibility_finds_both_gates_without_relaxing_limits(self):
+        # Minimum total squared error exceeds the axis gate, despite a
+        # nonempty intersection of the position and orientation gates.
+        def residual(q):return np.array([q[0],0.,0.,.00115-.3*q[0],0.,0.])
+        def jacobian(q):return np.array([[1.],[0.],[0.],[-.3],[0.],[0.]])
+        fit=self.ns['refine_task_feasibility'](residual,jacobian,np.array([.00036]),
+                    (np.array([0.]),np.array([.002])),.001,.001)
+        error=residual(fit.x)
+        self.assertLessEqual(np.linalg.norm(error[:3]),.001)
+        self.assertLessEqual(np.linalg.norm(error[3:]),.001)
+        self.assertTrue(0.<=fit.x[0]<=.002)
+
+    def test_task_feasibility_does_not_turn_unreachable_task_into_pass(self):
+        def residual(q):return np.array([.002,0.,0.,q[0],0.,0.])
+        def jacobian(q):return np.array([[0.],[0.],[0.],[1.],[0.],[0.]])
+        fit=self.ns['refine_task_feasibility'](residual,jacobian,np.array([0.]),
+                    (np.array([-.001]),np.array([.001])),.001,.001)
+        self.assertGreater(np.linalg.norm(residual(fit.x)[:3]),.001)
 
     def test_native_gain_cycle_has_scoped_startup_budget_without_freshness_relaxation(self):
         source=Path(__file__).with_name('stl_approved_circle_ik.py').read_text()

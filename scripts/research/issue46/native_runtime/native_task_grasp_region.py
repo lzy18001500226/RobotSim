@@ -587,6 +587,15 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         candidates.insert(1,(anchor,"CURRENT_STANCE_FORWARD_BEND_029",yaw,.29))
         candidates.extend([(anchor+np.array([.04,0.]),"FORWARD_SHORT_04_FORWARD_BEND_029",yaw,.29),
             (anchor+np.array([.04,0.]),"FORWARD_SHORT_04",yaw,None)])
+    profile_by_label={}
+    if far_observe:
+        from scripts.research.issue46.native_runtime.grasp_profiles import select_profile,stance_from_profile
+        profile=select_profile(center)
+        profile_anchor,profile_yaw=stance_from_profile(profile,center,root_xy,anchor,yaw)
+        label=profile['profile'];profile_by_label[label]=profile
+        if np.linalg.norm(center[:2]+np.asarray(profile['root_offset_from_object_xy_m'])-root_xy)<=.08 and abs(math.atan2(math.sin(profile_yaw-yaw),math.cos(profile_yaw-yaw)))<=.20:
+            profile_anchor=anchor.copy();profile_yaw=yaw
+        candidates.insert(0,(profile_anchor,label,profile_yaw,profile['waist_pitch_rad']))
     rows = []
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:
@@ -597,6 +606,8 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             oldyaw=math.atan2(body["rotation"][3],body["rotation"][0])
             root_goal=candidate_anchor+Rotation.from_euler("z",yaw-oldyaw).as_matrix()[:2,:2]@(root_xy-anchor)
             heading, correction = torso_heading_for_target(center, root_goal, ref_root, ref_object, reference_heading)
+            if label in profile_by_label:
+                heading=yaw+profile_by_label[label]['waist_yaw_rad']
             relative_change = heading-yaw-prepared[yaw_adr]
             # Task search extent only; Study still enforces source bounds and path collisions.
             if abs(relative_change) > 1.05:
@@ -630,6 +641,12 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
                    "minimum_clearance_m": witness["minimum_external_clearance_m_capped_50mm"],
                    "first_blocker": witness.get("first_blocker"), "witness": witness}
             row["base_motion_required"]=not label.startswith("CURRENT_STANCE")
+            if label in profile_by_label:
+                row['grasp_profile']=profile_by_label[label]
+                # Arrival is a region: qualify this actual stance and the same
+                # profile posture before asking for another small base move.
+                if np.linalg.norm(root_goal-root_xy)<=.08 and abs(math.atan2(math.sin(yaw-oldyaw),math.cos(yaw-oldyaw)))<=.20:
+                    row['base_motion_required']=False
             row["pre_raise_forearm_target_rad"]=pre_raise_target_rad
             if pitch_target is not None:row["waist_pitch_target_rad"]=pitch_target
             rows.append(row)
@@ -802,6 +819,7 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                 proposal["waist_target_rad"]["waist_yaw_joint"] = chosen["torso_world_yaw_target_rad"]-chosen["yaw_rad"]
                 if "waist_pitch_target_rad" in chosen:proposal["waist_target_rad"]["waist_pitch_joint"]=chosen["waist_pitch_target_rad"]
                 proposal["pre_raise_forearm_target_rad"]=chosen.get("pre_raise_forearm_target_rad",proposal["pre_raise_forearm_target_rad"])
+                if 'grasp_profile' in chosen:proposal['grasp_profile']=chosen['grasp_profile']
                 proposal["rgbd_posture_selection"] = {"target_source": "FRESH_RGBD_ONLY",
                     "estimated_center_world_m": snapshot["estimated_center_world_m"],
                     "object_bearing_change_rad": chosen["object_bearing_change_rad"],

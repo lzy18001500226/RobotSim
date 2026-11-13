@@ -411,6 +411,28 @@ def carry_tracking_bounds(bounds,names,phase):
     return result
 
 
+def refine_task_feasibility(residual, jacobian, seed, bounds, position_limit, axis_limit):
+    """Find the intersection of the two task gates, not their L2 compromise.
+
+    The95% interior is a planning target. The caller retains the original
+    position/axis acceptance and the exact same inward joint bounds.
+    """
+    origin=np.asarray(seed,dtype=float).copy()
+    limits=np.array([position_limit,axis_limit],dtype=float)
+    def objective(q):
+        error=residual(q)
+        groups=np.array([np.linalg.norm(error[:3]),np.linalg.norm(error[3:])])/limits
+        return np.r_[np.maximum(groups-.95,0.),.001*(q-origin)]
+    def derivative(q):
+        error=residual(q);J=jacobian(q);rows=[]
+        for section,limit in ((slice(0,3),position_limit),(slice(3,6),axis_limit)):
+            norm=np.linalg.norm(error[section])
+            rows.append(error[section]@J[section]/(norm*limit) if norm>.95*limit else np.zeros(len(q)))
+        return np.vstack([*rows,.001*np.eye(len(q))])
+    return least_squares(objective,origin,jac=derivative,bounds=bounds,
+                         max_nfev=40,ftol=1e-10,xtol=1e-10,gtol=1e-10)
+
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -467,6 +489,11 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
             opt=least_squares(lambda q:residual(q)*weights,q,jac=lambda q:jacobian(q)*weights[:,None],bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=evaluation_budget,ftol=1e-9,xtol=1e-9,gtol=1e-9)
             refinement_evaluations+=int(opt.nfev)
             q=opt.x;error=residual(q)
+            if np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit:break
+            feasibility=refine_task_feasibility(residual,jacobian,q,
+                (bounds[:,0]+.001,bounds[:,1]-.001),position_limit,axis_limit)
+            refinement_evaluations+=int(feasibility.nfev)
+            q=feasibility.x;error=residual(q)
             if np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit:break
     if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'refinement_evaluations':refinement_evaluations,'q':q.tolist()}))
     actual=np.array([row['joints'][n]['q'] for n in ik.ARM])

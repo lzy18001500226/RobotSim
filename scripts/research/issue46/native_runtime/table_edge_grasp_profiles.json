@@ -1,0 +1,305 @@
+{
+  "schema": "robotsim.table-edge-grasp-profiles.v1",
+  "frame": "native_scene_world",
+  "scope": "FROZEN_CURRENT_TABLE_D70_H220_200G_ONLY",
+  "selection": "NEAREST_OBSERVED_LONG_EDGE_COORDINATE_NOT_TEST_ID",
+  "profiles": [
+    {
+      "profile": "GRASP_REFERENCE_00",
+      "reference_object_y_world_m": -1.7876356053140303,
+      "root_offset_from_object_xy_m": [
+        -0.5168654934081728,
+        0.18670031679612853
+      ],
+      "base_yaw_rad": 0.10576758506483167,
+      "waist_yaw_rad": 0.03867046626969656,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T215322Z",
+        "state_sha256": "02b3d8cfde4cf67df99576a6bb31eedee460f5f86efab8518a6269fec1f9182e",
+        "posture_sha256": "f0235a9a5468027910b4b5241bda8f24cf4fc2993814112693e9d7c4c94e75ce",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_01",
+      "reference_object_y_world_m": -1.707515615856729,
+      "root_offset_from_object_xy_m": [
+        -0.49818250069769165,
+        0.12411143278594228
+      ],
+      "base_yaw_rad": 0.1708427869260195,
+      "waist_yaw_rad": 0.033021304191507644,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T202535Z",
+        "state_sha256": "f61f54de281e307816c85c023c547209fb17a1d3a08fc0513b6d3a7f1dfda65d",
+        "posture_sha256": "1dde24a0714279d3c00f63b99d78275c336a4e5f8ea0167c8b5880c14779703a",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_02",
+      "reference_object_y_world_m": -1.6273588957962546,
+      "root_offset_from_object_xy_m": [
+        -0.5809962350118046,
+        0.04185599731633749
+      ],
+      "base_yaw_rad": 0.2169239828206422,
+      "waist_yaw_rad": 0.19959155570942647,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T203042Z",
+        "state_sha256": "eca1d751e66b97a1099d4e854762010e53351feaf1a0842214b425458ee515c8",
+        "posture_sha256": "4e82537261e9e680f815320e4a375a1caac04f9d947d9e75ee04817625326b5b",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_03",
+      "reference_object_y_world_m": -1.5473439405496519,
+      "root_offset_from_object_xy_m": [
+        -0.4945205860924651,
+        -0.028301140730381702
+      ],
+      "base_yaw_rad": 0.12835853753167747,
+      "waist_yaw_rad": 0.36958028532593235,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T204625Z",
+        "state_sha256": "24862f3420ff057455ae0bddf04eb68ecf95d53d366495d2d330f916b2572798",
+        "posture_sha256": "0d1710623efb75118396cb363babc3b8276e95afb901974573fcd7b2a7089d93",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_04",
+      "reference_object_y_world_m": -1.4672578527263485,
+      "root_offset_from_object_xy_m": [
+        -0.5150164658318754,
+        -0.06336389324361136
+      ],
+      "base_yaw_rad": 0.24897149960767692,
+      "waist_yaw_rad": 0.3225186356328031,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T205132Z",
+        "state_sha256": "420c1e9a205e29fe163209c0a25dd5e2b0353817ba2b2ef8c1089eba5c064fab",
+        "posture_sha256": "1fd0094791e50764ee5eb195ab8f7d92b0adb9da0017275ca88cab1fae513aff",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_05",
+      "reference_object_y_world_m": -1.3872165247129673,
+      "root_offset_from_object_xy_m": [
+        -0.48673268923002755,
+        -0.13222773777708574
+      ],
+      "base_yaw_rad": 0.2510488507317081,
+      "waist_yaw_rad": 0.43512779879842123,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T215806Z",
+        "state_sha256": "4d1fc62d5b27946f77dda50f93ec078b381655ce270fbca17c81973513b6ecd0",
+        "posture_sha256": "8ae96b9364585112534cc6eb05bc6c3fc0bb9f8216beb5a0d7a0cf58e376aa2c",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_06",
+      "reference_object_y_world_m": -1.3070569193077917,
+      "root_offset_from_object_xy_m": [
+        -0.4595285382826779,
+        -0.1886855778877814
+      ],
+      "base_yaw_rad": 0.33378446117708893,
+      "waist_yaw_rad": 0.46903969043199645,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T223036Z",
+        "state_sha256": "6f093a36ba809e8af156f52325eaddc73d9653029135f7a313362cbab4ea1d05",
+        "posture_sha256": "b9d402a4c93410a08664626af1d3cfb0bb0fdc67fc6cc40a8dfb00792c797ee4",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_07",
+      "reference_object_y_world_m": -1.227059811541536,
+      "root_offset_from_object_xy_m": [
+        -0.49616475051213316,
+        -0.27362384667070283
+      ],
+      "base_yaw_rad": 0.43036393739595696,
+      "waist_yaw_rad": 0.5295730127089484,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T230938Z",
+        "state_sha256": "e512e20d131244befc52b350316fe9f104b5c91e3c49b9b81c88d72203e94a0f",
+        "posture_sha256": "414600b432ca1d73d5faac880f2c2e6b388b67c887084a6f685429b1eff2962f",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_08",
+      "reference_object_y_world_m": -1.1470532835244125,
+      "root_offset_from_object_xy_m": [
+        -0.45720640017790304,
+        -0.18597121236151182
+      ],
+      "base_yaw_rad": 0.7441570055212573,
+      "waist_yaw_rad": 0.0882743625596073,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T231834Z",
+        "state_sha256": "b4d7f8efed3b0a42a4ec4f8857255b52ad160c373ebc4d9a86a93b05ff2959e6",
+        "posture_sha256": "780cf2b7f4b54d6574a754703c58ba648c133a99ca74812c84d88dcf546429fd",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_09",
+      "reference_object_y_world_m": -1.06682364758387,
+      "root_offset_from_object_xy_m": [
+        -0.48460322071394946,
+        -0.329569397662975
+      ],
+      "base_yaw_rad": 0.7535026352918273,
+      "waist_yaw_rad": 0.3267518349294074,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T232405Z",
+        "state_sha256": "21c6256a0f709af10b38aecf4fff704943ab9f8217438b53b16e9f8f97298d82",
+        "posture_sha256": "dd9feb3ed02e9c5d21d3c01148436c1dcfe1ef7229a88d4632c448f0dfa93526",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    },
+    {
+      "profile": "GRASP_REFERENCE_10",
+      "reference_object_y_world_m": -0.9951515735923869,
+      "root_offset_from_object_xy_m": [
+        -0.48381251352657195,
+        -0.27256802299382443
+      ],
+      "base_yaw_rad": 0.8233243881944442,
+      "waist_yaw_rad": 0.1280784037641859,
+      "waist_pitch_rad": 0.2585637865308902,
+      "right_arm_seed_rad": {
+        "right_shoulder_pitch_joint": -0.296377534340726,
+        "right_shoulder_roll_joint": -0.09057932828705349,
+        "right_shoulder_yaw_joint": 0.10310202912937716,
+        "right_elbow_joint": -1.2220031862265157,
+        "right_wrist_yaw_joint": -0.3068646948409955,
+        "right_wrist_pitch_joint": -0.39066935514306395,
+        "right_wrist_roll_joint": -0.26585878519810735
+      },
+      "provenance": {
+        "episode": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T235100Z",
+        "state_sha256": "abfa52bb029a9d4b4648311bfc2a83f3e5334ed6a5323ae7af03dea4c4ea250f",
+        "posture_sha256": "591d7e323551473f6a9a5cdc6afcde13d2b6f5fe90b91e4bf18dcf273207cbb2",
+        "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
+      }
+    }
+  ]
+}
