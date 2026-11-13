@@ -1881,8 +1881,6 @@ def run_carry_navigation(n,contract):
                     cfg["active_mission_phase"]=mission["phase"]
                     cfg["active_centre_recovery"]=mission["phase"]=="TURN" and bool(mission.get("turn_centre_recovery"))
                 forward=(output.linear_x if (cfg.get("inplace_centre_hold") or cfg.get("compact_centre_feedback")) and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -cfg.get("transit_command_speed",.12) if mission["phase"] in ("RETREAT","TURN") else cfg.get("transit_command_speed",.12)) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
-                if mission is not None and mission["phase"]=="DELIVERY":
-                    forward,output.angular_z=loaded_delivery_terminal_command(cfg["delivery"],p,goal,forward,output.angular_z)
                 if cfg.get("inplace_centre_hold") and not cfg.get("gait_prepare") and mission is not None and mission["phase"]=="RETREAT" and cfg.get("transit_command_speed",.12)==.12:
                     forward*=bounded_start_scale(max(0.,tick-activation_started))
                     mission["retreat_input_ramp_s"]=.5
@@ -1910,6 +1908,8 @@ def run_carry_navigation(n,contract):
                 if mission is not None and mission["phase"]=="PRESTEP":forward=0.
                 lateral=getattr(output,"lateral_y",0.)
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
+                if mission is not None and mission["phase"]=="DELIVERY":
+                    forward,angular=loaded_delivery_terminal_command(cfg["delivery"],p,goal,forward,angular)
                 if mission is not None and mission["phase"]=="TURN" and cfg.get("compact_turn"):
                     # Reuse the existing half-second smooth start at mode handoff.
                     ramp_s=float((cfg.get("delivery") or {}).get("turn_input_ramp_s",.5))

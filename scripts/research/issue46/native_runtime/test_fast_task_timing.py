@@ -99,4 +99,19 @@ class LoadedTerminalBrakeTests(unittest.TestCase):
         self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.20,.46133845196305034),(.12,.30))
         self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},{"x":.9,"y":-1.4},goal,.20,.5),(.20,.5))
         self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.05,-.1),(.05,-.1))
+class ActualTerminalCommandPipelineTests(unittest.TestCase):
+    def test_frozen_ros_controller_output_is_not_mutated_or_later_overwritten(self):
+        import ast,sys
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation"))
+        from robotsim_navigation.point_goal_controller import ControllerOutput,NavState
+        output=ControllerOutput(NavState.DRIVE,.2,.46,.3,.1)
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script)
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=="loaded_delivery_terminal_command" for statement in n.body for x in ast.walk(statement)))
+        ns=dict(mission={"phase":"DELIVERY"},cfg={"delivery":{"loaded_terminal_slowdown":True}},p={"x":.212,"y":.751},goal=[.015,.98],forward=.2,angular=output.angular_z,loaded_delivery_terminal_command=micro.loaded_delivery_terminal_command)
+        exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_generated_terminal_command","exec"),ns)
+        self.assertEqual((ns["forward"],ns["angular"]),(.12,.30));self.assertEqual(output.angular_z,.46)
+        self.assertNotIn("forward,output.angular_z=",script)
+        self.assertGreater(script.index("forward,angular=loaded_delivery_terminal_command"),script.index('forward=float(cfg["delivery"].get("delivery_forward_command_m_s"'))
 if __name__=="__main__":unittest.main()
