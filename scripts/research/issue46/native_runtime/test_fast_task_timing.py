@@ -233,4 +233,16 @@ class ReapproachVersusPlacementTests(unittest.TestCase):
         self.assertTrue(any(isinstance(n,ast.Break) for n in guard.body))
         self.assertFalse(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='publish' for n in ast.walk(guard)))
         self.assertIn('original_placement_preflight_still_required=True',ast.unparse(guard))
+class CompletedPlacementOwnerTests(unittest.TestCase):
+    def test_completed_release_stops_tracking_but_retains_actual_joint_command(self):
+        from scripts.research.issue46.native_runtime import native_carry_placement as place
+        fixture="""class Plan(Node):
+ def send(self,target):
+  if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION',):
+   endpoint=self.tracking_target();target=dict(target)
+"""
+        code=place.extend_existing_owner(fixture)
+        self.assertIn("and not getattr(self,'placement_completed',False)",code)
+        self.assertIn("target={**target,**self.placement_completed_arm_target}",code)
+        self.assertIn("PLACEMENT_PHYSICAL_SAFETY",code) if "PLACEMENT_PHYSICAL_SAFETY" in fixture else None
 if __name__=="__main__":unittest.main()

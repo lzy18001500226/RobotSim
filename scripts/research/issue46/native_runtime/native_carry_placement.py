@@ -149,6 +149,7 @@ def perform_native_placement(n, request):
     result["open_claw_withdrawal_m"]=.08
     result.update(owner_pid=os.getpid(),generation=n.native_generation,command_path="EXISTING_HAL_ARM_AND_HAND_OWNER",table_body="raicom_delivery_table",elapsed_wall_s=time.monotonic()-began,request=request)
     write_durable_milestone("/workspace/evidence/native_table_place_result.json",result)
+    n.placement_completed_arm_target={name:float(n.last_published_arm_target[name]) for name in RIGHT}
     n.placement_completed=True
     return result
 
@@ -186,6 +187,12 @@ def extend_existing_owner(script):
             line=line.replace("'classification':'GRIP_HOLD_AND_RELEASE_NOT_ROUTE_ACCEPTANCE'","'classification':('MEASURED_TABLE_PLACEMENT_WITH_RELEASED_HAND' if getattr(n,'placement_completed',False) else 'GRIP_HOLD_AND_RELEASE_NOT_ROUTE_ACCEPTANCE')")
         if "'mode':'MEASURED_LOAD_BEARING_CARRY_HOLD'" in line:
             line=line.replace("'mode':'MEASURED_LOAD_BEARING_CARRY_HOLD'","'mode':('PLACEMENT_TABLE_SUPPORTED' if getattr(self,'placement_release',False) else 'MEASURED_LOAD_BEARING_CARRY_HOLD')")
+        if "if TRACK_NATIVE_CIRCLE and stage not in " in line:
+            # Once table support and open-hand withdrawal are measured, keep
+            # the last verified joint target. Do not chase a released object.
+            indent=" "*(len(line)-len(line.lstrip()))
+            output.append(indent+"if getattr(self,'placement_completed',False):target={**target,**self.placement_completed_arm_target}")
+            line=line[:-1]+" and not getattr(self,'placement_completed',False):"
         if "'right_hand_command':HAND_RIGHT" in line:
             line=line.replace("'right_hand_command':HAND_RIGHT","'right_hand_command':(HAND_OPEN if getattr(n,'placement_completed',False) else HAND_RIGHT)")
         output.append(line)
