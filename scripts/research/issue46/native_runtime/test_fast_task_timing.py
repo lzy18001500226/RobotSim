@@ -91,4 +91,12 @@ class DeliverySteeringBandTests(unittest.TestCase):
         self.assertGreater(new.linear_x*math.cos(p.yaw),0.);self.assertLessEqual(abs(new.angular_z),.60)
         p=Pose2D(0.,0.,-1.,"native_scene_world",1.)
         self.assertEqual(PointGoalController(ControllerConfig(align_tolerance_rad=.75)).step(p,g,now_steady_s=1.).state,NavState.ALIGN)
+class LoadedTerminalBrakeTests(unittest.TestCase):
+    def test_saved_left_terminal_input_is_reduced_without_changing_safety_limits(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import loaded_delivery_terminal_command
+        p={"x":.21225222683139955,"y":.7513642942241849};goal=[.015,.98]
+        self.assertEqual(loaded_delivery_terminal_command({},p,goal,.20,.46133845196305034),(.20,.46133845196305034))
+        self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.20,.46133845196305034),(.12,.30))
+        self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},{"x":.9,"y":-1.4},goal,.20,.5),(.20,.5))
+        self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.05,-.1),(.05,-.1))
 if __name__=="__main__":unittest.main()

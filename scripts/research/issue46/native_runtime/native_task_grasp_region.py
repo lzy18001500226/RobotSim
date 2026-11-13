@@ -97,6 +97,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_position_tolerance_m"]=.15
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
+        result["loaded_terminal_slowdown"]=True
         # Measured transit stopped at31deg bearing error with positive forward
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.

@@ -1211,6 +1211,15 @@ def step_cruise_reference(trace, pose, goal_xy, stamp):
     return progress/span if progress>=.16 else None
 
 
+def loaded_delivery_terminal_command(delivery, pose, goal, forward, angular):
+    """Reduce loaded terminal input before braking; never increase a limit."""
+    if not delivery.get("loaded_terminal_slowdown"):return forward,angular
+    if not all(math.isfinite(x) for x in (pose['x'],pose['y'],*goal,forward,angular)):raise ValueError("finite loaded approach input")
+    if math.hypot(goal[0]-pose['x'],goal[1]-pose['y'])>=.8:return forward,angular
+    # Existing documented/previously exercised task inputs, unchanged MC.
+    return min(forward,.12),max(-.30,min(.30,angular))
+
+
 def delivery_heading_acceptance(delivery, yaw_error):
     """Task-base arrival can defer orientation to actual-pose placement IK.
 
@@ -1872,6 +1881,8 @@ def run_carry_navigation(n,contract):
                     cfg["active_mission_phase"]=mission["phase"]
                     cfg["active_centre_recovery"]=mission["phase"]=="TURN" and bool(mission.get("turn_centre_recovery"))
                 forward=(output.linear_x if (cfg.get("inplace_centre_hold") or cfg.get("compact_centre_feedback")) and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -cfg.get("transit_command_speed",.12) if mission["phase"] in ("RETREAT","TURN") else cfg.get("transit_command_speed",.12)) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                if mission is not None and mission["phase"]=="DELIVERY":
+                    forward,output.angular_z=loaded_delivery_terminal_command(cfg["delivery"],p,goal,forward,output.angular_z)
                 if cfg.get("inplace_centre_hold") and not cfg.get("gait_prepare") and mission is not None and mission["phase"]=="RETREAT" and cfg.get("transit_command_speed",.12)==.12:
                     forward*=bounded_start_scale(max(0.,tick-activation_started))
                     mission["retreat_input_ramp_s"]=.5
