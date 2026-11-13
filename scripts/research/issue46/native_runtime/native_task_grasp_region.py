@@ -640,7 +640,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
                     ratio=float(np.clip(original[pitch_adr]/prepared[pitch_adr],0.,1.))
                     q[pitch_adr]+=(pitch_target-prepared[pitch_adr])*ratio
                 study.preparation.append(q)
-            witness = study.candidate(candidate_anchor, yaw, "prepared",runtime_arm_only=True,source_arm_range=far_observe,arm_target_inset_rad=.03 if far_observe else 0.,root_xy=root_goal if far_observe else None)
+            witness = study.candidate(candidate_anchor, yaw, "prepared",runtime_arm_only=True,source_arm_range=far_observe,arm_target_inset_rad=.03 if far_observe else 0.,root_xy=root_goal if far_observe else None,root_reference_label="standing" if far_observe else None)
             if not far_observe and witness["stage"] == "IK_UNRESOLVED":
                 # A pre-raised elbow is not a physical reach limit. Reuse all
                 # original arm ranges before forcing an unnecessary base move.
@@ -669,7 +669,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             if far_observe:
                 # Real arm-extension runs displaced the pelvis rearward up to
                 #21.26mm. Require a30mm rearward reach witness before crouching.
-                balance=study.candidate(candidate_anchor-np.array([.03,0.]),yaw,"prepared",source_arm_range=True,runtime_arm_only=True,arm_target_inset_rad=.03,root_xy=root_goal-np.array([.03,0.]))
+                balance=study.candidate(candidate_anchor-np.array([.03,0.]),yaw,"prepared",source_arm_range=True,runtime_arm_only=True,arm_target_inset_rad=.03,root_xy=root_goal-np.array([.03,0.]),root_reference_label="standing")
                 row["rearward_balance_preflight"]={"uncertainty_m":.03,"stage":balance["stage"],"pass":balance["stage"]=="STATIC_WITNESS","witness":balance}
                 if balance["stage"]!="STATIC_WITNESS":
                     row["stage"]="DYNAMIC_BALANCE_REACH_MARGIN_NOT_QUALIFIED"
