@@ -170,4 +170,12 @@ class ConservativeTableStopTests(unittest.TestCase):
         tree=ast.parse(script);node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Constant) and v.value=="conservative_terminal_stop" for v in ast.walk(n.test)))
         ns=dict(cfg={"delivery":{"conservative_terminal_stop":True}},trigger=.22699435678032145);exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_stop_reserve","exec"),ns)
         self.assertEqual(ns["trigger"],.45);self.assertGreater(ns["trigger"]-.38387407559438663,.06)
+class PlacementRadialLimitTests(unittest.TestCase):
+    def test_actual_saved_box_solution_is_outside_original_circle(self):
+        import numpy as np
+        hint=np.array([-.021424671576197978,1.4583865926539565]);selected=np.array([.12275726804475545,1.414193472354619]);delta=selected-hint
+        self.assertGreater(np.linalg.norm(delta),.15)
+        corrected=hint+delta*.149/np.linalg.norm(delta)
+        self.assertLess(np.linalg.norm(corrected-hint),.15)
+        np.testing.assert_allclose(corrected,[.12103368378638066,1.4147217671374237])
 if __name__=="__main__":unittest.main()

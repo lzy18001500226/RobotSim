@@ -448,12 +448,23 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
             e=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,np.r_[x[7:],z],np.array([0.,0.,1.]),axis)
             return np.r_[e*weights,.001*(x[7:]-hint)/.15]
         fit=least_squares(table_endpoint_error,np.clip(np.r_[saved,hint],np.r_[bounds[:,0]+.01,lower_xy]+1e-8,np.r_[bounds[:,1]-.01,upper_xy]-1e-8),bounds=(np.r_[bounds[:,0]+.01,lower_xy],np.r_[bounds[:,1]-.01,upper_xy]),max_nfev=700,ftol=1e-10,xtol=1e-10,gtol=1e-10)
+        # Box-constrained XY optimization may select the box corner outside
+        # the original150mm radial task bound. Try one fixed endpoint inside
+        # that same circle, then independently recheck every original gate.
+        xy_delta=fit.x[7:]-hint;xy_span=float(np.linalg.norm(xy_delta))
+        radial_refinement=None
+        if xy_span>.15:
+            fixed_xy=hint+xy_delta*(.149/xy_span)
+            refined=least_squares(lambda arm:table_endpoint_error(np.r_[arm,fixed_xy]),fit.x[:7],bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=700,ftol=1e-10,xtol=1e-10,gtol=1e-10)
+            radial_refinement={"initial_xy_span_m":xy_span,"selected_xy_span_m":float(np.linalg.norm(fixed_xy-hint)),"source_joint_margin_rad":.01,"evaluations":int(refined.nfev),"task_bound_m":.15}
+            fit.x=np.r_[refined.x,fixed_xy];fit.nfev+=refined.nfev
         e=table_endpoint_error(fit.x)[:6]/weights
         goal_axis=data.xmat[hand].reshape(3,3)@axis;planned_tilt=float(np.arccos(np.clip(goal_axis[2],-1.,1.)))
         if np.linalg.norm(e[:3])>position_tolerance or planned_tilt>math.radians(12.) or np.linalg.norm(fit.x[7:]-hint)>.15:raise ValueError('bounded tabletop endpoint IK not feasible:'+str(dict(position_m=float(np.linalg.norm(e[:3])),planned_tilt_rad=planned_tilt)))
         cfg['placement_axis_world']=goal_axis.tolist();cfg['maximum_planned_bottle_tilt_rad']=math.radians(12.)
         cfg['placement_center_world_m']=[*(fit.x[7:]-float(cfg.get('grasp_height_above_center_m',.10))*goal_axis[:2]).tolist(),cfg['placement_center_world_m'][2]]
         cfg['placement_target_selection']['bounded_endpoint_ik']=dict(reference_xy_m=hint.tolist(),selected_xy_m=fit.x[7:].tolist(),max_xy_adjustment_m=.15,source_joint_margin_rad=.01,evaluations=fit.nfev,optimizer_success=bool(fit.success),optimizer_status=int(fit.status),feasibility_verified_separately=True,axis_angle_rad=float(2.*np.arcsin(np.clip(np.linalg.norm(e[3:])/.2,0.,1.))))
+        if radial_refinement is not None:cfg['placement_target_selection']['bounded_endpoint_ik']['radial_bound_refinement']=radial_refinement
         data.qpos[qa]=saved;mujoco.mj_forward(model,data)
     goal_axis=np.asarray(cfg.get('placement_axis_world',[0.,0.,1.]))
     section=np.asarray(cfg["placement_center_world_m"])+float(cfg.get("grasp_height_above_center_m",.10))*goal_axis
