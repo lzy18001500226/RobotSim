@@ -347,11 +347,13 @@ def run_region_navigation(node, contract):
             if short_forward and first_active_command_at is not None and tick-first_active_command_at>=.20:
                 result["short_forward_activation_pulse"]={"requested_span_m":requested_span,"maximum_nonzero_duration_s":.20,"actual_stopped_pose_must_requalify":True}
                 break
-            if not short_forward and output.state!=NavState.ALIGN and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(pose,cfg["side_corridor_bounds"]):
+            brake_pose=navigation_braking_pose(node.trace,pose) if cfg.get("point_goal") else pose
+            if cfg.get("point_goal"):row["task_braking_velocity_world_m_s"]=[brake_pose["vx"],brake_pose["vy"]]
+            if not short_forward and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(brake_pose,cfg["side_corridor_bounds"]):
                 result["side_corridor_boundary_stop"]={"pose":pose,"bounds":cfg["side_corridor_bounds"],"claim":"PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY"};break
-            if not short_forward and output.state!=NavState.ALIGN and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
+            if not short_forward and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(brake_pose,cfg["goal"],[origin["x"],origin["y"]]):
                 result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"};break
-            stop_distance=stopping_distance(pose,cfg["goal"],aligning=output.state==NavState.ALIGN) if cfg.get("point_goal") else controller.config.xy_tolerance_m
+            stop_distance=stopping_distance(brake_pose,cfg["goal"]) if cfg.get("point_goal") else controller.config.xy_tolerance_m
             if not short_forward and output.distance_m is not None and output.distance_m<=stop_distance:
                 result["position_region_entered"]=True
                 result["legacy_heading_error_rad"]=output.yaw_error_rad
@@ -441,8 +443,8 @@ def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None
     code = code.replace("                fault=physical_fault(",
         '                if MICRO.get("task_region"):limit=.60\n                fault=physical_fault(', 1)
     if point_goal:
-        from scripts.research.issue46.native_runtime.far_observe_approach import forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached,wrap
-        for function in (wrap,forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached):code+="\n"+inspect.getsource(function)+"\n"
+        from scripts.research.issue46.native_runtime.far_observe_approach import forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached,navigation_braking_pose,wrap
+        for function in (wrap,forward_turn_command,stopping_distance,forward_table_plane_reached,side_corridor_boundary_reached,navigation_braking_pose):code+="\n"+inspect.getsource(function)+"\n"
     for function in (recover_clock_at_stop, body_translation_velocity, translation_corridor_error, locomotion_source_observed, locomotion_cycle_proof, run_region_navigation):
         code += "\n"+inspect.getsource(function)+"\n"
     code += "MICRO.update("+repr({"task_region": {

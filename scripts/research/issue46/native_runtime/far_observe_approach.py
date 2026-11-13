@@ -174,6 +174,29 @@ def forward_table_plane_reached(pose,goal,origin,*,delay_s=.80):
     return pose["x"]+delay_s*max(0.,pose["vx"])>=goal[0]-.02
 
 
+def navigation_braking_pose(rows, pose):
+    """Estimate translation from0.6s measured positions for task braking only.
+
+    Raw joint, collision, tilt and velocity safety gates remain unchanged.
+    A controller ALIGN label cannot hide real drift or an emitted forward input.
+    """
+    samples={}
+    for row in reversed(rows):
+        if "controller_state" not in row:continue
+        stamp=float(row.get("sim_time_s",row["sample_monotonic_s"]))
+        if samples and max(samples)-stamp>.60:break
+        samples[stamp]=row["pose"]
+    result=dict(pose);result["vx"]=result["vy"]=0.
+    if len(samples)<3 or max(samples)-min(samples)<.35:return result
+    times=sorted(samples);origin=times[0]
+    t=[x-origin for x in times];mean_t=sum(t)/len(t)
+    denominator=sum((x-mean_t)**2 for x in t)
+    for coordinate,velocity in (("x","vx"),("y","vy")):
+        mean=sum(samples[x][coordinate] for x in times)/len(times)
+        result[velocity]=sum((x-mean_t)*(samples[stamp][coordinate]-mean) for x,stamp in zip(t,times))/denominator
+    return result
+
+
 def stopping_distance(pose,goal,*,aligning=False):
     """Use translational braking only during translation, not heading acquisition.
 

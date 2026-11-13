@@ -147,3 +147,18 @@ class HeadingBrakingRegressionTests(unittest.TestCase):
         self.assertLess(distance,stopping_distance(pose,goal))
         self.assertGreater(distance,stopping_distance(pose,goal,aligning=True))
         self.assertEqual(stopping_distance(pose,goal,aligning=True),.06)
+
+
+class MeasuredTranslationBrakingTests(unittest.TestCase):
+    def test_instantaneous_stepping_sway_does_not_replace_measured_translation(self):
+        from scripts.research.issue46.native_runtime.far_observe_approach import navigation_braking_pose
+        rows=[dict(sim_time_s=i*.02,sample_monotonic_s=i*.02,controller_state="align",pose=dict(x=.5,y=-1.4,vx=.3,vy=.2)) for i in range(31)]
+        value=navigation_braking_pose(rows,rows[-1]["pose"])
+        self.assertAlmostEqual(value["vx"],0.);self.assertAlmostEqual(value["vy"],0.)
+        self.assertEqual(rows[-1]["pose"]["vx"],.3)
+    def test_real_forward_drift_is_braked_even_during_coarse_heading(self):
+        from scripts.research.issue46.native_runtime.far_observe_approach import navigation_braking_pose,forward_table_plane_reached
+        rows=[dict(sim_time_s=i*.02,sample_monotonic_s=i*.02,controller_state="align",pose=dict(x=.78+.1*i*.02,y=-1.4,vx=0.,vy=0.)) for i in range(31)]
+        value=navigation_braking_pose(rows,rows[-1]["pose"])
+        self.assertAlmostEqual(value["vx"],.1)
+        self.assertTrue(forward_table_plane_reached(value,[.9,-1.0],[.5,-1.5]))

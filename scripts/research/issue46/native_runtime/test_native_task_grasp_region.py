@@ -296,7 +296,7 @@ class HeadingPhaseStopTests(unittest.TestCase):
              "outer_bounds":{"x":[.7,1.],"y":[-1.6,-.9],"yaw":[0.,1.9]}}
         saved=[]
         from scripts.research.issue46.native_runtime import far_observe_approach as far
-        helpers={name:getattr(far,name) for name in ('wrap','stopping_distance','side_corridor_boundary_reached','forward_table_plane_reached','forward_turn_command')}
+        helpers={name:getattr(far,name) for name in ('wrap','stopping_distance','side_corridor_boundary_reached','forward_table_plane_reached','forward_turn_command','navigation_braking_pose')}
         with patch.dict(task.__dict__,{**helpers,"MICRO":{"task_region":cfg},"rclpy":MagicMock(),
                 "write_durable_milestone":lambda path,value:saved.append(value)}), \
              patch.object(task.time,"monotonic",side_effect=lambda:clock["now"]), \
