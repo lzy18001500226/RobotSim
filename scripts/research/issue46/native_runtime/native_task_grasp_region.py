@@ -786,7 +786,14 @@ def execute(run, container, environment, output, scene, cache, reference, limits
         after_source_ns = warm["host_monotonic_ns"]
         def capture(native):
             rgb, depth, K, T = vision.render(model, data, renderer, camera, native)
-            estimated, _ = vision.estimate(rgb, depth, K, T)
+            try:
+                estimated, _ = vision.estimate(rgb, depth, K, T)
+            except ValueError:
+                # Preserve the exact failed sensor input before safe shutdown.
+                Image.fromarray(rgb).save(output/"failed_control_rgb.png")
+                np.savez_compressed(output/"failed_control_rgbd.npz",rgb=rgb,depth=depth,
+                                    K=json.dumps(K),T=T)
+                raise
             return rgb, estimated
         adjustment_budget=reference["maximum_stance_adjustments"]
         for index in range(adjustment_budget+1):

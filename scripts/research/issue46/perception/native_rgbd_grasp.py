@@ -117,6 +117,37 @@ def vertical_component(mask, *, world_height=None):
         if best is None or score>best[1]['score']:best=(labels==index,info)
     return best
 
+def occluded_cap_points(color_mask, barrel_mask, depth, K, T, circle, barrel_upper):
+    """Associate a disconnected visible cap using measured 3D geometry only.
+
+    A foreground arm can split one cylinder into two image components. The
+    additional component must lie inside the fitted barrel, above it within
+    one diameter, and contain a spatially supported horizontal top plane.
+    Multiple qualifying caps are ambiguous and are rejected.
+    """
+    from scipy.ndimage import binary_erosion, label, find_objects
+    labels, _ = label(color_mask & ~barrel_mask)
+    candidates=[]
+    for index, bounds in enumerate(find_objects(labels), 1):
+        if bounds is None:continue
+        interior=binary_erosion(labels==index);y,x=np.where(interior)
+        if len(x)<20:continue
+        z=depth[y,x]
+        optical=np.c_[(x-K['cx'])*z/K['fx'],(y-K['cy'])*z/K['fy'],z]
+        points=optical@T[:3,:3].T+T[:3,3]
+        lo,hi=np.quantile(points[:,2],[.02,.98])
+        if lo<barrel_upper-.003 or lo-barrel_upper>2*circle[2]:continue
+        radial=np.linalg.norm(points[:,:2]-circle[:2],axis=1)
+        if np.mean(radial<=circle[2]+.003)<.95:continue
+        top=points[points[:,2]>=hi-.0015]
+        if len(top)<20 or np.std(top[:,2])>.003:continue
+        if np.linalg.eigvalsh(np.cov(top[:,:2].T))[0]<.002**2:continue
+        candidates.append((top,{'component_id':index,'depth_pixels':len(points),
+                               'top_pixels':len(top),'occluded_axial_gap_m':float(lo-barrel_upper),
+                               'inside_barrel_fraction':float(np.mean(radial<=circle[2]+.003))}))
+    if len(candidates)>1:raise ValueError('AMBIGUOUS_DISCONNECTED_CYLINDER_CAP')
+    return candidates[0] if candidates else (None,None)
+
 def estimate(rgb,depth,K,T):
     """Task-blue, upright variable-radius cylinder. No ground-truth input."""
     red,green,blue=(rgb[...,i].astype(np.int16) for i in range(3))
@@ -125,6 +156,7 @@ def estimate(rgb,depth,K,T):
     proposal_depth=np.where(mask,depth,0.)
     world_height=(T[2,0]*(xs-K["cx"])*proposal_depth/K["fx"]+
                   T[2,1]*(ys-K["cy"])*proposal_depth/K["fy"]+T[2,2]*proposal_depth+T[2,3])
+    color_mask=mask.copy()
     component=vertical_component(mask,world_height=world_height)
     if component is None:raise ValueError('NO_BLUE_CYLINDER_RGBD_COMPONENT')
     mask,info=component
@@ -165,10 +197,12 @@ def estimate(rgb,depth,K,T):
     # top band near the robust upper extent instead, with unchanged residual
     # and noise checks.
     top=points[points[:,2]>=hi-.0015,2]
+    cap,cap_association=occluded_cap_points(color_mask,mask,depth,K,T,fit.x,float(hi))
+    if cap is not None:top=cap[:,2]
     if len(top)<20:raise ValueError('INSUFFICIENT_TOP_PLANE_SUPPORT')
     top_z=float(np.median(top))
     if np.median(residual)>.002 or angle_support<.6 or np.std(top)>.003:raise ValueError('CYLINDER_FIT_SUPPORT_UNQUALIFIED:'+json.dumps({'residual_m':float(np.median(residual)),'angular_support_rad':angle_support,'top_std_m':float(np.std(top)),'fit':fit.x.tolist(),'height_range':[float(lo),float(hi)],'component':info}))
-    return {'center_xy_world_m':fit.x[:2].tolist(),'radius_m':float(fit.x[2]),'diameter_m':float(2*fit.x[2]),'top_world_z_m':top_z,'visible_bottom_world_z_m':float(lo),'visible_height_m':float(top_z-lo),'axis_world':[0.,0.,1.],'axis_assumption':'UPRIGHT_GRAVITY_ALIGNED_TASK_OBJECT','median_surface_residual_m':float(np.median(residual)),'side_inlier_fraction':float(np.mean(inliers)),'angular_support_rad':angle_support,'depth_pixels':len(points),'excluded_boundary_pixels':int(mask.sum()-interior.sum()),'rgb_component':info},mask
+    return {'center_xy_world_m':fit.x[:2].tolist(),'radius_m':float(fit.x[2]),'diameter_m':float(2*fit.x[2]),'top_world_z_m':top_z,'visible_bottom_world_z_m':float(lo),'visible_height_m':float(top_z-lo),'axis_world':[0.,0.,1.],'axis_assumption':'UPRIGHT_GRAVITY_ALIGNED_TASK_OBJECT','median_surface_residual_m':float(np.median(residual)),'side_inlier_fraction':float(np.mean(inliers)),'angular_support_rad':angle_support,'depth_pixels':len(points),'excluded_boundary_pixels':int(mask.sum()-interior.sum()),'rgb_component':info,'disconnected_cap_association':cap_association},mask
 
 def capture_once(scene,row,output):
     from PIL import Image

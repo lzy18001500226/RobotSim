@@ -120,6 +120,31 @@ class SensorTests(unittest.TestCase):
             self.assertAlmostEqual(result['radius_m'],radius,delta=.0002)
             self.assertAlmostEqual(result['top_world_z_m'],.85,delta=.0002)
 
+    def test_foreground_occlusion_can_separate_a_depth_consistent_cap(self):
+        rgb,depth,K,T,center=synthetic_cylinder(.035)
+        y,x=np.indices(depth.shape)
+        valid_depth=np.where(np.isfinite(depth),depth,0.)
+        height=(T[2,0]*(x-K['cx'])*valid_depth/K['fx']+
+                T[2,1]*(y-K['cy'])*valid_depth/K['fy']+T[2,2]*valid_depth+T[2,3])
+        rgb[(height>.74)&(height<.80)]=0
+        result,_=estimate(rgb,depth,K,T)
+        np.testing.assert_allclose(result['center_xy_world_m'],center[:2],atol=.0003)
+        self.assertAlmostEqual(result['top_world_z_m'],.85,delta=.0003)
+        self.assertIsNotNone(result['disconnected_cap_association'])
+
+    def test_disconnected_cap_must_match_barrel_in_3d(self):
+        from scripts.research.issue46.perception.native_rgbd_grasp import occluded_cap_points
+        mask=np.zeros((30,30),dtype=bool);mask[5:20,5:20]=True
+        depth=np.ones(mask.shape);K={'fx':100.,'fy':100.,'cx':12.,'cy':12.}
+        T=np.eye(4)
+        cap,record=occluded_cap_points(mask,np.zeros_like(mask),depth,K,T,
+                                       np.array([1.,0.,.035]),.97)
+        self.assertIsNone(cap);self.assertIsNone(record)
+        # A distant coaxial blue surface must not be joined across arbitrary gaps.
+        cap,record=occluded_cap_points(mask,np.zeros_like(mask),depth,K,T,
+                                       np.array([0.,0.,.15]),.5)
+        self.assertIsNone(cap);self.assertIsNone(record)
+
     def test_foreground_depth_at_blue_silhouette_cannot_pull_circle_onto_hand(self):
         from scipy.ndimage import binary_erosion
         rgb,depth,K,T,center=synthetic_cylinder(.035);mask=rgb[:,:,2]>0
