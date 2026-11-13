@@ -715,6 +715,9 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
             return np.vstack([matrix[:3],regularizer*np.diag(weights)]) if point_index==0 else matrix
         fitted=least_squares(residual,np.clip(points[-1][2:],lo+1e-5,hi-1e-5),jac=jac,bounds=(lo+1e-5,hi-1e-5),max_nfev=150,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         error=residual(fitted.x)
+        if point_index>0 and (np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001):
+            fitted=refine_task_feasibility(residual,jac,fitted.x,(lo+1e-5,hi-1e-5),.001,.001)
+            error=residual(fitted.x)
         if np.linalg.norm(error[:3])>.001 or point_index>0 and np.linalg.norm(error[3:])>.001:raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,float(np.linalg.norm(error[:3])),float(np.linalg.norm(error[3:])))))
         points.append(np.r_[start[:2],fitted.x]);targets.append(target.tolist())
     points.append(finish.copy())
@@ -988,8 +991,9 @@ def main():
                     if state.get("source_arm_planning_range"):approach_staging["source_tracking_margin_rad"]=.02
                     sweep=[]
             except RuntimeError as exc:approach_staging=dict(pass_result=False,failure=str(exc))
-        row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
-        rows.append({"position_mode_margin":position_mode_margin,"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
+        approach_ok=not sweep and (approach_staging is None or bool(approach_staging.get('pass_result')))
+        row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if approach_ok else "FAIL"}
+        rows.append({"position_mode_margin":position_mode_margin,"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and approach_ok)})
     # Arrival alone is insufficient: qualify the whole already requested
     # lift/retract on each existing grasp branch before selecting its winner.
     if args.physical_lift_test:
