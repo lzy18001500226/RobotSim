@@ -123,6 +123,11 @@ class FarApproachTests(unittest.TestCase):
         png=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save"]
         self.assertTrue(png);self.assertTrue(all(snapshot.lineno<n.lineno for n in png))
         self.assertNotIn('time.sleep(.03)',inspect.getsource(task.execute))
+    def test_current_source_valid_posture_is_considered_before_more_base_motion(self):
+        import inspect,ast
+        from scripts.research.issue46.native_runtime import native_task_grasp_region as task
+        tree=ast.parse(inspect.getsource(task.region_candidates));insert=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='insert' and any(isinstance(v,ast.Constant) and v.value=='CURRENT_STANCE_FORWARD_BEND_029' for v in ast.walk(n)))
+        self.assertEqual(insert.args[0].value,1)
     def test_new_contract_and_generated_script_remain_separate(self):
         self.assertNotEqual(reference_contract(),reference_contract(far_observe=True))
         s=build_motion_script([.9,-1.3,0.],{},[],{},"test",point_goal=True,locomotion_action="LOCOMOTION_STEP")

@@ -581,8 +581,11 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
     candidates=[(a,label,heading,None) for a,label,heading in candidates]
     if far_observe:
         # Bounded fallbacks only after the existing candidates fail.
-        candidates.extend([(anchor,"CURRENT_STANCE_FORWARD_BEND_029",yaw,.29),
-            (anchor+np.array([.04,0.]),"FORWARD_SHORT_04_FORWARD_BEND_029",yaw,.29),
+        # Prefer an already source-valid current posture before any base move.
+        # Saved left arrival passed this original pitch candidate, while a later
+        # side-transit was obstructed. All original witness gates still apply.
+        candidates.insert(1,(anchor,"CURRENT_STANCE_FORWARD_BEND_029",yaw,.29))
+        candidates.extend([(anchor+np.array([.04,0.]),"FORWARD_SHORT_04_FORWARD_BEND_029",yaw,.29),
             (anchor+np.array([.04,0.]),"FORWARD_SHORT_04",yaw,None)])
     rows = []
     try:
