@@ -16,6 +16,7 @@ import numpy as np
 from scripts.agent import path_governance as pg
 
 ROOT = Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46")
+FAR_CANDIDATE_SHIFT_M = .90  # Same task search extent as the existing navigation envelope.
 
 
 def control_observation(estimated, native, *, now_ns=None):
@@ -155,7 +156,7 @@ def reference_contract(*,far_observe=False):
             "task_translation_position_tolerance_m": .06,
             "mechanical_changes": False}
     if far_observe:
-        result.update(schema="robotsim.rgbd-task-grasp-region.v13",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.94,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
+        result.update(schema="robotsim.rgbd-task-grasp-region.v14",maximum_candidate_shift_m=FAR_CANDIDATE_SHIFT_M,early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.94,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
     return result
 
 
@@ -622,7 +623,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:
             yaw=candidate_yaw
-            if np.linalg.norm(candidate_anchor-anchor) > .80:
+            if np.linalg.norm(candidate_anchor-anchor) > (FAR_CANDIDATE_SHIFT_M if far_observe else .80):
                 continue
             from scipy.spatial.transform import Rotation
             oldyaw=math.atan2(body["rotation"][3],body["rotation"][0])
