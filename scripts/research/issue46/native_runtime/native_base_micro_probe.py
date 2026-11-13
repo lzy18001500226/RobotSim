@@ -1764,6 +1764,11 @@ def run_carry_navigation(n,contract):
                         trigger=max(.05,speed*mission["measured_braking_delay_sim_s"]+float(cfg["delivery"].get("delivery_arrival_reserve_m",.05)))
                         mission["current_stop_prediction"]=dict(speed_along_sim_m_s=speed,trigger_distance_m=trigger,
                             predicted_remaining_m=distance-speed*mission["measured_braking_delay_sim_s"])
+                    # Saved complete braking intervals coasted up to384mm.
+                    # Retain450mm trigger reserve near the physical table;
+                    # current-pose placement preflight still decides usability.
+                    if cfg["delivery"].get("conservative_terminal_stop"):
+                        trigger=max(trigger,.45)
                     if distance<=trigger and (cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" or abs(final_yaw_error)<=.12):
                         result["goal_triggered_stop"]=True;mission["delivery_stop_trigger_pose"]=p;break
                     calibration=float(cfg["delivery"].get("measure_step_braking_after_progress_m",0.))

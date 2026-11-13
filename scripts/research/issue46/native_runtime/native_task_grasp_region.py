@@ -98,6 +98,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
         result["loaded_terminal_slowdown"]=True
+        result["conservative_terminal_stop"]=True
         # Saved actual near-table stop blocked30mm lowering at rightknee.
         # The smallest checked backoff80mm passed original lowering/placement.
         goal=list(result["base_goal_world_xy"])
