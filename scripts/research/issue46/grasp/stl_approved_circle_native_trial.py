@@ -461,8 +461,8 @@ def main():
             d=mujoco.MjData(m);mujoco.mj_resetDataKeyframe(m,d,0);mujoco.mj_forward(m,d)
             task_observation=observation_goal(table_bounds(m,d))
             if args.far_observe_approach:
-                task_observation["xy_m"][0]-=.30
-                task_observation["xy_m"][1]-=.12
+                from scripts.research.issue46.scene.table_edge_grid import far_observation_goal
+                task_observation=far_observation_goal(table_bounds(m,d))
             args.dock_world_xy=tuple(task_observation["xy_m"])
 
     if args.grasp_only and not args.execute_pickup_navigation:

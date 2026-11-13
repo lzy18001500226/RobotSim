@@ -36,6 +36,20 @@ def observation_goal(bounds):
             "standoff_m": OBSERVATION_STANDOFF_M,
             "qualification": "STATIC_RGBD_ALL11; ACTUAL_ARRIVAL_MUST_REOBSERVE"}
 
+def far_observation_goal(bounds):
+    """Observe before turning consumes the final approach's forward space.
+
+    Saved STEP turns drifted forward before adequate lateral progress. The
+    0.94m standoff was checked with the unchanged head RGB-D at the left end;
+    each actual arrival must still provide fresh, qualified observations.
+    """
+    goal=observation_goal(bounds)
+    goal['xy_m'][0]-=.44
+    goal['xy_m'][1]-=.12
+    goal.update(standoff_m=.94,right_offset_m=.12,
+                qualification='STATIC_RGBD_PREDICTION; ACTUAL_ARRIVAL_MUST_REOBSERVE')
+    return goal
+
 def initial_positions(bounds, original_object_xy):
     """Evaluator/setup only. Never pass these object coordinates to live control."""
     original = np.asarray(original_object_xy, dtype=float)

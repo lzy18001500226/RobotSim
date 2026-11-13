@@ -155,7 +155,7 @@ def reference_contract(*,far_observe=False):
             "task_translation_position_tolerance_m": .06,
             "mechanical_changes": False}
     if far_observe:
-        result.update(schema="robotsim.rgbd-task-grasp-region.v13",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.80,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
+        result.update(schema="robotsim.rgbd-task-grasp-region.v13",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.94,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
     return result
 
 
