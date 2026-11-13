@@ -49,6 +49,14 @@ class AdaptiveCloseTests(unittest.TestCase):
             count[0]+=1;return {"pass":count[0]>=3}
         result=await_prelift_contact(n,{},.5,10.,1.5,1.,reader)
         self.assertTrue(result["pass"]);self.assertEqual(len(n.calls),2)
+    def test_preload_failure_cannot_advance_and_is_bounded_by_original_five_second_total(self):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import await_prelift_contact
+        clock=[0.]
+        class Node:
+            def send(self,*a):clock[0]+=.04
+        with mock.patch("time.monotonic",side_effect=lambda:clock[0]):
+            result=await_prelift_contact(Node(),{},.5,10.,14.715,3.,lambda *a,**k:{"pass":False})
+        self.assertFalse(result["pass"]);self.assertLess(result["additional_qualification_wall_s"],3.05)
     def test_old_zero_budget_never_adds_motion(self):
         from scripts.research.issue46.native_runtime.stl_hand_startup import await_prelift_contact
         class Node:

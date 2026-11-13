@@ -775,7 +775,7 @@ def validate_pregrasp_segments(start, goal, staging):
 def await_prelift_contact(node, target, hand_command, close_start, required_normal_force_n, budget_s, contact_reader=None):
     """Continue the same force-guided closure only until the existing gate passes."""
     import time
-    if budget_s not in (0.,1.):raise ValueError("unreviewed contact qualification budget")
+    if budget_s not in (0.,1.,3.):raise ValueError("unreviewed contact qualification budget")
     reader=native_bilateral_contact if contact_reader is None else contact_reader
     node.closure_ramp_complete=True
     started=time.monotonic();attempts=0
@@ -819,7 +819,7 @@ def build_hal_bilateral_arm_plan_script(
     explicitly labeled simulation-only alternative to ROS source timestamps.
     Source geometry, gains, limits and leg control remain unchanged.
     """
-    if contact_settle_budget_s not in (0.,1.):raise ValueError("contact qualification budget")
+    if contact_settle_budget_s not in (0.,1.,3.):raise ValueError("contact qualification budget")
     if not math.isfinite(hand_open_command) or not 0. <= hand_open_command <= 1.:raise ValueError("opening outside source range")
     arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
     waist_names = ("waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint")
@@ -1266,7 +1266,7 @@ try:
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
   if LIFT_CONTRACT is not None:
    close_start=min(x['host_monotonic_s'] for x in n.trace if x['stage']=='HAND_CLOSE_HOLD')
-   contact=await_prelift_contact(n,goal,HAND_RIGHT,close_start,float(LIFT_CONTRACT['required_normal_force_n']),__CONTACT_SETTLE_BUDGET__)
+   contact=await_prelift_contact(n,goal,HAND_RIGHT,close_start,float(LIFT_CONTRACT.get('target_normal_force_n',LIFT_CONTRACT['required_normal_force_n'])) if __CONTACT_SETTLE_BUDGET__ else float(LIFT_CONTRACT['required_normal_force_n']),__CONTACT_SETTLE_BUDGET__)
    print(json.dumps({'prelift_bilateral_contact':contact}),flush=True)
    if not contact['pass']:raise RuntimeError('LIFT_GATED_NO_SUSTAINED_BILATERAL_CONTACT')
    n.refresh_native();grasped_position=list(n.native_row['bodies']['test_cylinder']['position_m'])
