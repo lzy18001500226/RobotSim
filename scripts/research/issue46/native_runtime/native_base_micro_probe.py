@@ -1286,6 +1286,24 @@ def delivery_heading_acceptance(delivery, yaw_error):
     return {"pass":abs(yaw_error)<=limit,"policy":policy,"legacy_yaw012_pass":legacy,"task_tolerance_rad":limit,"requires_actual_placement_ik_before_arm_motion":limit>.12}
 
 
+def delivery_step_heading_stop(distance, trigger, pose, max_sample_gap_s=.15):
+    """Stop, never pivot in STEP, within one observed sampling interval.
+
+    The existing terminal braking reserve is retained. A discrete observer
+    can cross its remaining gap before the next fresh sample; permit a zero
+    command in that one-interval band. Composite stop and actual placement
+    IK remain mandatory and independently decide whether the pose is usable.
+    """
+    speed=math.hypot(float(pose.get('vx',0.)),float(pose.get('vy',0.)))
+    if not all(math.isfinite(v) for v in (distance,trigger,speed,max_sample_gap_s)) or min(distance,trigger)<0. or not 0.<max_sample_gap_s<=.15:raise ValueError('invalid terminal stop observation')
+    margin=min(.60,speed)*max_sample_gap_s
+    if distance>trigger+margin:return None
+    return dict(reason='STEP_HEADING_REQUEST_NEAR_BRAKING_TRIGGER',distance_m=distance,
+                existing_braking_trigger_m=trigger,observed_planar_speed_m_s=speed,
+                one_sample_reserve_m=margin,max_sample_gap_s=max_sample_gap_s,
+                placement_feasibility='NOT_RUN',composite_stop='STILL_REQUIRED')
+
+
 def functional_approach_limit(cfg, mission):
     """Task arrival tolerance is separate from every physical-stop threshold."""
     if mission is None or mission.get("phase")!="DELIVERY":return .15
@@ -1872,6 +1890,11 @@ def run_carry_navigation(n,contract):
                     if along>length+.15:raise RuntimeError("DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL")
                     output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
                     if cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" and output.state in (NavState.ALIGN,NavState.FINAL_ALIGN):
+                        terminal_stop=delivery_step_heading_stop(distance,trigger,p) if cfg["delivery"].get("conservative_terminal_stop") else None
+                        if terminal_stop is not None:
+                            result['goal_triggered_stop']=True;mission['delivery_stop_trigger_pose']=p
+                            mission['terminal_heading_stop_request']=terminal_stop
+                            break
                         raise RuntimeError("DELIVERY_STEP_HEADING_REQUIRES_STOP:"+str(output.yaw_error_rad))
                     if output.state==NavState.DRIVE and mission.get("delivery_alignment_state") is not None:
                         # A turn is physically stopped before forward reactivation.

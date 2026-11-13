@@ -6,6 +6,21 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_near_terminal_step_heading_requests_zero_not_precise_pivot(self):
+        from scripts.research.issue46.native_runtime.native_micro_stop_contract import PHYSICAL_STOP_MAX_SAMPLE_GAP_S
+        pose=dict(vx=-.127309,vy=.261719)
+        stop=m.delivery_step_heading_stop(.4559702,.45,pose)
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop['max_sample_gap_s'],PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+        self.assertEqual(stop['placement_feasibility'],'NOT_RUN')
+        self.assertEqual(stop['composite_stop'],'STILL_REQUIRED')
+        self.assertAlmostEqual(stop['one_sample_reserve_m'],math.hypot(pose['vx'],pose['vy'])*PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+        self.assertIsNone(m.delivery_step_heading_stop(.60,.45,pose))
+        self.assertIsNone(m.delivery_step_heading_stop(.4559702,.45,dict(vx=0.,vy=0.)))
+        with self.assertRaises(ValueError):m.delivery_step_heading_stop(float('nan'),.45,pose)
+        with self.assertRaises(ValueError):m.delivery_step_heading_stop(.45,.45,pose,.20)
+
+
     def test_clock_recovery_turn_stop_requires_prior_handshake_and_fresh_stand(self):
         mission=dict(turn_source_and_mode_observed=True,target_unwrapped_yaw=-3.6822340361,
                      unwrapped_yaw=-3.4992502788,clock_recovery_turn_stop=dict(
