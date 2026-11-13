@@ -229,7 +229,8 @@ class TaskRegionControlTimingTests(unittest.TestCase):
             clock["now"]+=.001
             return {"body_status":100,"pose":{"x":0.,"y":0.,"yaw":0.},
                     "sample_monotonic_s":clock["now"],"common_source":{"name":"robotsim_official_cmd_vel"},
-                    "common_mode_desc":"LOCOMOTION_STEP","get_mode_desc":"LOCOMOTION_STEP"}
+                    "common_mode_desc":"LOCOMOTION_STEP","get_mode_desc":"LOCOMOTION_STEP",
+                    "common_mode_status_value":100,"get_mode_status_value":100}
         node.sample.side_effect=sample
         node.observe.return_value={"pass":True}
         saved=[]

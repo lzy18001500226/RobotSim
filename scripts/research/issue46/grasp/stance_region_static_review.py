@@ -183,8 +183,17 @@ class Study:
             if dist<minimum:minimum=dist;pair=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,g) for g in (a,b)]
         return {'pass':not bad,'minimum_external_clearance_m_capped_50mm':minimum,'limiting_pair':pair,'violations':sorted(bad,key=lambda x:x['distance_m'])[:4]}
 
-    def candidate(self,xy,yaw,label,*,source_arm_range=False,runtime_arm_only=False,arm_target_inset_rad=0.):
-        began=time.monotonic();base=self.relocate(self.templates[label],xy,yaw);start=base[self.qadr].copy()
+    def candidate(self,xy,yaw,label,*,source_arm_range=False,runtime_arm_only=False,arm_target_inset_rad=0.,root_xy=None):
+        began=time.monotonic();base=self.relocate(self.templates[label],xy,yaw)
+        if root_xy is not None:
+            requested=np.asarray(root_xy,dtype=float)
+            if requested.shape!=(2,) or not np.isfinite(requested).all():raise ValueError("finite runtime pelvis XY required")
+            # Runtime navigation controls the pelvis, not the ankle midpoint.
+            # Crouched and standing templates have different pelvis/ankle offsets.
+            # Use one rigid translation for the entire hypothetical preparation.
+            xy=np.asarray(xy)+requested-base[self.root:self.root+2]
+            base=self.relocate(self.templates[label],xy,yaw)
+        start=base[self.qadr].copy()
         bounds=self.source_bounds.copy();exc=np.array([.25,.18]+[np.inf if source_arm_range else 1.1]*7);bounds[:,0]=np.maximum(bounds[:,0],start-exc);bounds[:,1]=np.minimum(bounds[:,1],start+exc)
         if not 0.<=arm_target_inset_rad<=.03:raise ValueError("task arm target inset")
         bounds[2:,0]+=arm_target_inset_rad;bounds[2:,1]-=arm_target_inset_rad
