@@ -24,3 +24,10 @@ def stance_from_profile(profile,observed_center,current_root,foot_anchor,current
     yaw=float(profile['base_yaw_rad']);c,s=math.cos(yaw-current_yaw),math.sin(yaw-current_yaw)
     rotation=np.array([[c,-s],[s,c]])
     return desired-rotation@(root-anchor),yaw
+
+
+def torso_world_heading(profile):
+    """Preserve a demonstrated torso heading when the actual base yaw differs."""
+    value=float(profile['base_yaw_rad'])+float(profile['waist_yaw_rad'])
+    if not math.isfinite(value):raise ValueError('finite profile heading required')
+    return math.atan2(math.sin(value),math.cos(value))

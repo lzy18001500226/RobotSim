@@ -351,7 +351,7 @@ def run_region_navigation(node, contract):
                 result["side_corridor_boundary_stop"]={"pose":pose,"bounds":cfg["side_corridor_bounds"],"claim":"PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY"};break
             if not short_forward and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
                 result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"};break
-            stop_distance=stopping_distance(pose,cfg["goal"]) if cfg.get("point_goal") else controller.config.xy_tolerance_m
+            stop_distance=stopping_distance(pose,cfg["goal"],aligning=output.state==NavState.ALIGN) if cfg.get("point_goal") else controller.config.xy_tolerance_m
             if not short_forward and output.distance_m is not None and output.distance_m<=stop_distance:
                 result["position_region_entered"]=True
                 result["legacy_heading_error_rad"]=output.yaw_error_rad
@@ -589,13 +589,16 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             (anchor+np.array([.04,0.]),"FORWARD_SHORT_04",yaw,None)])
     profile_by_label={}
     if far_observe:
-        from scripts.research.issue46.native_runtime.grasp_profiles import select_profile,stance_from_profile
+        from scripts.research.issue46.native_runtime.grasp_profiles import select_profile,stance_from_profile,torso_world_heading
         profile=select_profile(center)
         profile_anchor,profile_yaw=stance_from_profile(profile,center,root_xy,anchor,yaw)
-        label=profile['profile'];profile_by_label[label]=profile
-        if np.linalg.norm(center[:2]+np.asarray(profile['root_offset_from_object_xy_m'])-root_xy)<=.08 and abs(math.atan2(math.sin(profile_yaw-yaw),math.cos(profile_yaw-yaw)))<=.20:
-            profile_anchor=anchor.copy();profile_yaw=yaw
-        candidates.insert(0,(profile_anchor,label,profile_yaw,profile['waist_pitch_rad']))
+        label=profile['profile'];actual_label=label+"_ACTUAL_STANCE"
+        profile_by_label[label]=profile;profile_by_label[actual_label]=profile
+        # A reference is a posture seed, not a mandatory millimetric station.
+        # Always test the actual stopped base before requesting another motion.
+        # Only the complete IK/path/reach/visibility gates may accept it.
+        candidates[0:0]=[(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']),
+            (profile_anchor,label,profile_yaw,profile['waist_pitch_rad'])]
     rows = []
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:
@@ -607,7 +610,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             root_goal=candidate_anchor+Rotation.from_euler("z",yaw-oldyaw).as_matrix()[:2,:2]@(root_xy-anchor)
             heading, correction = torso_heading_for_target(center, root_goal, ref_root, ref_object, reference_heading)
             if label in profile_by_label:
-                heading=yaw+profile_by_label[label]['waist_yaw_rad']
+                heading=torso_world_heading(profile_by_label[label])
             relative_change = heading-yaw-prepared[yaw_adr]
             # Task search extent only; Study still enforces source bounds and path collisions.
             if abs(relative_change) > 1.05:

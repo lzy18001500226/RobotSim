@@ -135,3 +135,15 @@ class FarApproachTests(unittest.TestCase):
         self.assertIn("'locomotion_action': 'LOCOMOTION_STEP'",s)
 
 if __name__=="__main__":unittest.main()
+
+
+class HeadingBrakingRegressionTests(unittest.TestCase):
+    def test_saved_turning_pelvis_sway_cannot_claim_translation_arrival(self):
+        from scripts.research.issue46.native_runtime.far_observe_approach import stopping_distance
+        pose={"x":.8425592857443466,"y":-1.4421615733867768,
+              "vx":.002861287885143989,"vy":.15322069368673366}
+        goal=[.841035304766427,-1.2680520766000467,.49559492393954624]
+        distance=((goal[0]-pose["x"])**2+(goal[1]-pose["y"])**2)**.5
+        self.assertLess(distance,stopping_distance(pose,goal))
+        self.assertGreater(distance,stopping_distance(pose,goal,aligning=True))
+        self.assertEqual(stopping_distance(pose,goal,aligning=True),.06)

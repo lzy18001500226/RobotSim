@@ -174,8 +174,14 @@ def forward_table_plane_reached(pose,goal,origin,*,delay_s=.80):
     return pose["x"]+delay_s*max(0.,pose["vx"])>=goal[0]-.02
 
 
-def stopping_distance(pose,goal):
-    """Existing 0.8s forward-braking estimate; actual stop must requalify IK."""
+def stopping_distance(pose,goal,*,aligning=False):
+    """Use translational braking only during translation, not heading acquisition.
+
+    A stepping pelvis has instantaneous lateral sway while turning. It is not
+    evidence that the commanded translation has reached its stopping region.
+    Independent collision/outer-corridor guards retain unfiltered velocities.
+    """
+    if aligning:return .06
     dx,dy=goal[0]-pose["x"],goal[1]-pose["y"]
     norm=math.hypot(dx,dy)
     speed=0. if norm<1e-8 else max(0.,(pose["vx"]*dx+pose["vy"]*dy)/norm)

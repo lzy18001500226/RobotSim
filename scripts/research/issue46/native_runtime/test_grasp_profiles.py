@@ -19,6 +19,15 @@ class GraspProfileTests(unittest.TestCase):
         c,s=np.cos(heading-yaw),np.sin(heading-yaw)
         reconstructed=anchor+np.array([[c,-s],[s,c]])@(root-foot)
         np.testing.assert_allclose(reconstructed,center[:2]+profile['root_offset_from_object_xy_m'])
+    def test_reference_torso_heading_survives_base_arrival_yaw_error(self):
+        import math
+        from scripts.research.issue46.native_runtime.grasp_profiles import torso_world_heading
+        profile=load_profiles()[10];heading=torso_world_heading(profile)
+        for actual_base_yaw in (.4955949,.6522245,profile['base_yaw_rad']):
+            waist=math.atan2(math.sin(heading-actual_base_yaw),math.cos(heading-actual_base_yaw))
+            self.assertAlmostEqual(actual_base_yaw+waist,heading)
+        self.assertAlmostEqual(heading,.9514027919586301)
+
     def test_invalid_observation_is_rejected(self):
         for value in ([0.,0.],[0.,float('nan'),1.]):
             with self.assertRaises(ValueError):select_profile(value)
