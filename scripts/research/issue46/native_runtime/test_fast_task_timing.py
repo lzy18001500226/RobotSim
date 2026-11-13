@@ -201,4 +201,15 @@ class BodyModeReadinessTests(unittest.TestCase):
         ns=dict(n=SimpleNamespace(pump=lambda:None,sample=lambda:row),deadline=10.,time=SimpleNamespace(monotonic=lambda:1.),process=None,result={"commands":[]})
         exec(compile(ast.Module(body=[fn],type_ignores=[]),"actual_body_mode_readiness","exec"),ns)
         with self.assertRaisesRegex(RuntimeError,"CRITICAL_ROS_TELEMETRY_STALE:get_mode"):ns["sample"]()
+class TerminalReapproachContractTests(unittest.TestCase):
+    def test_actual_generated_reapproach_is_bounded_and_requires_physical_stop(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script);guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(x,ast.Constant) and x.value=="bounded_terminal_forward_reapproach" for x in ast.walk(n.test)))
+        code=ast.unparse(guard)
+        self.assertIn('range(2)',code);self.assertIn("require_stop=True",code)
+        self.assertIn('TERMINAL_REAPPROACH_STOP_OR_TIME_UNQUALIFIED',code)
+        self.assertIn('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED',code)
+        self.assertIn('n.publish(0.12',code)
 if __name__=="__main__":unittest.main()

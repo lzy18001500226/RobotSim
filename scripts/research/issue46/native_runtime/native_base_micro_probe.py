@@ -1957,6 +1957,41 @@ def run_carry_navigation(n,contract):
         stand_transition()
         result["post_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
         end=n.sample()["pose"];result["end_pose"]=end
+        if mission is not None and mission.get('phase')=='DELIVERY' and cfg['delivery'].get('bounded_terminal_forward_reapproach'):
+            # A safely stopped shortfall is legitimate, not a task failure.
+            # At most two existing STEP activation pulses, each followed by the
+            # full unchanged physical stop; never extend the campaign deadline.
+            for correction in range(2):
+                remaining=math.hypot(goal[0]-end['x'],goal[1]-end['y'])
+                if remaining<=functional_approach_limit(cfg,mission):break
+                if not result['post_stop_composite'].get('pass') or until-time.monotonic()<8.:raise RuntimeError('TERMINAL_REAPPROACH_STOP_OR_TIME_UNQUALIFIED')
+                bearing_error=(math.atan2(goal[1]-end['y'],goal[0]-end['x'])-end['yaw']+math.pi)%(2*math.pi)-math.pi
+                if abs(bearing_error)>.75:raise RuntimeError('TERMINAL_REAPPROACH_HEADING_NOT_QUALIFIED')
+                transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row)
+                closed_permits.append(transit_permit);cfg['previous_permit_filename']=cfg['permit_filename']
+                cfg['delivery_measured_stop_pass']=True;cfg['delivery_rearm_count']=cfg.get('delivery_rearm_count',0)+1
+                if cfg['delivery_rearm_count']>4:raise RuntimeError('TERMINAL_REAPPROACH_INTERVAL_BUDGET')
+                cfg['permit_filename']='carry_transit_delivery_rearm_'+str(cfg['delivery_rearm_count'])+'.json'
+                n.await_graph();n.stand_once('LOCOMOTION_STEP')
+                transit_permit=carry_transit_phase(None,'TRANSIT',cfg,n.latest_row);n.source_enabled(True);n.stop_started=False
+                with n.lock:n.moving=True
+                pulse_started=time.monotonic();pulse_acquired=False;first_pulse=None
+                while time.monotonic()-pulse_started<.20:
+                    n.pump();pulse=n.sample();pose=pulse['pose']
+                    if pulse['body_status']!=baseline:raise RuntimeError('TERMINAL_REAPPROACH_BODY_STATUS')
+                    err=(math.atan2(goal[1]-pose['y'],goal[0]-pose['x'])-pose['yaw']+math.pi)%(2*math.pi)-math.pi
+                    if abs(err)>.75:raise RuntimeError('TERMINAL_REAPPROACH_HEADING_CHANGED')
+                    pulse_acquired=pulse_acquired or (pulse['common_mode_desc']=='LOCOMOTION_STEP' and pulse['get_mode_desc']=='LOCOMOTION_STEP' and pulse['common_source']['name']=='robotsim_official_cmd_vel')
+                    first_pulse=pose if first_pulse is None else first_pulse
+                    n.publish(.12,0.,max(-.60,min(.60,2.4*err)));n.trace.append(pulse);time.sleep(.02)
+                n.deadline_zero();n.stop_started=True;transit_permit=carry_transit_phase(transit_permit,'BRAKING',cfg,n.latest_row)
+                n.observe(1.05,baseline=baseline);n.pump();pulse=n.sample()
+                pulse_acquired=pulse_acquired or (pulse['common_mode_desc']=='LOCOMOTION_STEP' and pulse['get_mode_desc']=='LOCOMOTION_STEP' and pulse['common_source']['name']=='robotsim_official_cmd_vel')
+                if not pulse_acquired:raise RuntimeError('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED')
+                if cfg.get('release_source_on_stop'):n.source_enabled(False)
+                n.stand_once();stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
+                end=n.sample()['pose'];result['post_stop_composite']=stopped;result['end_pose']=end
+                result.setdefault('terminal_forward_reapproach',[]).append(dict(index=correction,source_pose=first_pulse,stop=stopped,stopped_pose=end,requested_nonzero_duration_s=.20,source_and_mode_observed=pulse_acquired))
         if mission is not None and mission.get('phase')=='DELIVERY' and cfg['delivery'].get('bounded_final_dock_alignment'):
             saved_mode=cfg.get('motion_mode');cfg['motion_mode']='LOCOMOTION_DEFAULT'
             old_turn_delta=(mission['turn_end_pose']['yaw']-mission['previous_yaw']+math.pi)%(2*math.pi)-math.pi
