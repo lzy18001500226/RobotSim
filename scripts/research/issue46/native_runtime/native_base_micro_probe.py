@@ -1388,6 +1388,11 @@ def run_carry_navigation(n,contract):
                             if native_step_activation_ready(state,baseline):prepared=True;break
                             time.sleep(.02)
                         if not prepared:raise RuntimeError("CLOCK_RECOVERY_STEP_PREPARATION_FAILED")
+                    if cfg.get("motion_mode")=="LOCOMOTION_DEFAULT" and (cfg.get("delivery") or {}).get("prepare_default_after_pickup"):
+                        # Recovery explicitly requested STAND_DEFAULT. Repeat
+                        # the normal installed mode selection before valid
+                        # nonzero input; applied-state proof still follows input.
+                        n.stand_once("LOCOMOTION_DEFAULT")
                     if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
                     transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                     if mission is not None and mission["phase"]=="PRESTEP":

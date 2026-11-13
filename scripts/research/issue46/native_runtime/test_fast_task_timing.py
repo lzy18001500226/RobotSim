@@ -150,4 +150,16 @@ class GeometricTableArrivalTests(unittest.TestCase):
         self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":False},cfg))
         nav["failure"]="JOINT_LIMIT";self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
         nav["failure"]="CARRY_GOAL_OR_STOP_NOT_QUALIFIED";nav["post_stop_composite"]={"pass":False};self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
+class EpochModeRestoreTests(unittest.TestCase):
+    def test_clock_recovery_reselects_existing_default_mode_without_faking_readback(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script)
+        guards=[n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Constant) and v.value=="prepare_default_after_pickup" for v in ast.walk(n.test)) and any(isinstance(st,ast.Expr) and isinstance(st.value,ast.Call) and isinstance(st.value.func,ast.Attribute) and st.value.func.attr=="stand_once" for st in n.body)]
+        self.assertTrue(guards)
+        from types import SimpleNamespace
+        requests=[];ns=dict(cfg={"motion_mode":"LOCOMOTION_DEFAULT","delivery":{"prepare_default_after_pickup":True}},n=SimpleNamespace(stand_once=lambda x:requests.append(x)))
+        exec(compile(ast.Module(body=[guards[-1]],type_ignores=[]),"actual_recovery_mode_selection","exec"),ns)
+        self.assertEqual(requests,["LOCOMOTION_DEFAULT"])
 if __name__=="__main__":unittest.main()
