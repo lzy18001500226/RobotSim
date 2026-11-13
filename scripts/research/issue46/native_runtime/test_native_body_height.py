@@ -124,3 +124,28 @@ class ReadOnlyNativeStartupReadinessTests(unittest.TestCase):
                 exec(code,scope);self.assertEqual(scope['first'],{'fresh':True});self.assertEqual(len(calls),2);self.assertFalse(scope['result']['initial_readiness_waits'][0]['motion_publishers_started'])
             else:
                 with self.assertRaisesRegex(RuntimeError,'ABI'):exec(code,scope)
+
+
+class HeightZeroStopAcquisitionTests(unittest.TestCase):
+    def helper(self, scope):
+        tree=ast.parse(inspect.getsource(body.run_height_probe));fn=next(n for n in tree.body[0].body if isinstance(n,ast.FunctionDef) and n.name=='settle_native_body')
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'height_zero_stop','exec'),scope)
+        return scope['settle_native_body']
+
+    def test_stopping_height_allows_fresh_window_reacquisition_and_restores_scope(self):
+        import time
+        from types import SimpleNamespace as S
+        config={};events=[];scope=dict(MICRO=config);helper=self.helper(scope)
+        def observe(*args,**kwargs):
+            events.append(config.get('body_readonly_zero_phase'))
+            return {'pass':True}
+        result=helper(S(observe=observe),1,time.monotonic()+5.,{'commands':[{'stand_height':0.}]},'low_stop')
+        self.assertTrue(result['pass']);self.assertEqual(events,[True]);self.assertEqual(config,{})
+
+    def test_nonzero_height_command_cannot_be_reclassified_as_readonly(self):
+        import time
+        from types import SimpleNamespace as S
+        config={};helper=self.helper(dict(MICRO=config))
+        with self.assertRaisesRegex(RuntimeError,'BODY_STOP_REACQUIRE_REQUIRES_ZERO_HEIGHT_COMMAND'):
+            helper(S(),1,time.monotonic()+5.,{'commands':[{'stand_height':-.03}]},'low_stop')
+        self.assertEqual(config,{})

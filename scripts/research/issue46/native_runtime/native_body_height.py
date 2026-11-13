@@ -91,19 +91,27 @@ def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="n
 
 def run_height_probe(n, contract):
     def settle_native_body(n, baseline, deadline, result, label):
-        """Wait for an unchanged complete stop contract; retain failed windows."""
-        import json,time
-        until=min(deadline,time.monotonic()+15.)
-        while time.monotonic()<until:
-            try:return n.observe(min(5.,until-time.monotonic()),baseline=baseline,require_stop=True)
-            except RuntimeError as exc:
-                prefix='COMPOSITE_STOP_NOT_QUALIFIED:'
-                if not str(exc).startswith(prefix):raise
-                measured=json.loads(str(exc)[len(prefix):])
-                if not set(measured.get('violations',[])).issubset({'planar_speed_exceeded','joint_target_not_settled','joint_position_not_settled'}):raise
-                result.setdefault('settling_windows',[]).append(dict(label=label,measurement=measured))
-                if measured.get('metrics',{}).get('safety_faults'):raise
-        raise RuntimeError('BODY_STABLE_WINDOW_TIMEOUT:'+label)
+        """Zero-only acquisition; require a new complete, fresh stop window."""
+        commands=result.get('commands',[])
+        if commands and commands[-1]['stand_height']!=0.:raise RuntimeError('BODY_STOP_REACQUIRE_REQUIRES_ZERO_HEIGHT_COMMAND')
+        prior=MICRO.get('body_readonly_zero_phase')
+        MICRO['body_readonly_zero_phase']=True
+        try:
+            import json,time
+            until=min(deadline,time.monotonic()+15.)
+            while time.monotonic()<until:
+                try:return n.observe(min(5.,until-time.monotonic()),baseline=baseline,require_stop=True)
+                except RuntimeError as exc:
+                    prefix='COMPOSITE_STOP_NOT_QUALIFIED:'
+                    if not str(exc).startswith(prefix):raise
+                    measured=json.loads(str(exc)[len(prefix):])
+                    if not set(measured.get('violations',[])).issubset({'planar_speed_exceeded','joint_target_not_settled','joint_position_not_settled'}):raise
+                    result.setdefault('settling_windows',[]).append(dict(label=label,measurement=measured))
+                    if measured.get('metrics',{}).get('safety_faults'):raise
+            raise RuntimeError('BODY_STABLE_WINDOW_TIMEOUT:'+label)
+        finally:
+            if prior is None:MICRO.pop('body_readonly_zero_phase',None)
+            else:MICRO['body_readonly_zero_phase']=prior
     import os,subprocess,time,json,math
     from pathlib import Path
     from aimdk_msgs.srv import SetMcInputSource
