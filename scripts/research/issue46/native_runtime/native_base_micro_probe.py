@@ -1217,7 +1217,7 @@ def loaded_delivery_terminal_command(delivery, pose, goal, forward, angular):
     if not all(math.isfinite(x) for x in (pose['x'],pose['y'],*goal,forward,angular)):raise ValueError("finite loaded approach input")
     if math.hypot(goal[0]-pose['x'],goal[1]-pose['y'])>=.8:return forward,angular
     # Existing documented/previously exercised task inputs, unchanged MC.
-    return min(forward,.12),max(-.30,min(.30,angular))
+    return min(forward,.12),angular
 
 
 def delivery_heading_acceptance(delivery, yaw_error):

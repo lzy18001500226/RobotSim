@@ -104,7 +104,7 @@ class LoadedTerminalBrakeTests(unittest.TestCase):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import loaded_delivery_terminal_command
         p={"x":.21225222683139955,"y":.7513642942241849};goal=[.015,.98]
         self.assertEqual(loaded_delivery_terminal_command({},p,goal,.20,.46133845196305034),(.20,.46133845196305034))
-        self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.20,.46133845196305034),(.12,.30))
+        self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.20,.46133845196305034),(.12,.46133845196305034))
         self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},{"x":.9,"y":-1.4},goal,.20,.5),(.20,.5))
         self.assertEqual(loaded_delivery_terminal_command({"loaded_terminal_slowdown":True},p,goal,.05,-.1),(.05,-.1))
 class ActualTerminalCommandPipelineTests(unittest.TestCase):
@@ -119,7 +119,7 @@ class ActualTerminalCommandPipelineTests(unittest.TestCase):
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(st,ast.Assign) and isinstance(st.value,ast.Call) and isinstance(st.value.func,ast.Name) and st.value.func.id=="loaded_delivery_terminal_command" for st in n.body))
         ns=dict(mission={"phase":"DELIVERY"},cfg={"delivery":{"loaded_terminal_slowdown":True}},p={"x":.212,"y":.751},goal=[.015,.98],forward=.2,angular=output.angular_z,loaded_delivery_terminal_command=micro.loaded_delivery_terminal_command)
         exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_generated_terminal_command","exec"),ns)
-        self.assertEqual((ns["forward"],ns["angular"]),(.12,.30));self.assertEqual(output.angular_z,.46)
+        self.assertEqual((ns["forward"],ns["angular"]),(.12,.46));self.assertEqual(output.angular_z,.46)
         self.assertNotIn("forward,output.angular_z=",script)
         self.assertGreater(script.index("forward,angular=loaded_delivery_terminal_command"),script.index('forward=float(cfg["delivery"].get("delivery_forward_command_m_s"'))
 class TorsoRelativeCarryTests(unittest.TestCase):
