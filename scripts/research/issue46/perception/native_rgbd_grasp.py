@@ -117,7 +117,14 @@ def vertical_component(mask, *, world_height=None):
             # different surface depth and falsely give a flat floor height.
             interior=binary_erosion(labels==index)
             values=world_height[interior]
-            if len(values)<20 or float(np.quantile(values,.98)-np.quantile(values,.02))<.06:continue
+            if len(values)<20:continue
+            lo,hi=np.quantile(values,[.02,.98]);span=float(hi-lo)
+            if span<.06:continue
+            # Apply the fitter's existing side-depth support before choosing
+            # the largest component. Floor+wall fragments can have a tall
+            # height range but no points along a continuous cylinder barrel.
+            side_count=int(np.count_nonzero((values>lo+.15*span)&(values<hi-.20*span)))
+            if side_count<60:continue
             score=float(len(values))
         info={'pixel_count':float(sizes[index]),'bbox_xyxy':[xs.start,ys.start,xs.stop,ys.stop],'bbox_width_px':float(width),'bbox_height_px':float(height),'vertical_aspect':float(aspect),'score':score}
         if best is None or score>best[1]['score']:best=(labels==index,info)

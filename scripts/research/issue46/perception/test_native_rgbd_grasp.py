@@ -16,14 +16,14 @@ class GravityComponentTest(unittest.TestCase):
     def test_foreshortened_bottle_and_blue_floor_are_separated_by_depth(self):
         from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
         mask=np.zeros((50,60),dtype=bool);height=np.zeros(mask.shape)
-        mask[3:15,3:13]=True
-        height[3:15,3:13]=np.linspace(.55,.77,12)[:,None]
+        mask[3:15,3:18]=True
+        height[3:15,3:18]=np.linspace(.55,.77,12)[:,None]
         mask[25:49,1:59]=True
         result=vertical_component(mask,world_height=height)
         self.assertIsNotNone(result)
-        self.assertEqual(result[1]["bbox_xyxy"],[3,3,13,15])
+        self.assertEqual(result[1]["bbox_xyxy"],[3,3,18,15])
         self.assertIsNone(vertical_component(mask))
-        height[3:15,3:13]=.6
+        height[3:15,3:18]=.6
         self.assertIsNone(vertical_component(mask,world_height=height))
     def test_mixed_boundary_depth_cannot_make_blue_floor_beat_bottle(self):
         from scipy.ndimage import binary_erosion
@@ -36,6 +36,15 @@ class GravityComponentTest(unittest.TestCase):
         height[floor&~binary_erosion(floor)]=.25
         result=vertical_component(mask,world_height=height)
         self.assertEqual(result[1]['bbox_xyxy'],[3,3,14,25])
+
+    def test_connected_floor_and_wall_without_barrel_support_cannot_win(self):
+        from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
+        mask=np.zeros((80,100),dtype=bool);height=np.zeros(mask.shape)
+        mask[2:24,2:17]=True;height[2:24,2:17]=np.linspace(.55,.77,22)[:,None]
+        mask[35:79,1:99]=True;height[35:79,1:99]=.002
+        height[36:40,2:98]=.23
+        chosen=vertical_component(mask,world_height=height)
+        self.assertEqual(chosen[1]['bbox_xyxy'],[2,2,17,24])
 
     def test_nonfinite_height_cannot_qualify(self):
         from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
