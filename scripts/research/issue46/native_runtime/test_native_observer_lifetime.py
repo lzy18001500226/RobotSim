@@ -13,8 +13,13 @@ int main(void){
   pthread_once(&once,already_initialized);
   step_real=stub_step;version_real=stub_version;id_real=stub_id;name_real=stub_name;
   sink=tmpfile();if(!sink)return 3;
+  if(trace_writer_start(sink))return 4;
   mjModel model={0};mjData data={0};model.opt.timestep=.001;
-  for(int i=0;i<12020;i++)mj_step(&model,&data);
+  for(int i=0;i<12020;i++){
+    mj_step(&model,&data);
+    for(;;){pthread_mutex_lock(&trace_mutex);long long written=trace_written;pthread_mutex_unlock(&trace_mutex);if(written==i+1)break;usleep(10);}
+  }
+  trace_writer_finish();
   rewind(sink);int ch,records=0;while((ch=fgetc(sink))!=EOF)if(ch=='\n')records++;
   fclose(sink);printf("{\"stub_step_calls\":%d,\"records\":%d,\"physics_dynamics_calls\":0}\n",stub_calls,records);
   return 0;

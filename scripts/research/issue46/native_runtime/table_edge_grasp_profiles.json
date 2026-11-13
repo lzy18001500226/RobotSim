@@ -217,8 +217,11 @@
         "state_sha256": "e512e20d131244befc52b350316fe9f104b5c91e3c49b9b81c88d72203e94a0f",
         "posture_sha256": "414600b432ca1d73d5faac880f2c2e6b388b67c887084a6f685429b1eff2962f",
         "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
-        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
-      }
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE",
+        "navigation_plan": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T230938Z/task_region_navigation_0_plan.json",
+        "navigation_plan_sha256": "b4cfd1c982b88ae27854005e3a9a3531092dd03d437b8cc5d81fd321da4f528e"
+      },
+      "preferred_approach_label": "FAR_DIAGONAL_1"
     },
     {
       "profile": "GRASP_REFERENCE_08",
@@ -244,8 +247,11 @@
         "state_sha256": "b4d7f8efed3b0a42a4ec4f8857255b52ad160c373ebc4d9a86a93b05ff2959e6",
         "posture_sha256": "780cf2b7f4b54d6574a754703c58ba648c133a99ca74812c84d88dcf546429fd",
         "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
-        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
-      }
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE",
+        "navigation_plan": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T231834Z/task_region_navigation_1_plan.json",
+        "navigation_plan_sha256": "dbf5589d03e5f2276e4541636fb12dbaf74fc33b46eab302049a3b423de85192"
+      },
+      "preferred_approach_label": "FAR_DIAGONAL_1"
     },
     {
       "profile": "GRASP_REFERENCE_09",
@@ -271,8 +277,11 @@
         "state_sha256": "21c6256a0f709af10b38aecf4fff704943ab9f8217438b53b16e9f8f97298d82",
         "posture_sha256": "dd9feb3ed02e9c5d21d3c01148436c1dcfe1ef7229a88d4632c448f0dfa93526",
         "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
-        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
-      }
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE",
+        "navigation_plan": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T232405Z/task_region_navigation_1_plan.json",
+        "navigation_plan_sha256": "925b4231e9a5c851a251dfe43520ae76e7e7d8503badf9fcc9a5837526ca18ec"
+      },
+      "preferred_approach_label": "FAR_DIAGONAL_1"
     },
     {
       "profile": "GRASP_REFERENCE_10",
@@ -298,8 +307,11 @@
         "state_sha256": "abfa52bb029a9d4b4648311bfc2a83f3e5334ed6a5323ae7af03dea4c4ea250f",
         "posture_sha256": "591d7e323551473f6a9a5cdc6afcde13d2b6f5fe90b91e4bf18dcf273207cbb2",
         "scope": "HISTORICAL_SINGLE_GRASP_PASS_NOT_CURRENT_VERSION_TRANSFER_PASS",
-        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE"
-      }
+        "stance_tolerance": "NOT_ESTABLISHED_BY_SINGLE_REFERENCE",
+        "navigation_plan": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261112T235100Z/task_region_navigation_1_plan.json",
+        "navigation_plan_sha256": "64303252974cd31da51348bbb33d34507bef93d257cf50b63ef74a11d567afaf"
+      },
+      "preferred_approach_label": "FAR_DIAGONAL_1"
     }
   ]
 }

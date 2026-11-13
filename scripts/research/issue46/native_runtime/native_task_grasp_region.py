@@ -347,9 +347,9 @@ def run_region_navigation(node, contract):
             if short_forward and first_active_command_at is not None and tick-first_active_command_at>=.20:
                 result["short_forward_activation_pulse"]={"requested_span_m":requested_span,"maximum_nonzero_duration_s":.20,"actual_stopped_pose_must_requalify":True}
                 break
-            if not short_forward and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(pose,cfg["side_corridor_bounds"]):
+            if not short_forward and output.state!=NavState.ALIGN and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(pose,cfg["side_corridor_bounds"]):
                 result["side_corridor_boundary_stop"]={"pose":pose,"bounds":cfg["side_corridor_bounds"],"claim":"PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY"};break
-            if not short_forward and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
+            if not short_forward and output.state!=NavState.ALIGN and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(pose,cfg["goal"],[origin["x"],origin["y"]]):
                 result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"};break
             stop_distance=stopping_distance(pose,cfg["goal"],aligning=output.state==NavState.ALIGN) if cfg.get("point_goal") else controller.config.xy_tolerance_m
             if not short_forward and output.distance_m is not None and output.distance_m<=stop_distance:
@@ -589,16 +589,20 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             (anchor+np.array([.04,0.]),"FORWARD_SHORT_04",yaw,None)])
     profile_by_label={}
     if far_observe:
-        from scripts.research.issue46.native_runtime.grasp_profiles import select_profile,stance_from_profile,torso_world_heading
+        from scripts.research.issue46.native_runtime.grasp_profiles import select_profile,torso_world_heading
         profile=select_profile(center)
-        profile_anchor,profile_yaw=stance_from_profile(profile,center,root_xy,anchor,yaw)
         label=profile['profile'];actual_label=label+"_ACTUAL_STANCE"
         profile_by_label[label]=profile;profile_by_label[actual_label]=profile
         # A reference is a posture seed, not a mandatory millimetric station.
         # Always test the actual stopped base before requesting another motion.
         # Only the complete IK/path/reach/visibility gates may accept it.
-        candidates[0:0]=[(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']),
-            (profile_anchor,label,profile_yaw,profile['waist_pitch_rad'])]
+        preferred=profile.get('preferred_approach_label')
+        if preferred:
+            candidates.sort(key=lambda candidate:0 if candidate[1]==preferred else 1)
+        candidates.insert(0,(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']))
+        # Keep the demonstrated forward/turn navigation targets below. A saved
+        # *achieved* stopped grasp pose is not the old commanded motion goal:
+        # braking/coast made them differ by hundreds of millimetres in Y.
     rows = []
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:

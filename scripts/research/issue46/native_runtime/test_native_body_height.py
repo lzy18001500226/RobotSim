@@ -7,7 +7,7 @@ class BodyHeightTests(unittest.TestCase):
         while pending:
             code=pending.pop();names.update(i.argval for i in dis.get_instructions(code) if i.opname=="LOAD_GLOBAL")
             pending.extend(x for x in code.co_consts if isinstance(x,types.CodeType))
-        self.assertFalse(names-set(dir(builtins))-{"MICRO","SOURCE","write_durable_milestone","same_episode_registered_body_source"})
+        self.assertFalse(names-set(dir(builtins))-{"MICRO","SOURCE","write_durable_milestone","same_episode_registered_body_source","body_pause_zero_required"})
     def test_generated_observer_cannot_construct_velocity_publisher(self):
         code=body.build_script({},[])
         tree=ast.parse(code);dock=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=="Dock")
@@ -41,7 +41,7 @@ class BodyClockPauseTests(unittest.TestCase):
             return value
         n=S(pump=lambda:None,sample=read,latest_row=identity,trace=[])
         def stop(*args):calls.append('stop');return {'pass':True}
-        env=dict(time=time,deadline=time.monotonic()+10.,n=n,process=object(),result=result,command=lambda v:calls.append(('command',v)),settle_native_body=stop,contract=S(MC_FSM_ACTIVE_STATES=(7,)))
+        env=dict(time=time,deadline=time.monotonic()+10.,n=n,process=S(poll=lambda:None),body_pause_zero_required=body.body_pause_zero_required,result=result,command=lambda v:calls.append(('command',v)),settle_native_body=stop,contract=S(MC_FSM_ACTIVE_STATES=(7,)))
         exec(compile(ast.fix_missing_locations(ast.Module(body=[sample],type_ignores=[])),'body_clock_sample','exec'),env)
         self.assertEqual(env['sample'](),row)
         self.assertEqual(calls,['read',('command',0.),'read','stop','read'])
@@ -87,7 +87,7 @@ class CompletedStopClockEpochTests(unittest.TestCase):
             x=next(states)
             if isinstance(x,Exception):raise x
             return x
-        scope=dict(sample=sample,n=NS(latest_row={'generation':1,'process_pid':42}),result={'restored_stop':{'pass':True}},command=lambda v:calls.append(v),settle_native_body=lambda *a:({'pass':True}),deadline=100.)
+        scope=dict(process=NS(poll=lambda:None),body_pause_zero_required=body.body_pause_zero_required,sample=sample,n=NS(latest_row={'generation':1,'process_pid':42}),result={'restored_stop':{'pass':True}},command=lambda v:calls.append(v),settle_native_body=lambda *a:({'pass':True}),deadline=100.)
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'actual_stop_epoch_read','exec'),scope)
         self.assertEqual(scope['sample_after_qualified_stop']('restored_stop')['pose']['z'],.65)
         self.assertEqual(calls,[0.]);self.assertFalse(scope['result']['stationary_clock_rechecks'][0]['motion_commands_issued'])

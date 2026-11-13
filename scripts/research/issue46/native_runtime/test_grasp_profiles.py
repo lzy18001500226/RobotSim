@@ -28,6 +28,12 @@ class GraspProfileTests(unittest.TestCase):
             self.assertAlmostEqual(actual_base_yaw+waist,heading)
         self.assertAlmostEqual(heading,.9514027919586301)
 
+    def test_navigation_seed_records_commanded_plan_separately_from_achieved_pose(self):
+        profile=load_profiles()[10]
+        self.assertEqual(profile['preferred_approach_label'],'FAR_DIAGONAL_1')
+        self.assertEqual(len(profile['provenance']['navigation_plan_sha256']),64)
+        self.assertLess(profile['root_offset_from_object_xy_m'][1],-.25)
+
     def test_invalid_observation_is_rejected(self):
         for value in ([0.,0.],[0.,float('nan'),1.]):
             with self.assertRaises(ValueError):select_profile(value)

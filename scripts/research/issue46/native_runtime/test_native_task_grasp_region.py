@@ -267,3 +267,52 @@ class McTaskTranslationTests(unittest.TestCase):
         self.assertAlmostEqual(yaw,.02)
         cross,_=task.translation_corridor_error({"x":1.1,"y":0.,"yaw":0.},[0.,0.],[1.,0.],0.)
         self.assertAlmostEqual(cross,.1)
+
+
+class HeadingPhaseStopTests(unittest.TestCase):
+    def run_turn(self,outside=False):
+        import sys,threading
+        from pathlib import Path
+        from unittest.mock import MagicMock,patch
+        sys.path.insert(0,str(Path(task.__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation"))
+        clock={"now":10.};node=MagicMock();node.lock=threading.RLock()
+        node.moving=False;node.feedback_fault=None;node.trace=[];node.events=[];node.command_log=[]
+        node.latest_row={"generation":1,"actuators":{}}
+        poses=[(.84,-1.45,.51,0.,0.),(.84,-1.45,.51,0.,0.),
+               (1.01 if outside else .84256,-1.44216,.503,.19,.153),
+               (.84,-1.268,1.57,0.,0.)]
+        count=[0]
+        def sample():
+            clock["now"]+=.001;i=min(count[0],len(poses)-1);count[0]+=1
+            x,y,yaw,vx,vy=poses[i]
+            return {"body_status":100,"pose":{"x":x,"y":y,"yaw":yaw,"vx":vx,"vy":vy},
+                "sample_monotonic_s":clock["now"],"common_source":{"name":"robotsim_official_cmd_vel"},
+                "common_mode_desc":"LOCOMOTION_STEP","get_mode_desc":"LOCOMOTION_STEP",
+                "common_mode_status_value":100,"get_mode_status_value":100}
+        node.sample.side_effect=sample;node.observe.return_value={"pass":True}
+        cfg={"goal":[.84,-1.268,1.57],"effort_caps":{},"label":"turn_braking",
+             "maximum_excursion_m":.9,"point_goal":True,
+             "side_corridor_bounds":{"x":[.7,1.],"y":[-1.6,-.9]},
+             "outer_bounds":{"x":[.7,1.],"y":[-1.6,-.9],"yaw":[0.,1.9]}}
+        saved=[]
+        from scripts.research.issue46.native_runtime import far_observe_approach as far
+        helpers={name:getattr(far,name) for name in ('wrap','stopping_distance','side_corridor_boundary_reached','forward_table_plane_reached','forward_turn_command')}
+        with patch.dict(task.__dict__,{**helpers,"MICRO":{"task_region":cfg},"rclpy":MagicMock(),
+                "write_durable_milestone":lambda path,value:saved.append(value)}), \
+             patch.object(task.time,"monotonic",side_effect=lambda:clock["now"]), \
+             patch.object(task.time,"sleep",side_effect=lambda dt:clock.__setitem__("now",clock["now"]+dt)), \
+             patch("threading.Timer"):
+            task.run_region_navigation(node,None)
+        return saved[0]
+
+    def test_turning_sway_does_not_end_the_motion_before_heading_acquisition(self):
+        value=self.run_turn()
+        self.assertTrue(value['pass_result'],value['failure'])
+        self.assertEqual(value['trace'][0]['controller_state'],'align')
+        self.assertEqual(len(value['trace']),2)
+        self.assertNotIn('side_corridor_boundary_stop',value)
+
+    def test_actual_outer_boundary_still_stops_immediately_during_turn(self):
+        value=self.run_turn(outside=True)
+        self.assertEqual(len(value['trace']),1)
+        self.assertEqual(value['task_replan_pause']['reason'],'LEFT_CHECKED_OUTER_BOX')
