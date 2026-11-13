@@ -1308,12 +1308,26 @@ class ContinuousZeroStandStrategyTests(unittest.TestCase):
         for strategy,expected in (("ZERO_WINDOW_THEN_SD",["zero_window","sd"]),("EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC",["sd","zero_window"])):
             calls=[]
             n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertGreaterEqual(seconds,1.05),calls.append("zero_window")))
-            ns=dict(cfg={"delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
+            ns=dict(cfg={"motion_mode":"LOCOMOTION_STEP" if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC" else "LOCOMOTION_DEFAULT","delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
             exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_stop_strategy","exec"),ns)
             ns["stand_transition"]();self.assertEqual(calls,expected)
             self.assertNotIn("pass_result",ns["result"])
         self.assertIn('require_stop=True',code)
         self.assertIn('DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED',code)
+
+    def test_early_step_request_retains_zero_then_releases_only_owned_source(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        for mode,expected in (("LOCOMOTION_STEP",["sd","zero_window","disable"]),("LOCOMOTION_DEFAULT",["zero_window","disable","sd"])):
+            calls=[]
+            n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertEqual(seconds,1.05),calls.append("zero_window")),source_enabled=lambda enabled:(self.assertFalse(enabled),calls.append("disable")))
+            ns=dict(cfg={"motion_mode":mode,"release_source_on_stop":True,"delivery":{"stand_transition_strategy":"EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC","release_source_after_zero_window":True}},n=n,baseline={},result={})
+            exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_early_stop","exec"),ns)
+            ns["stand_transition"]();self.assertEqual(calls,expected)
+            self.assertNotIn("pass_result",ns["result"])
 
 class TerminalAisleClearanceTests(unittest.TestCase):
     def test_extension_is_terminal_heading_and_one_sided_not_a_larger_circle(self):
