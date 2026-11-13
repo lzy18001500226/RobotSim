@@ -9,9 +9,29 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','tracking_task_converged')]
         from scipy.optimize import least_squares
         cls.ns={'np':np,'least_squares':least_squares};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
+
+    def test_placement_continuation_rejects_half_radian_wrist_branch_jump(self):
+        bounds=np.array([[-2.,2.],[-1.,.061]])
+        seed=np.array([-.04,.04])
+        local=self.ns['placement_tracking_bounds'](bounds,seed,{'placement_active':True})
+        np.testing.assert_allclose(local,[[-.07,-.01],[.01,.061]])
+        self.assertFalse(local[0,0]<=-.526<=local[0,1])
+        np.testing.assert_array_equal(bounds,[[-2.,2.],[-1.,.061]])
+        np.testing.assert_array_equal(self.ns['placement_tracking_bounds'](bounds,seed,{}),bounds)
+        with self.assertRaises(RuntimeError):
+            self.ns['placement_tracking_bounds'](bounds,np.array([0.,.10]),{'placement_active':True})
+
+    def test_placement_keeps_valid_branch_without_weakening_task_gate(self):
+        fn=self.ns['tracking_task_converged'];phase={'placement_active':True}
+        # Recorded jump input: prior branch already met5mm/1degree task.
+        error=np.array([.003112824,0.,0.,.001638606,0.,0.])
+        self.assertTrue(fn(error,.005,.2*np.sin(np.deg2rad(1.)/2.),phase))
+        self.assertFalse(fn(error,.005,.2*np.sin(np.deg2rad(1.)/2.),None))
+        for p,a in ((.0051,0.),(0.,.00175)):
+            self.assertFalse(fn(np.array([p,0.,0.,a,0.,0.]),.005,.2*np.sin(np.deg2rad(1.)/2.),phase))
 
     def test_task_feasibility_finds_both_gates_without_relaxing_limits(self):
         # Minimum total squared error exceeds the axis gate, despite a

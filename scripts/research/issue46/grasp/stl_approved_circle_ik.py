@@ -411,6 +411,32 @@ def carry_tracking_bounds(bounds,names,phase):
     return result
 
 
+def placement_tracking_bounds(bounds, seed, phase):
+    """Keep each placement solve in the preceding IK branch's local domain.
+
+    Reuse the existing Newton update radius (0.03rad) as the whole solve's
+    trust region. A global refinement must not jump across redundant wrist
+    branches. Source bounds and measured physical gates remain unchanged.
+    """
+    result=np.asarray(bounds,dtype=float).copy()
+    if phase is not None and phase.get('placement_active'):
+        origin=np.asarray(seed,dtype=float)
+        if origin.shape!=result[:,0].shape or not np.isfinite(origin).all():raise ValueError('invalid placement continuation seed')
+        result[:,0]=np.maximum(result[:,0],origin-.03)
+        result[:,1]=np.minimum(result[:,1],origin+.03)
+        if np.any(result[:,1]<=result[:,0]+.002):raise RuntimeError('PLACEMENT_CONTINUATION_OUTSIDE_SOURCE_BOUNDS')
+    return result
+
+
+def tracking_task_converged(error, position_limit, axis_limit, phase):
+    # Do not leave a valid placement branch merely to chase a much tighter
+    # numerical optimum than the already approved Cartesian/axis task gates.
+    placement=phase is not None and phase.get('placement_active')
+    p=.95*position_limit if placement else 1e-4
+    a=.95*axis_limit if placement else 1e-4
+    return np.linalg.norm(error[:3])<p and np.linalg.norm(error[3:])<a
+
+
 def refine_task_feasibility(residual, jacobian, seed, bounds, position_limit, axis_limit):
     """Find the intersection of the two task gates, not their L2 compromise.
 
@@ -459,6 +485,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         if not .01<=tracking_margin<=.03:raise ValueError("invalid inward planning reserve")
         bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference),margin=tracking_margin)
     bounds=carry_tracking_bounds(bounds,ik.ARM,phase)
+    bounds=placement_tracking_bounds(bounds,seed,phase)
     position_limit=.001;axis_limit=.001;weights=np.ones(6)
     if phase is not None and phase.get('placement_active'):
         request=phase['placement_request'];position_limit=float(request.get('placement_position_tolerance_m',.001));angle=float(request.get('placement_axis_tolerance_rad',2.*np.arcsin(.005)))
@@ -467,7 +494,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
-        if np.linalg.norm(error[:3])<1e-4 and np.linalg.norm(error[3:])<1e-4:break
+        if tracking_task_converged(error,position_limit,axis_limit,phase):break
         J=jacobian(q)*weights[:,None]
         dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error*weights)
         if phase is not None and phase.get("phase")=="CARRY_HOLD" and not phase.get("placement_active") and phase.get("carry_nominal_right_arm_rad") is not None:
