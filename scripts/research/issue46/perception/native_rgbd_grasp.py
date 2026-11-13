@@ -101,7 +101,7 @@ def vertical_component(mask, *, world_height=None):
     retains the old aspect rule for callers without calibrated geometry.
     """
 
-    from scipy.ndimage import label,find_objects
+    from scipy.ndimage import label,find_objects,binary_erosion
     labels,count=label(mask);sizes=np.bincount(labels.reshape(-1));best=None
     for index,bounds in enumerate(find_objects(labels),1):
         if bounds is None or sizes[index]<50:continue
@@ -111,8 +111,14 @@ def vertical_component(mask, *, world_height=None):
             score=float(sizes[index])*min(aspect/3.5,3.5/aspect)
         else:
             values=world_height[labels==index]
-            if not np.isfinite(values).all() or float(np.quantile(values,.98)-np.quantile(values,.02))<.06:continue
-            score=float(sizes[index])
+            if not np.isfinite(values).all():continue
+            # Qualify the same interior depth that the cylinder fit consumes.
+            # RGB antialiasing along floor/foreground boundaries can carry a
+            # different surface depth and falsely give a flat floor height.
+            interior=binary_erosion(labels==index)
+            values=world_height[interior]
+            if len(values)<20 or float(np.quantile(values,.98)-np.quantile(values,.02))<.06:continue
+            score=float(len(values))
         info={'pixel_count':float(sizes[index]),'bbox_xyxy':[xs.start,ys.start,xs.stop,ys.stop],'bbox_width_px':float(width),'bbox_height_px':float(height),'vertical_aspect':float(aspect),'score':score}
         if best is None or score>best[1]['score']:best=(labels==index,info)
     return best

@@ -25,6 +25,18 @@ class GravityComponentTest(unittest.TestCase):
         self.assertIsNone(vertical_component(mask))
         height[3:15,3:13]=.6
         self.assertIsNone(vertical_component(mask,world_height=height))
+    def test_mixed_boundary_depth_cannot_make_blue_floor_beat_bottle(self):
+        from scipy.ndimage import binary_erosion
+        from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
+        mask=np.zeros((70,90),dtype=bool);height=np.zeros(mask.shape)
+        mask[3:25,3:14]=True
+        height[3:25,3:14]=np.linspace(.55,.77,22)[:,None]
+        floor=np.zeros_like(mask);floor[35:69,1:89]=True
+        mask|=floor;height[floor]=.002
+        height[floor&~binary_erosion(floor)]=.25
+        result=vertical_component(mask,world_height=height)
+        self.assertEqual(result[1]['bbox_xyxy'],[3,3,14,25])
+
     def test_nonfinite_height_cannot_qualify(self):
         from scripts.research.issue46.perception.native_rgbd_grasp import vertical_component
         mask=np.ones((12,10),dtype=bool);height=np.linspace(0,.2,120).reshape(mask.shape);height[0,0]=np.nan
