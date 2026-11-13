@@ -1117,7 +1117,10 @@ class Plan(Node):
     for name in WAIST:
      x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1])
      if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK:
-      limits=SOURCE_LIMITS[name];j=self.native_row['joints'][name];x.position=position_mode_setpoint(float(target[name]),float(j['q']),float(j['qvel']),float(j['bias_force']),x.stiffness,x.damping,(*limits,13.088) if len(limits)==2 else limits,120. if name=='waist_yaw_joint' else 36.)
+      limits=SOURCE_LIMITS[name];j=self.native_row['joints'][name]
+      returning=stage=='CARRY_HOLD' and getattr(self,'carry_waist_return_started',None) is not None
+      try:x.position=position_mode_setpoint(float(target[name]),float(j['q']),float(j['qvel']),float(j['bias_force']),x.stiffness,x.damping,(*limits,13.088) if len(limits)==2 else limits,120. if name=='waist_yaw_joint' else 36.,bound_effort=returning)
+      except RuntimeError as exc:raise RuntimeError(str(exc)+':'+json.dumps(dict(joint=name,stage=stage,desired=target[name],actual=j['q'],velocity=j['qvel'],bias=j['bias_force'],kp=x.stiffness,kd=x.damping,limits=limits,bounded_return=returning))) from exc
      published_positions[name]=float(x.position);w.joints.append(x)
     self.waist_pub.publish(w)
    if hand_right is not None:

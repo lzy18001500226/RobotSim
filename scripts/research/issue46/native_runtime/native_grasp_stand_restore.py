@@ -163,7 +163,7 @@ def restore_postured_hold(run,container,environment,output,ready,result):
     while time.monotonic()<deadline:
         row=read_fresh_native_row(output/'native_latest.json')
         health=json.loads((output/'carry_heartbeat.json').read_text())
-        if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH')
+        if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH:'+json.dumps({k:health.get(k) for k in ('mode','healthy','failure','pid','generation','host_monotonic_ns')}))
         if not waist_rows or row['host_monotonic_ns']>waist_rows[-1]['host_monotonic_ns']:waist_rows.append(row)
         path=output/'carry_waist_return_feedback.json'
         if path.exists():

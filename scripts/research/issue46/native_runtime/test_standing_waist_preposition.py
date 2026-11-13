@@ -161,6 +161,22 @@ class DiagnosticLoggingOverlayTests(unittest.TestCase):
 
 
 class CompiledTorqueBoundedCarryTests(unittest.TestCase):
+    def test_carry_waist_return_keeps_compensated_command_inside_source(self):
+        desired=-.040522104079530365;actual=-.0022561466047521417
+        velocity=-.04064235227903323;bias=-11.047490860621085
+        limits=(-.314,.314,13.088);kp=40.;kd=5.
+        with self.assertRaises(RuntimeError):
+            w.position_mode_setpoint(desired,actual,velocity,bias,kp,kd,limits,36.)
+        command=w.position_mode_setpoint(desired,actual,velocity,bias,kp,kd,limits,36.,bound_effort=True)
+        self.assertGreaterEqual(command,limits[0]+.001)
+        self.assertLessEqual(command,limits[1]-.001)
+        self.assertLessEqual(abs(kp*(command-actual)-kd*velocity),36.)
+        self.assertEqual(actual,-.0022561466047521417)
+        for bad in (-.315,.315):
+            with self.assertRaises(RuntimeError):
+                w.position_mode_setpoint(bad,actual,velocity,bias,kp,kd,limits,36.,bound_effort=True)
+
+
     def test_frozen_wrist_cap_bounds_command_without_qpos_clamp(self):
         desired=-.171;actual=-.138;velocity=2.035;bias=-.761;kp=30.;kd=1.;limits=(-.523599,.523599,10.472)
         command=w.position_mode_setpoint(desired,actual,velocity,bias,kp,kd,limits,2.2,bound_effort=True)
