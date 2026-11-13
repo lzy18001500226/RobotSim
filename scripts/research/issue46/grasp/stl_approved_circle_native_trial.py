@@ -318,6 +318,7 @@ def main():
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
             if args.grasp_only or args.far_observe_approach:command.append("--source-arm-planning-range")
+            if args.fast_task_timing and args.task_grasp_region:command.append("--torso-relative-retract")
             if host_model_cache:command.extend(['--host-model-cache',str(host_model_cache)])
             if args.reuse_verified_grasp_plan:
                 reuse=verified_grasp_reuse(args.reuse_verified_grasp_plan)

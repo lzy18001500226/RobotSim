@@ -550,6 +550,14 @@ def track_native(reference_path, latest_path, output_path):
         output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
 
 
+def torso_horizontal_retract(rotation):
+    """One operational tool translation in torso heading, unchanged mechanics."""
+    matrix=np.asarray(rotation,dtype=float).reshape(3,3)
+    if not np.isfinite(matrix).all() or not np.allclose(matrix.T@matrix,np.eye(3),atol=1e-5):raise ValueError("valid torso rotation required")
+    yaw=float(np.arctan2(matrix[1,0],matrix[0,0]))
+    return Rotation.from_euler("z",yaw).as_matrix()@np.array([-.16,-.12,0.])
+
+
 def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None,normal_margin=1.5,left_roll_bounds=None):
     import copy
     for row in rows:
@@ -566,7 +574,13 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
             lifted=copy.deepcopy(state)
             lifted['object_pose_world']['xyz_m']=(np.asarray(state['object_pose_world']['xyz_m'])+[0.,0.,.06]).tolist()
             retract_seed=np.r_[lift_seed[:2],task_lift['samples'][-1]['right_arm_rad']]
-            retreat=screen_retract(model,lifted,retract_seed,opening,center,object_center+[0.,0.,.06],retract_offset,local_axis,left_roll_bounds=left_roll_bounds)
+            effective_offset=retract_offset
+            if state.get("torso_relative_retract"):
+                data=mujoco.MjData(model);ik.set_pose(model,data,lifted,retract_seed,np.zeros(3),0.,opening,np.zeros(3))
+                torso=ik.native.bid(model,"torso_link")
+                effective_offset=torso_horizontal_retract(data.xmat[torso])
+            retreat=screen_retract(model,lifted,retract_seed,opening,center,object_center+[0.,0.,.06],effective_offset,local_axis,left_roll_bounds=left_roll_bounds)
+            if state.get("torso_relative_retract"):retreat["translation_policy"]={"frame":"CURRENT_TORSO_HEADING_WORLD_Z_UP","offset_m":[-.16,-.12,0.],"additional_wrist_rotation":False}
             task_lift['retract_preflight']=retreat
             candidate_row['gates']['POST_LIFT_RETRACT_SWEEP']='PASS' if retreat['pass_result'] else 'FAIL'
             candidate_row['pass']=bool(retreat['pass_result'])
@@ -724,6 +738,7 @@ def main():
     parser.add_argument("--optimize-waist-posture",action="store_true",help="coupled source-bounded waist yaw/pitch and arm solve; requires coordinated physical handoff if executed")
     parser.add_argument("--full-source-posture-diagnostic",action="store_true",help="offline only: distinguish the solver trust region from actual source joint limits; no runtime handoff")
     parser.add_argument("--source-arm-planning-range",action="store_true",help="use unchanged full source arm ranges for this task search; no source or tracking limit changes")
+    parser.add_argument("--torso-relative-retract",action="store_true",help="same source-bounded tool retreat in actual torso heading, no extra wrist rotation")
     args = parser.parse_args()
     if args.carry_left_roll_source_range is not None and (not args.physical_lift_test or args.post_lift_retract_world_m is None):raise ValueError("left carry park requires screened physical lift/retract")
     if args.full_source_posture_diagnostic and (not args.optimize_waist_posture or args.runtime_handoff):raise ValueError('full-source diagnostic is offline only and requires the coupled posture solver')
@@ -734,6 +749,7 @@ def main():
     if base_offset.shape!=(3,) or not np.isfinite(base_offset).all(): raise ValueError("base offset must be finite")
     state=json.loads(json.dumps(state))
     state["source_arm_planning_range"]=args.source_arm_planning_range
+    state["torso_relative_retract"]=args.torso_relative_retract
     state["base_pose_world"]["xyz_m"]=(np.asarray(state["base_pose_world"]["xyz_m"])+base_offset).tolist()
     samples = scene["circle_review"]["samples"]
     if scene["circle_review"]["classification"] != "STATIC_VARIABLE_DIAMETER_SUPPORT_CIRCLE_REVIEW_ONLY":

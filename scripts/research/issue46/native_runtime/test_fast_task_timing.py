@@ -108,10 +108,19 @@ class ActualTerminalCommandPipelineTests(unittest.TestCase):
         output=ControllerOutput(NavState.DRIVE,.2,.46,.3,.1)
         script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
         tree=ast.parse(script)
-        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=="loaded_delivery_terminal_command" for statement in n.body for x in ast.walk(statement)))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(st,ast.Assign) and isinstance(st.value,ast.Call) and isinstance(st.value.func,ast.Name) and st.value.func.id=="loaded_delivery_terminal_command" for st in n.body))
         ns=dict(mission={"phase":"DELIVERY"},cfg={"delivery":{"loaded_terminal_slowdown":True}},p={"x":.212,"y":.751},goal=[.015,.98],forward=.2,angular=output.angular_z,loaded_delivery_terminal_command=micro.loaded_delivery_terminal_command)
         exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_generated_terminal_command","exec"),ns)
         self.assertEqual((ns["forward"],ns["angular"]),(.12,.30));self.assertEqual(output.angular_z,.46)
         self.assertNotIn("forward,output.angular_z=",script)
         self.assertGreater(script.index("forward,angular=loaded_delivery_terminal_command"),script.index('forward=float(cfg["delivery"].get("delivery_forward_command_m_s"'))
+class TorsoRelativeCarryTests(unittest.TestCase):
+    def test_same_relative_motion_rotates_with_body_and_never_adds_vertical_or_wrist_command(self):
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import torso_horizontal_retract
+        for yaw in (0.,.8,1.4):
+            R=Rotation.from_euler("z",yaw).as_matrix();v=torso_horizontal_retract(R)
+            np.testing.assert_allclose(R.T@v,[-.16,-.12,0.],atol=1e-12)
+            self.assertAlmostEqual(np.linalg.norm(v),.20);self.assertEqual(v[2],0.)
 if __name__=="__main__":unittest.main()
