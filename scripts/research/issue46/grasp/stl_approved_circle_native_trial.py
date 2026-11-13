@@ -117,6 +117,7 @@ def main():
     p.add_argument("--far-observe-approach",action="store_true")
     p.add_argument("--lateral-motion-direction",choices=("left","right"));p.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference")
     p.add_argument("--grasp-only",action="store_true")
+    p.add_argument("--fast-task-timing",action="store_true")
     p.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.))
     p.add_argument("--native-multiccd",action="store_true",help="separate SIMULATION_ONLY native337 contact-manifold comparison; no geometry/material/gain change")
     p.add_argument("--body-height-probe-drop-m",type=float,choices=(.03,.10,.13))
@@ -511,6 +512,9 @@ def main():
     if args.execute_pickup_navigation:argv.append("--execute-pickup-navigation")
     if args.lateral_motion_direction:argv.extend(["--lateral-motion-direction",args.lateral_motion_direction,"--lateral-motion-profile",args.lateral_motion_profile])
     if args.grasp_only:argv.append("--grasp-only")
+    if args.fast_task_timing:
+        if not args.task_grasp_region or args.bottle_height_m!=.22:raise ValueError("fast timing task scope")
+        argv.append("--fast-task-timing")
     if args.far_observe_approach:argv.append("--far-observe-approach")
     if args.body_height_probe_drop_m is not None:
         argv.extend(["--body-height-probe-drop-m",str(args.body_height_probe_drop_m),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
@@ -551,7 +555,7 @@ def main():
         if args.carry_reverse_moving_arc:argv.append('--carry-reverse-moving-arc')
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
-        argv[argv.index('--hal-hand-close-hold-s')+1]='5'
+        argv[argv.index('--hal-hand-close-hold-s')+1]='2' if args.fast_task_timing else '5'
     if args.visual_stance_adjustment:
         if not args.execute_pickup_navigation or host_model_cache is None or args.target_source!='fresh-rgbd-snapshot':raise ValueError('sensor-only stance requires current RGBD/cache and START navigation')
         from scripts.research.issue46.native_runtime.native_visual_stance import reference_contract

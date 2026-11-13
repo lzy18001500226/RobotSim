@@ -37,6 +37,17 @@ class FarApproachTests(unittest.TestCase):
         a=next(p[0] for p in far if p[1]=="FAR_DIAGONAL_0")
         b=next(p[0] for p in near if p[1]=="FAR_DIAGONAL_0")
         np.testing.assert_allclose(a,b,atol=1e-12)
+    def test_candidate_final_yaw_is_not_forced_to_instantaneous_travel_bearing(self):
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+        anchor=np.array([.86,-1.47]);root=np.array([.892,-1.454]);yaw=.597
+        candidates=stance_proposals(anchor,root,yaw,[1.427,-.995,.657])
+        old=next(x for x in candidates if x[1]=="FAR_DIAGONAL_1")
+        new=next(x for x in candidates if x[1]=="FAR_DIAGONAL_1_CURRENT_HEADING")
+        target_old=old[0]-Rotation.from_euler("z",old[2]-yaw).as_matrix()[:2,:2]@(anchor-root)
+        target_new=new[0]-(anchor-root)
+        np.testing.assert_allclose(target_old,target_new,atol=1e-12)
+        self.assertEqual(new[2],yaw);self.assertGreater(abs(old[2]-yaw),.5)
     def test_mode_ack_cannot_replace_applied_mode_and_source(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import locomotion_source_observed
         row={"common_source":{"name":"robotsim_official_cmd_vel"},"common_mode_desc":"LOCOMOTION_STEP","get_mode_desc":"STAND_DEFAULT","common_mode_status_value":100,"get_mode_status_value":100}

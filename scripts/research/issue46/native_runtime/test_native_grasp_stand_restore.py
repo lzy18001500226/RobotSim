@@ -48,10 +48,21 @@ class WaistHandoffTests(unittest.TestCase):
             self.assertEqual(self.sent[-1].joints[0].position,endpoint)
         self.assertEqual(len(self.sent),2)
 
+    def test_actual_pitch_limit_endpoint_is_forwarded_exactly_after_handoff(self):
+        # Exact failed arithmetic from the physical carry attempt.
+        self.owner.mc_waist_blend_from["waist_pitch_joint"]=0.02030692677861748
+        self.assertLess(0.02030692677861748+(-.314-0.02030692677861748),-.314)
+        restore.LIFT_CONTRACT["retract_preflight"]["source_motion_limits"]["waist_pitch_joint"]=(-.314,.314,13.088)
+        pitch=next(j for j in self.message.joints if j.name=="waist_pitch_joint")
+        pitch.position=-.314
+        with patch('time.monotonic',return_value=14.):restore.receive_native_waist(self.owner,self.message)
+        actual=next(j.position for j in self.sent[-1].joints if j.name=="waist_pitch_joint")
+        self.assertEqual(actual,-.314)
+        self.assertEqual(actual.hex(),(-.314).hex())
     def test_wall_clock_rollback_accepts_fresh_new_epoch_packet(self):
         walls=iter((1100000000,981000000))
         self.owner.get_clock=lambda:S(now=lambda:S(nanoseconds=next(walls)))
-        with patch('time.monotonic_ns',side_effect=[10000000000,10000001000,10010000000,10010001000]),patch('time.monotonic',return_value=14.):
+        with patch('time.monotonic_ns',side_effect=[9999999000,10000000000,10000001000,10000002000,10000003000,10000004000,10009999000,10010000000,10010001000,10010002000,10010003000,10010004000]),patch('time.monotonic',return_value=14.):
             restore.receive_native_waist(self.owner,self.message)
             self.message.header.stamp.sec=0;self.message.header.stamp.nanosec=980000000
             restore.receive_native_waist(self.owner,self.message)

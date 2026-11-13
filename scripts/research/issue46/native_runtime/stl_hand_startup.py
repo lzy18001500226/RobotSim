@@ -772,6 +772,22 @@ def validate_pregrasp_segments(start, goal, staging):
     return maxima
 
 
+def await_prelift_contact(node, target, hand_command, close_start, required_normal_force_n, budget_s, contact_reader=None):
+    """Continue the same force-guided closure only until the existing gate passes."""
+    import time
+    if budget_s not in (0.,1.):raise ValueError("unreviewed contact qualification budget")
+    reader=native_bilateral_contact if contact_reader is None else contact_reader
+    node.closure_ramp_complete=True
+    started=time.monotonic();attempts=0
+    while True:
+        contact=reader(close_start,minimum_normal_force_n=required_normal_force_n)
+        if contact['pass'] or time.monotonic()-started>=budget_s:
+            return {**contact,'additional_qualification_wall_s':time.monotonic()-started,'qualification_send_calls':attempts,'additional_budget_s':budget_s}
+        # The original send() still checks freshness, source limits, effort,
+        # unintended contacts and bottle displacement on every control cycle.
+        node.send(target,.04,'HAND_CLOSE_HOLD',hand_command);attempts+=1
+
+
 def build_hal_bilateral_arm_plan_script(
     gains: dict[str, tuple[float, float]],
     right_target: list[float],
@@ -793,6 +809,7 @@ def build_hal_bilateral_arm_plan_script(
     enable_measured_correction: bool = False,
     enable_single_residual_feedforward: bool = False,
     lift_contract: dict | None = None,
+    contact_settle_budget_s: float = 0.,
 ) -> str:
     """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
 
@@ -802,6 +819,7 @@ def build_hal_bilateral_arm_plan_script(
     explicitly labeled simulation-only alternative to ROS source timestamps.
     Source geometry, gains, limits and leg control remain unchanged.
     """
+    if contact_settle_budget_s not in (0.,1.):raise ValueError("contact qualification budget")
     if not math.isfinite(hand_open_command) or not 0. <= hand_open_command <= 1.:raise ValueError("opening outside source range")
     arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
     waist_names = ("waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint")
@@ -1105,7 +1123,7 @@ class Plan(Node):
     commanded_hand=float(hand_right)
     if LIFT_CONTRACT is not None and stage in ('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      now=time.monotonic();probe=float(LIFT_CONTRACT['contact_command'])
-     if stage=='HAND_CLOSE_HOLD' and now-start<=1.5:
+     if stage=='HAND_CLOSE_HOLD' and now-start<=1.5 and not getattr(self,'closure_ramp_complete',False):
       u=min(1.,(now-start)/1.5);u=3*u*u-2*u*u*u
       self.grip_command=HAND_OPEN+u*(probe-HAND_OPEN)
      else:
@@ -1248,7 +1266,7 @@ try:
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
   if LIFT_CONTRACT is not None:
    close_start=min(x['host_monotonic_s'] for x in n.trace if x['stage']=='HAND_CLOSE_HOLD')
-   contact=native_bilateral_contact(close_start,minimum_normal_force_n=float(LIFT_CONTRACT['required_normal_force_n']))
+   contact=await_prelift_contact(n,goal,HAND_RIGHT,close_start,float(LIFT_CONTRACT['required_normal_force_n']),__CONTACT_SETTLE_BUDGET__)
    print(json.dumps({'prelift_bilateral_contact':contact}),flush=True)
    if not contact['pass']:raise RuntimeError('LIFT_GATED_NO_SUSTAINED_BILATERAL_CONTACT')
    n.refresh_native();grasped_position=list(n.native_row['bodies']['test_cylinder']['position_m'])
@@ -1306,9 +1324,11 @@ finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+    script=script.replace("__CONTACT_SETTLE_BUDGET__",repr(float(contact_settle_budget_s)))
     if lift_contract:
         import inspect
         script=inspect.getsource(hold_native_simulation)+"\n"+script
+        script=inspect.getsource(await_prelift_contact)+"\n"+script
     import inspect
     from scripts.research.issue46.native_runtime.stl_hand_startup import validate_pregrasp_segments
     script=inspect.getsource(validate_pregrasp_segments)+"\n"+script

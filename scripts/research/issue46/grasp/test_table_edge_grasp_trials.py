@@ -51,4 +51,16 @@ class ActivationVelocityTests(unittest.TestCase):
     def test_zero_position_error_remains_zero(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import body_translation_velocity
         self.assertEqual(body_translation_velocity({"x":0.,"y":0.,"yaw":0.},[0.,0.],minimum_speed=.12),(0.,0.,0.))
+class CommonTransferAcceptanceTests(unittest.TestCase):
+    def test_grasp_hold_alone_cannot_qualify_common_transfer(self):
+        from scripts.research.issue46.grasp.table_edge_grasp_trials import summarize_transfer
+        d=GraspAcceptanceTests().sample()
+        r=summarize_transfer(d)
+        self.assertNotEqual(r["full_transfer"],"PASS")
+        self.assertIn("independent_table_support_s",r["missing_evidence"])
+    def test_missing_place_measurements_fail_even_with_all_green_stage_labels(self):
+        from scripts.research.issue46.grasp.table_edge_grasp_trials import summarize_transfer
+        from scripts.research.issue46.grasp.table_edge_grid_trials import REQUIRED_GATES
+        d=GraspAcceptanceTests().sample();d["gates"].update(dict.fromkeys(REQUIRED_GATES,"PASS"));d["table_placement"]={"pass_result":True}
+        self.assertNotEqual(summarize_transfer(d)["full_transfer"],"PASS")
 if __name__=="__main__":unittest.main()

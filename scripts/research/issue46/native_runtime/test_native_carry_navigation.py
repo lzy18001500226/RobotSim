@@ -1169,13 +1169,13 @@ class SourceReleaseProtocolTests(unittest.TestCase):
 class FunctionalDockHeadingTests(unittest.TestCase):
     def test_task_heading_retains_legacy_diagnostic_and_physical_stop(self):
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
-        tree=ast.parse(code)
-        statement=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='yaw_limit')
-        expr=compile(ast.Expression(body=statement.value),'actual_task_heading','eval')
-        self.assertEqual(eval(expr,{'cfg':{'delivery':{}}}),.12)
-        self.assertEqual(eval(expr,{'cfg':{'delivery':{'approach_task_yaw_tolerance_rad':.30}}}),.30)
-        self.assertTrue('requires_actual_placement_ik_before_arm_motion=yaw_limit>.12' in code)
-        self.assertTrue('result["post_stop_composite"]["pass"]' in code)
+        self.assertEqual(m.delivery_heading_acceptance({},.10)["task_tolerance_rad"],.12)
+        task=m.delivery_heading_acceptance({"approach_task_yaw_tolerance_rad":.30},.25)
+        self.assertTrue(task["pass"])
+        self.assertFalse(task["legacy_yaw012_pass"])
+        self.assertTrue(task["requires_actual_placement_ik_before_arm_motion"])
+        self.assertIn('heading_acceptance=delivery_heading_acceptance(cfg["delivery"],yaw_error)',code)
+        self.assertIn('result["post_stop_composite"]["pass"]',code)
 
 class DirectRetreatSupportEvidenceTests(unittest.TestCase):
     def test_delivery_records_actual_feet_without_gait_preparation(self):

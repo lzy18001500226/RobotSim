@@ -1195,8 +1195,9 @@ def start_runtime_rl_debug_capture(container,environment,output,args,result):
         result["mc_rl_debug_capture"]["actual_typed_packet_observed"]=True
 
 
-def qualify_static_carry_hold(output, ready):
-    """Eight actual simulation seconds before locomotion, with a 12s wall cap."""
+def qualify_static_carry_hold(output, ready, *, minimum_sim_s=8.):
+    """Actual load-bearing simulation window; source/contact gates unchanged."""
+    if minimum_sim_s not in (2.,8.):raise ValueError("unreviewed carry hold duration")
     from scripts.research.issue46.native_runtime import native_grasp_audit
     first=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
     until=time.monotonic()+12.;unique=set();begin=time.monotonic()
@@ -1207,8 +1208,8 @@ def qualify_static_carry_hold(output, ready):
         if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or row["generation"]!=ready["generation"] or health.get("generation")!=ready["generation"] or health.get("pid")!=ready["pid"] or health.get("healthy") is not True or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
             raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}))
         unique.add(row["host_monotonic_ns"])
-        if row["sim_time_s"]-first["sim_time_s"]>=8. and len(unique)>=25:
-            return {"pass":True,"classification":"EIGHT_SIM_SECONDS_LOAD_BEARING_HOLD","sim_span_s":row["sim_time_s"]-first["sim_time_s"],"host_span_s":time.monotonic()-begin,"unique_native_samples":len(unique)}
+        if row["sim_time_s"]-first["sim_time_s"]>=minimum_sim_s and len(unique)>=25:
+            return {"pass":True,"classification":"EIGHT_SIM_SECONDS_LOAD_BEARING_HOLD" if minimum_sim_s==8. else "TWO_SIM_SECONDS_LOAD_BEARING_HOLD","required_sim_span_s":minimum_sim_s,"sim_span_s":row["sim_time_s"]-first["sim_time_s"],"host_span_s":time.monotonic()-begin,"unique_native_samples":len(unique)}
         time.sleep(.02)
     raise RuntimeError("CARRY_STATIC_HOLD_INCOMPLETE")
 
@@ -1239,7 +1240,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     result["gates"]["HAL_PHYSICAL_LIFT"]="PASS"
     result["gates"]["POST_LIFT_RETRACT"]="PASS"
     result["measured_lift_handoff_proof"]={"path":str(ready_path),"sha256":sha256(ready_path),"generation":ready["generation"],"controller_pid":ready["pid"]}
-    result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
+    result["task_timing_profile"]={"classification":"RESEARCH_FAST_TIMING" if getattr(args,"fast_task_timing",False) else "HISTORICAL_DIAGNOSTIC_TIMING","close_target_s":getattr(args,"hal_hand_close_hold_s",None),"load_bearing_hold_sim_s":2. if getattr(args,"fast_task_timing",False) else 8.,"physical_gates_changed":False}
+    result["carry_static_hold"]=qualify_static_carry_hold(output,ready,minimum_sim_s=2. if getattr(args,"fast_task_timing",False) else 8.)
     if getattr(args,"grasp_only",False):
         result["gates"]["GRASP_ONLY_STATIC_HOLD"]="PASS"
         result["experiment_scope"]="REAL_GRASP_LIFT_RETRACT_HOLD_NO_TRANSFER"
@@ -1253,7 +1255,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         from scripts.research.issue46.native_runtime.native_grasp_stand_restore import restore_postured_hold
         result["postured_standing_restore"]=restore_postured_hold(run,container,environment,output,ready,result)
         result["gates"]["HELD_NATIVE_STAND_RESTORE"]="PASS"
-        result["postrestore_carry_static_hold"]=qualify_static_carry_hold(output,ready)
+        result["postrestore_carry_static_hold"]=qualify_static_carry_hold(output,ready,minimum_sim_s=2. if getattr(args,"fast_task_timing",False) else 8.)
         from scripts.research.issue46.native_runtime.native_grasp_stand_restore import screen_measured_route
         result["restored_carry_route_preflight"]=screen_measured_route(args,output,replan_record,"restored_route_snapshot")
         result["gates"]["RESTORED_CARRY_ROUTE_PREFLIGHT"]="PASS"
@@ -1499,6 +1501,7 @@ def main() -> None:
     parser.add_argument('--motion-calibration-input-sha256')
     parser.add_argument("--task-grasp-region",action="store_true")
     parser.add_argument("--far-observe-approach",action="store_true")
+    parser.add_argument("--fast-task-timing",action="store_true",help="2s closure target and2sim-second measured hold, unchanged physical gates")
     parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference")
     parser.add_argument("--grasp-only",action="store_true",help="stop existing owner after physical grasp, retract and static hold; no carry route")
     parser.add_argument("--task-region-host-cache",type=Path)
@@ -2733,7 +2736,7 @@ def main() -> None:
                                     replan_record['lift_preflight']['retract_preflight']['carry_retention_only']=args.carry_retention_only
                                     if restoring_carry:replan_record['lift_preflight']['retract_preflight']['carry_pose_frame']='PELVIS_RIGID'
                                     if restoring_carry:replan_record['lift_preflight']['retract_preflight']['postured_native_stand_restore']=True
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"approach_staging":replan_record.get("approach_staging"),"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist or args.standing_grasp_posture is not None,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"approach_staging":replan_record.get("approach_staging"),"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist or args.standing_grasp_posture is not None,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None,contact_settle_budget_s=1. if args.fast_task_timing else 0.))
                             if restoring_carry:
                                 from scripts.research.issue46.native_runtime.native_grasp_stand_restore import extend_existing_owner
                                 owner=output/"native_hal_bilateral_arm_pregrasp.py"

@@ -67,7 +67,7 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
         return native, rgb, observation
     raise RuntimeError("TASK_RGBD_ACQUISITION_TIMEOUT")
 
-def task_route_profile(profile):
+def task_route_profile(profile, *, fast_task_timing=False):
     """Select the short checked turn; preserve every physical/control bound."""
     import copy
     result = copy.deepcopy(profile)
@@ -81,12 +81,34 @@ def task_route_profile(profile):
     # region. Reuse the existing measured-braking predictor; actual-pose
     # placement IK, 12deg tilt and all physical stop gates remain mandatory.
     result["stop_inside_functional_arrival_region"] = False
+    if fast_task_timing:
+        # Existing supported stop sequence: retain active zero commands for
+        # the full window before relinquishing our own input source.
+        result["release_source_after_zero_window"]=True
+        # Loaded CCW forward arcs at the measured south-wall start drifted
+        # into the wall-side workspace. Reuse the physically successful
+        # clockwise/pure-yaw prefix; actual-pose route screening remains required.
+        result["delivery_turn_direction"]="CLOCKWISE"
+        result["turn_translation_strategy"]="PURE_YAW"
+        # Actual stopped pose with13.5deg nominal heading error passed the
+        # original full-model placement IK and collision screen. Keep15cm XY;
+        # handoff only after a new physical stop and actual-pose placement IK.
+        result["stop_inside_functional_arrival_region"]=True
+        result["approach_task_position_tolerance_m"]=.15
+        result["approach_task_yaw_tolerance_rad"]=.30
+        result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
+        # Measured transit stopped at31deg bearing error with positive forward
+        # progress; use the existing simultaneous DRIVE steering inside43deg.
+        # Larger errors still stop; actual environment/contact/velocity gates stay.
+        result["delivery_align_reentry_rad"]=.75
 
     result["task_turn_selection"] = {
         "classification": "TASK_COLLISION_CHECKED_FORWARD_ARC_NOT_MC_RETUNING",
         "evidence": "reviews/issue-46/x2-table-edge-task-20261111T145311Z/carry_radius333_arc_static.json",
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
+    if fast_task_timing:
+        result["task_turn_selection"].update(classification="MEASURED_WALL_SIDE_AVOIDANCE_REUSE_CW_PREFIX",evidence="reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261111T004845Z; fast-unified-grasp-transfer-20261113T041413Z/measured_turn_origin_static_direction_comparison.json")
     return result
 
 
@@ -120,7 +142,7 @@ def reference_contract(*,far_observe=False):
             "task_translation_position_tolerance_m": .06,
             "mechanical_changes": False}
     if far_observe:
-        result.update(schema="robotsim.rgbd-task-grasp-region.v11",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.80,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
+        result.update(schema="robotsim.rgbd-task-grasp-region.v12",early_forearm_clearance_recovery=True,compact_forearm_target_rad=-2.25,forward_bend_fallback_rad=.29,short_forward_request_m=.04,short_forward_max_nonzero_s=.20,forward_table_plane_braking=True,task_motion_mapping="FAR_RGBD_FORWARD_TURN_STEP",observation_standoff_m=.80,observation_right_offset_m=.12,rearward_balance_uncertainty_m=.03,maximum_stance_adjustments=6)
     return result
 
 

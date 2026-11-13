@@ -1211,6 +1211,24 @@ def step_cruise_reference(trace, pose, goal_xy, stamp):
     return progress/span if progress>=.16 else None
 
 
+def delivery_heading_acceptance(delivery, yaw_error):
+    """Task-base arrival can defer orientation to actual-pose placement IK.
+
+    This is never physical-stop, reach or placement acceptance: the parent must
+    still run its original actual full-model placement screen before arm motion.
+    """
+    if not math.isfinite(yaw_error):raise ValueError("nonfinite delivery yaw")
+    policy=delivery.get("delivery_pose_acceptance","NOMINAL_YAW_BAND")
+    legacy=abs(yaw_error)<=.12
+    if policy=="ACTUAL_PLACEMENT_IK":
+        if not delivery.get("require_restored_route_preflight"):raise ValueError("functional arrival needs measured route and placement preflight")
+        return {"pass":True,"policy":policy,"legacy_yaw012_pass":legacy,"requires_actual_placement_ik_before_arm_motion":True}
+    if policy!="NOMINAL_YAW_BAND":raise ValueError("unknown delivery pose acceptance")
+    limit=float(delivery.get("approach_task_yaw_tolerance_rad",.12))
+    if not .12<=limit<=.40:raise ValueError("functional docking yaw outside bounded task range")
+    return {"pass":abs(yaw_error)<=limit,"policy":policy,"legacy_yaw012_pass":legacy,"task_tolerance_rad":limit,"requires_actual_placement_ik_before_arm_motion":limit>.12}
+
+
 def functional_approach_limit(cfg, mission):
     """Task arrival tolerance is separate from every physical-stop threshold."""
     if mission is None or mission.get("phase")!="DELIVERY":return .15
@@ -1978,10 +1996,9 @@ def run_carry_navigation(n,contract):
             if mission["phase"]=="DELIVERY":
                 yaw_error=(cfg["delivery"]["base_goal_world_yaw_rad"]-end["yaw"]+math.pi)%(2*math.pi)-math.pi
                 result["delivery_final_yaw_error_rad"]=yaw_error
-                yaw_limit=float(cfg["delivery"].get("approach_task_yaw_tolerance_rad",.12))
-                if not .12<=yaw_limit<=.40:raise ValueError("functional docking yaw outside bounded task range")
-                result["delivery_heading_acceptance"]=dict(legacy_yaw012_pass=abs(yaw_error)<=.12,task_tolerance_rad=yaw_limit,requires_actual_placement_ik_before_arm_motion=yaw_limit>.12)
-                result["pass_result"]=bool(result["pass_result"] and abs(yaw_error)<=yaw_limit and result.get("retreat_turn_prefix_pass") and result["retreat_stop_composite"]["pass"] and result["turn_stop_composite"]["pass"])
+                heading_acceptance=delivery_heading_acceptance(cfg["delivery"],yaw_error)
+                result["delivery_heading_acceptance"]=heading_acceptance
+                result["pass_result"]=bool(result["pass_result"] and heading_acceptance["pass"] and result.get("retreat_turn_prefix_pass") and result["retreat_stop_composite"]["pass"] and result["turn_stop_composite"]["pass"])
                 mission["bilateral_support_alternation_observed"]={x["side"] for x in mission.get("observed_support_changes",[])}=={"left","right"}
                 result["pass_result"]=bool(result["pass_result"] and mission["bilateral_support_alternation_observed"])
                 if cfg["delivery"].get("post_turn_egress_m"):

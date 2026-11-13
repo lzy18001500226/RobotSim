@@ -6,6 +6,7 @@ from scripts.research.issue46.native_runtime.native_base_micro_probe import obse
 
 def receive_native_waist(self,message):
     import copy,os,time,json,math
+    callback_started_ns=time.monotonic_ns()
     if len(message.joints)!=3 or {j.name for j in message.joints}!=set(WAIST):raise RuntimeError("MC_WAIST_GROUP_CHANGED")
     if any(not all(math.isfinite(float(getattr(j,k))) for k in ("position","velocity","effort","stiffness","damping")) or j.stiffness<=0. or j.damping<=0. for j in message.joints):raise RuntimeError("MC_WAIST_SOURCE_INVALID")
     stamp=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec)
@@ -25,14 +26,22 @@ def receive_native_waist(self,message):
     for joint in message.joints:
         lo,hi,speed=LIFT_CONTRACT["retract_preflight"]["source_motion_limits"][joint.name]
         raw_position=float(joint.position)
-        joint.position=self.mc_waist_blend_from[joint.name]+smooth*(raw_position-self.mc_waist_blend_from[joint.name])
+        # At completed handoff forward the exact source endpoint. The prior
+        # start+1*(target-start) introduced a5e-17rad false range violation for
+        # the legal MC endpoint-0.314. No source range or physical qpos changes.
+        start=self.mc_waist_blend_from[joint.name]
+        joint.position=raw_position if smooth==1. else start if smooth==0. else (1.-smooth)*start+smooth*raw_position
         if not lo<=joint.position<=hi:raise RuntimeError('MC_WAIST_PUBLISHED_TARGET_RANGE:'+json.dumps(dict(joint=joint.name,source_position_rad=raw_position,published_position_rad=float(joint.position),source_range_rad=[lo,hi],fraction=fraction)))
+    before_publish_ns=time.monotonic_ns()
     self.waist_pub.publish(message);self.last_waist_message=message;self.mc_waist_relay_count=getattr(self,"mc_waist_relay_count",0)+1
+    after_publish_ns=time.monotonic_ns()
+    self.mc_waist_callback_timing={"callback_started_ns":callback_started_ns,"before_publish_ns":before_publish_ns,"after_publish_ns":after_publish_ns,"source_receipt_s":self.mc_waist_receipt}
     now=time.monotonic()
     if now-getattr(self,"mc_waist_report_at",0.)>=.10:
-        value=dict(schema="robotsim.native-waist-handoff-feedback.v1",owner_pid=os.getpid(),generation=self.native_generation,host_monotonic_ns=time.monotonic_ns(),source_receipt_monotonic_s=self.mc_waist_receipt,source_stamp_ns=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec),source_clock_generation=getattr(self,'mc_waist_source_clock_generation',0),source_positions_rad=source,published_positions_rad={j.name:float(j.position) for j in message.joints},fraction=fraction,relay_count=self.mc_waist_relay_count,gains="UNCHANGED_CURRENT_MC")
+        value=dict(schema="robotsim.native-waist-handoff-feedback.v1",owner_pid=os.getpid(),generation=self.native_generation,host_monotonic_ns=time.monotonic_ns(),source_receipt_monotonic_s=self.mc_waist_receipt,source_stamp_ns=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec),source_clock_generation=getattr(self,'mc_waist_source_clock_generation',0),source_positions_rad=source,published_positions_rad={j.name:float(j.position) for j in message.joints},callback_timing_ns=dict(self.mc_waist_callback_timing),fraction=fraction,relay_count=self.mc_waist_relay_count,gains="UNCHANGED_CURRENT_MC")
         with open("/workspace/evidence/native_waist_handoff_feedback.tmp","w") as f:json.dump(value,f)
         os.replace("/workspace/evidence/native_waist_handoff_feedback.tmp","/workspace/evidence/native_waist_handoff_feedback.json");self.mc_waist_report_at=now
+        self.mc_waist_callback_timing["report_io_finished_ns"]=time.monotonic_ns()
 
 def torso_carry_reference(row, center, local_axis):
     """Re-express the current measured tool pose; do not move any body."""
@@ -75,7 +84,7 @@ def request_native_waist_handoff(self):
         with open('/workspace/evidence/native_waist_source_before_handoff.json','x') as f:json.dump(initial,f)
         self.mc_waist_blend_from={j.name:float(j.position) for j in self.last_waist_message.joints}
         self.mc_waist_blend_started=time.monotonic()
-    if getattr(self,"mc_waist_blend_started",None) is not None and time.monotonic()-self.mc_waist_receipt>.20:raise RuntimeError("MC_WAIST_RELAY_STALE")
+    if getattr(self,"mc_waist_blend_started",None) is not None and time.monotonic()-self.mc_waist_receipt>.20:raise RuntimeError("MC_WAIST_RELAY_STALE:"+json.dumps(dict(age_s=time.monotonic()-self.mc_waist_receipt,last_callback_timing_ns=getattr(self,"mc_waist_callback_timing",None))))
 
 def extend_existing_owner(script):
     """Same arm/hand/waist publishers; only the waist source changes after proof."""
@@ -87,7 +96,7 @@ def extend_existing_owner(script):
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))
-    lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_native_waist(self,m),q)")
+    lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_native_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
     script="\n".join(lines)+"\n"
     replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':request_native_waist_handoff(self);request_torso_carry_reference(self)\n   if WAIST and getattr(self,\'mc_waist_blend_started\',None) is None:\n    w=JointCommandArray();w.header=m.header")
     replace("    self.waist_pub.publish(w)","    self.waist_pub.publish(w);self.last_waist_message=w")

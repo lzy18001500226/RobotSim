@@ -34,6 +34,13 @@ def stance_proposals(anchor, root, yaw, center):
         heading=yaw+wrap(heading-yaw)
         a=target+Rotation.from_euler("z",heading-yaw).as_matrix()[:2,:2]@(anchor-root)
         result.append((a,"FAR_DIAGONAL_"+str(i),float(heading)))
+    # A travel bearing is not a required final grasp heading. Saved left-end
+    # arrival rejected all old poses despite a feasible current-heading grasp.
+    # Try the same bounded root targets at current yaw only as a fallback.
+    for a,label,heading in list(result):
+        if not label.startswith("FAR_DIAGONAL_"):continue
+        target=a-Rotation.from_euler("z",heading-yaw).as_matrix()[:2,:2]@(anchor-root)
+        result.append((target+anchor-root,label+"_CURRENT_HEADING",float(yaw)))
     return result
 
 

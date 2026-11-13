@@ -34,23 +34,35 @@ def summarize(result, *,from_start=False):
             "missing_evidence":missing,"failure":result.get("failure"),
             "full_transfer":"NOT_RUN","hardware":"NOT_RUN"}
 
-def run_case(output,index,visible=False,far_observe=False):
+def summarize_transfer(result):
+    """Use the existing episode gates and measured independent placement."""
+    record=base.summarize_case(result)
+    record["full_transfer"]=record["status"]
+    record["grasp_lift"]="PASS" if result.get("physical_lift_evidence",{}).get("pass") else result.get("gates",{}).get("HAL_PHYSICAL_LIFT","NOT_RUN")
+    record["hardware"]="NOT_RUN"
+    return record
+
+
+def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False,complete_transfer=False):
+    if complete_transfer and not far_observe:raise ValueError("complete transfer requires full START far RGBD task")
     output=output.resolve(strict=True)
     if not output.is_relative_to(base.REVIEW_ROOT.resolve(strict=True)) or not (output/"task.json").is_file():raise ValueError("owned governed task root required")
     manifest=json.loads((output/"grid_inputs.json").read_text());point=manifest["positions"][index]
     if base.digest(manifest["scene"]["path"])!=manifest["scene"]["sha256"]:raise ValueError("frozen geometry changed")
-    case=pg.create_unique_output_directory(output,prefix=f"point{index:02}").native_path
+    case=pg.create_unique_output_directory(output,prefix=f"transfer{index:02}" if complete_transfer else f"point{index:02}").native_path
     pg.write_new_bytes(case/"grid_inputs.json",(output/"grid_inputs.json").read_bytes())
     argv=[sys.executable,"-B",str(REPO/"scripts/research/issue46/grasp/live_retreat_turn_review.py"),
           "--to-delivery-table","--bottle-height-m",".22","--multiccd","--task-grasp-region","--grasp-only",
           "--task-bottle-offset-xy-m",*map(str,point["offset_xy_m"])]
+    if complete_transfer:argv.remove("--grasp-only")
     if far_observe:argv.extend(["--from-start","--far-observe-approach"])
+    if fast_task_timing:argv.append("--fast-task-timing")
     if not visible:argv.append("--no-viewer")
     identity=base.source_identity()
     import tarfile
     with tarfile.open(case/"executed_source.tar.gz","x:gz") as archive:
         for rel in identity["files"]:archive.add(REPO/rel,arcname=rel)
-    pg.write_new_text(case/"command.json",json.dumps({"argv":argv,"cwd":str(REPO),"source":identity,"initialization":point,"scope":"FULL_START_FAR_RGBD_DIAGONAL_GRASP_ONLY" if far_observe else "GRASP_ONLY_NO_START_NAVIGATION_OR_TRANSFER"},indent=2)+"\n")
+    pg.write_new_text(case/"command.json",json.dumps({"argv":argv,"cwd":str(REPO),"source":identity,"initialization":point,"scope":"FULL_START_FAR_RGBD_COMMON_TRANSFER_PLACE" if complete_transfer else "FULL_START_FAR_RGBD_DIAGONAL_GRASP_ONLY" if far_observe else "GRASP_ONLY_NO_START_NAVIGATION_OR_TRANSFER"},indent=2)+"\n")
     began=time.monotonic()
     with (case/"wrapper.stdout").open("x") as stream:
         process=subprocess.run(argv,cwd=REPO,stdout=stream,stderr=subprocess.STDOUT)
@@ -63,7 +75,8 @@ def run_case(output,index,visible=False,far_observe=False):
             if init.get("observation_only") or math.dist(init["start_xy_m"],[-1.5,-1.5])>1e-10:raise ValueError("full START initialization absent")
             base.verify_task_entrypoint(json.loads((episode/"invocation.json").read_text())["argv"],manifest["observation"])
         elif init.get("observation_only") is not True or math.dist(init["start_xy_m"],manifest["observation"]["xy_m"])>1e-10:raise ValueError("wrong table-center initialization")
-        record=summarize(result,from_start=far_observe);record.update(episode=str(episode),wrapper=str(wrapper),result_sha256=base.digest(episode/"result.json"))
+        record=summarize_transfer(result) if complete_transfer else summarize(result,from_start=far_observe)
+        record.update(episode=str(episode),wrapper=str(wrapper),result_sha256=base.digest(episode/"result.json"))
     except (OSError,ValueError,KeyError) as exc:
         record={"status":"BLOCKED","failure":str(exc),"grasp_lift":"NOT_RUN"}
     after=base.source_identity()
@@ -75,15 +88,15 @@ def run_case(output,index,visible=False,far_observe=False):
     if process.returncode and record["status"]=="PASS":record.update(status="BLOCKED",failure="RUNNER_EXIT_NONZERO")
     record.update(id=index,returncode=process.returncode,wall_s=time.monotonic()-began,case=str(case))
     pg.write_new_text(case/"result.json",json.dumps(record,indent=2)+"\n");pg.write_artifact_manifest(case)
-    matrix_path=output/"matrix.json"
-    matrix=json.loads(matrix_path.read_text()) if matrix_path.exists() else {"scope":"11 independent 200g physical grasps, not complete transfers","cases":[{"id":i,"status":"NOT_RUN"} for i in range(11)],"attempts":[]}
+    matrix_path=output/("transfer_matrix.json" if complete_transfer else "matrix.json")
+    matrix=json.loads(matrix_path.read_text()) if matrix_path.exists() else {"scope":"UNIFORM_FULL_START_COMMON_TRANSFER_PLACE" if complete_transfer else "11 independent 200g physical grasps, not complete transfers","cases":[{"id":i,"status":"NOT_RUN"} for i in range(11)],"attempts":[]}
     matrix["attempts"].append(record);matrix["cases"][index]=record
     pg.write_reserved_text(output,matrix_path,json.dumps(matrix,indent=2)+"\n",overwrite_existing=True)
     print(json.dumps(record),flush=True)
     return record
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument("--output-dir",type=Path,required=True);p.add_argument("--case",type=int,choices=range(11),required=True);p.add_argument("--visible",action="store_true");p.add_argument("--far-observe",action="store_true");a=p.parse_args()
-    r=run_case(a.output_dir,a.case,a.visible,a.far_observe)
+    p=argparse.ArgumentParser();p.add_argument("--output-dir",type=Path,required=True);p.add_argument("--case",type=int,choices=range(11),required=True);p.add_argument("--visible",action="store_true");p.add_argument("--far-observe",action="store_true");p.add_argument("--fast-task-timing",action="store_true");p.add_argument("--complete-transfer",action="store_true");a=p.parse_args()
+    r=run_case(a.output_dir,a.case,a.visible,a.far_observe,a.fast_task_timing,a.complete_transfer)
     if r["status"]!="PASS":raise SystemExit(1)
 if __name__=="__main__":main()
