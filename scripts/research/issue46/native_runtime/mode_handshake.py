@@ -93,13 +93,18 @@ def wait_initial_mode(read_mode, *, timeout_s=4.0):
         _infra_time.sleep(min(.05, max(0.0, deadline - infra_elapsed())))
 
 
-def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0):
+def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0, pending_readiness=None):
     """Fresh RPC readback; no cached mode and no retry of SetMcAction.
 
     read_mode(remaining_s) returns name/status/header_code. send_once returns
     acknowledgement status/header_code. A transport timeout is ambiguous;
     only a subsequent valid applied-mode readback can resolve it.
     """
+    # Delivered MC can arm STEP while remaining STAND at zero velocity. This
+    # optional contract is deliberately unavailable to any other mode. It is
+    # not an applied-mode PASS; the caller must verify motion activation later.
+    if pending_readiness is not None and desired != 'LOCOMOTION_STEP':
+        raise ValueError('pending readiness is only defined for LOCOMOTION_STEP')
     started = infra_elapsed()
     deadline = started + timeout_s
     read_transport_errors = []
@@ -154,6 +159,14 @@ def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0):
             result.update(outcome=outcome, applied=observed,
                           elapsed_s=infra_elapsed()-started)
             return result
+        if (pending_readiness is not None and observed['name'] == 'STAND_DEFAULT'
+                and observed['status'] == 100):
+            pending = pending_readiness()
+            if pending is not None:
+                result.update(outcome='ARMED_PENDING_VELOCITY', applied=None,
+                              armed_stand=observed, pending_readiness=pending,
+                              elapsed_s=infra_elapsed()-started)
+                return result
         _infra_time.sleep(min(.05, remaining()))
 
 # END EMBEDDED

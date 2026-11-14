@@ -415,7 +415,13 @@ class Dock(Node):
    z=call(self,self.mode,r,timeout_s=min(2.,remaining_s))
    row={'status':int(z.response.status.value),'header_code':int(z.response.header.code),'message':z.response.message}
    events.append({'ack':row,'t':time.monotonic()});return row
-  try:checked=ensure_mode(name,read_mode,send_once,timeout_s=5.)
+  def pending_step():
+   common=getattr(self,'common_observation',None)
+   if common is None or not 0.<=time.monotonic()-common[0]<=.20:return None
+   value=common[1]
+   if (value['action_info']['action_desc']=='STAND_DEFAULT' and value['action_info']['status']['value']==100 and value['speed_status']['speed_mode']['value']==4 and value['body_status']['value']==1):
+    return {'common_receipt_s':common[0],'stand_running':True,'step_speed_mode':4,'body_ready':True,'activation_still_requires_velocity_and_fresh_readback':True}
+  try:checked=ensure_mode(name,read_mode,send_once,timeout_s=5.,pending_readiness=pending_step if name=='LOCOMOTION_STEP' else None)
   except RuntimeError as exc:
    print(json.dumps({'mode_handshake_failure':{'desired':name,'error':str(exc),'events':events,'common':getattr(self,'common_observation',None),'background_mode':getattr(self,'mode_observation',None)}}),flush=True);raise
   self.mode_requests.append({'name':name,'t':time.monotonic(),'verification':checked})

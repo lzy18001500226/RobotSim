@@ -6,6 +6,22 @@ from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as l
 
 
 class GeneratedHandshakeTests(unittest.TestCase):
+    def test_armed_step_is_explicitly_not_applied_motion(self):
+        from scripts.research.issue46.native_runtime.mode_handshake import ensure_mode
+        sent=[]
+        row=dict(name='STAND_DEFAULT',status=100,header_code=0)
+        result=ensure_mode('LOCOMOTION_STEP',lambda _:row,
+                           lambda _:sent.append(True) or dict(status=1,header_code=0),
+                           pending_readiness=lambda:dict(step_speed_mode=4))
+        self.assertEqual(sent,[True])
+        self.assertEqual(result['outcome'],'ARMED_PENDING_VELOCITY')
+        self.assertIsNone(result['applied'])
+
+    def test_pending_contract_cannot_be_used_for_other_modes(self):
+        from scripts.research.issue46.native_runtime.mode_handshake import ensure_mode
+        with self.assertRaisesRegex(ValueError,'only defined for LOCOMOTION_STEP'):
+            ensure_mode('STAND_DEFAULT',lambda _:None,lambda _:None,pending_readiness=lambda:{})
+
     def invoke(self, initial="STAND_DEFAULT", *, lose_ack=False, reject=False, read_fails=False, lose_applied_read=False):
         code = launch.locomotion_dock_script(world_start_xy=[0.,0.], world_start_yaw_rad=0., dock_world_xy=[1.,0.], dock_world_yaw_rad=0., dock_position_only=False, refine_world_xy=None, refine_world_yaw_rad=None, refine_position_only=False, dock_position_tolerance_m=.1, refine_position_tolerance_m=.1, timeout_s=10.)
         tree = ast.parse(code)

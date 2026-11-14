@@ -11,6 +11,8 @@ try:
     from rclpy.node import Node
     from rclpy.executors import SingleThreadedExecutor
     from aimdk_msgs.srv import GetMcAction, SetMcAction
+    from aimdk_msgs.msg import McCommonState
+    from geometry_msgs.msg import Twist
 except ImportError:
     rclpy = None
 
@@ -18,6 +20,12 @@ except ImportError:
 @unittest.skipIf(rclpy is None, 'requires installed ROS 2 Humble and aimdk_msgs')
 class GeneratedRosModeTransportTests(unittest.TestCase):
     def test_mode_read_after_spin_once_detaches_node(self):
+        self.run_generated(defer_step=False)
+
+    def test_step_arming_is_not_claimed_as_applied_before_velocity(self):
+        self.run_generated(defer_step=True)
+
+    def run_generated(self, defer_step):
         from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as launch
         code = launch.locomotion_dock_script(
             world_start_xy=[0., 0.], world_start_yaw_rad=0.,
@@ -31,12 +39,17 @@ class GeneratedRosModeTransportTests(unittest.TestCase):
                      'generated_dock', 'exec'), namespace)
         namespace['PLAN']['pickup_navigation'] = True
         namespace['PLAN']['native_pose_feedback'] = False
+        namespace['PLAN']['use_cmd_vel_bridge'] = True
 
         class Services(Node):
             def __init__(self):
                 super().__init__('isolated_mode_service')
                 self.mode = 'STAND_DEFAULT'
                 self.set_count = 0
+                self.step_armed = False
+                self.pub = self.create_publisher(McCommonState, '/aima/mc/common/state', 10)
+                self.create_timer(.01, self.state)
+                self.create_subscription(Twist, '/cmd_vel', self.command, 10)
                 self.create_service(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction', self.get)
                 self.create_service(SetMcAction, '/aimdk_5Fmsgs/srv/SetMcAction', self.set)
 
@@ -48,11 +61,25 @@ class GeneratedRosModeTransportTests(unittest.TestCase):
 
             def set(self, request, response):
                 self.set_count += 1
-                self.mode = request.command.action_desc
+                self.step_armed = request.command.action_desc == 'LOCOMOTION_STEP'
+                self.mode = ('STAND_DEFAULT' if defer_step and self.step_armed
+                             else request.command.action_desc)
                 response.response.header.code = 0
                 response.response.status.value = 1
                 response.response.message = 'synthetic acknowledgement'
                 return response
+
+            def state(self):
+                value = McCommonState()
+                value.action_info.action_desc = self.mode
+                value.action_info.status.value = 100
+                value.speed_status.speed_mode.value = 4 if self.step_armed else 1
+                value.body_status.value = 1
+                self.pub.publish(value)
+
+            def command(self, value):
+                if self.step_armed and abs(value.linear.x) > 0:
+                    self.mode = 'LOCOMOTION_STEP'
 
         rclpy.init()
         server = Services()
@@ -68,7 +95,17 @@ class GeneratedRosModeTransportTests(unittest.TestCase):
                 client.spin(.3)
                 self.assertNotIn(client, rclpy.get_global_executor().get_nodes())
                 client.stand(target)
-                self.assertEqual(client.mode_requests[-1]['verification']['applied']['name'], target)
+                verified = client.mode_requests[-1]['verification']
+                if defer_step and target == 'LOCOMOTION_STEP':
+                    self.assertEqual(verified['outcome'], 'ARMED_PENDING_VELOCITY')
+                    self.assertIsNone(verified['applied'])
+                    self.assertEqual(server.mode, 'STAND_DEFAULT')
+                    # Synthetic ROS message only; no MC/physics in this graph.
+                    client.publish(.2)
+                    client.spin(.1)
+                    client.stand(target)
+                    verified = client.mode_requests[-1]['verification']
+                self.assertEqual(verified['applied']['name'], target)
                 self.assertNotIn(client, rclpy.get_global_executor().get_nodes())
             self.assertEqual(server.set_count, 3)
             # An already registered node must retain its original membership.

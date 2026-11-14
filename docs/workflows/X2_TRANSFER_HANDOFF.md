@@ -25,6 +25,18 @@ Ubuntu集成，关闭Ubuntu重复的systemd-timesyncd。Windows QPC独立对照�
 `generated_ros_current_result.json`、`generated_ros_legacy_result.json`及`real_ros_fixed.log`。
 这证明本地ROS回调缺陷已修正，不代表MC实际行走或5号完整搬运已通过。
 
+后续202449Z最小复查明确第二个问题：97次Get全部正常（零transport error），
+Set STEP只发一次并获ACK，但零速度时Get/Common均保持STAND_RUNNING，speed_mode=4。
+官方AimDK模式/导航文档说明站立与走跑由速度输入内部切换；安装交付的sim action表也
+支持STEP。原严格“先观察STEP_RUNNING才发首个速度”造成循环等待，并非行走失败。
+Dock握手现在区分ARMED_PENDING_VELOCITY与APPLIED：前者同时要求新鲜Get的STAND100、
+<=200ms Common的STAND100、STEP档4与body_ready1；不会宣称模式已执行。
+首个既有有界速度之后仍须通过原1.5s激活窗的Get/Common STEP100、选中本任务source和
+物理新鲜度/姿态检查。站立或其他模式不接受pending语义。模型/物理门/速度上限未改。
+两项真实ROS生成消息测试通过（包括必须先速度才激活的合成服务）；真实MC复测另记。
+参考：https://x2-aimdk.agibot.com/en/latest/Interface/control_mod/modeswitch.html
+和 https://x2-aimdk.agibot.com/en/latest/Interface/perception/navigation.html 。
+
 2026-11-15接续：先5号完整放置，再同版0/10，再其余八点；不新增点位专用搬运程序。
 截图sim254.901的轨迹复核见
 `reviews/issue-46/case5-route-heading-forensic-20261114T162907Z/REPORT.md`：
