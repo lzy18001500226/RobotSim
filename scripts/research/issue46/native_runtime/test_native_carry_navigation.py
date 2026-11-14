@@ -1734,3 +1734,29 @@ class AtomicStoppedRearmTests(unittest.TestCase):
         self.assertNotIn("with n.lock:n.moving=True",code)
         self.assertEqual(code.count("arm_carry_motion(n,baseline,until,"),11)
         compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"atomic_carry_runtime","exec")
+
+
+class LoadedDeliveryAngularStartTests(unittest.TestCase):
+    def test_loaded_step_rearm_preserves_sign_and_full_command_after_two_seconds(self):
+        d={"delivery_motion_mode":"LOCOMOTION_STEP","loaded_terminal_slowdown":True}
+        for demand in (-.6,.6):
+            actual=[m.loaded_delivery_angular_start(d,t,demand) for t in (0.,.5,1.,1.5,2.,3.)]
+            self.assertEqual(actual[0],0.)
+            self.assertAlmostEqual(actual[2],demand*.5)
+            self.assertEqual(actual[-2:],[demand,demand])
+            self.assertTrue(all(abs(a)<=abs(b) for a,b in zip(actual,actual[1:])))
+            self.assertLess(abs(actual[1]),.1)
+
+    def test_other_modes_and_nonfinite_inputs_are_not_silently_reinterpreted(self):
+        self.assertEqual(m.loaded_delivery_angular_start({},0.,.6),.6)
+        self.assertEqual(m.loaded_delivery_angular_start({"delivery_motion_mode":"LOCOMOTION_DEFAULT","loaded_terminal_slowdown":True},0.,.6),.6)
+        d={"delivery_motion_mode":"LOCOMOTION_STEP","loaded_terminal_slowdown":True}
+        for t in (-.1,float("nan")):
+            with self.assertRaises(RuntimeError):m.loaded_delivery_angular_start(d,t,.6)
+        with self.assertRaises(ValueError):m.loaded_delivery_angular_start(d,0.,float("nan"))
+
+    def test_common_route_applies_the_ramp_after_terminal_command_shaping(self):
+        import inspect
+        s=inspect.getsource(m.run_carry_navigation)
+        self.assertIn('angular=loaded_delivery_angular_start(cfg["delivery"],max(0.,tick-activation_started),angular)',s)
+        compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"loaded_angular_runtime","exec")

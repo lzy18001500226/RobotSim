@@ -1313,6 +1313,14 @@ def step_cruise_reference(trace, pose, goal_xy, stamp):
     return progress/span if progress>=.16 else None
 
 
+def loaded_delivery_angular_start(delivery, elapsed_s, angular):
+    """Reuse the qualified two-second turn ramp at loaded STEP reactivation."""
+    if (delivery.get("delivery_motion_mode")!="LOCOMOTION_STEP"
+            or not delivery.get("loaded_terminal_slowdown")):return angular
+    if not math.isfinite(angular):raise ValueError("finite delivery angular input")
+    return angular*bounded_start_scale(elapsed_s,2.)
+
+
 def loaded_delivery_terminal_command(delivery, pose, goal, forward, angular):
     """Reduce loaded terminal input before braking; never increase a limit."""
     if not delivery.get("loaded_terminal_slowdown"):return forward,angular
@@ -2094,6 +2102,7 @@ def run_carry_navigation(n,contract):
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
                 if mission is not None and mission["phase"]=="DELIVERY":
                     forward,angular=loaded_delivery_terminal_command(cfg["delivery"],p,goal,forward,angular)
+                    angular=loaded_delivery_angular_start(cfg["delivery"],max(0.,tick-activation_started),angular)
                 if mission is not None and mission["phase"]=="TURN" and cfg.get("compact_turn"):
                     # Reuse the existing half-second smooth start at mode handoff.
                     ramp_s=float((cfg.get("delivery") or {}).get("turn_input_ramp_s",.5))
