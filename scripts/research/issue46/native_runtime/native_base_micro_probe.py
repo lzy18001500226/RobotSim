@@ -432,9 +432,19 @@ def run_probe(smoke_only=False):
                 previous=self.unique.get(name)
                 diag["callbacks"]+=1;diag["last_callback_monotonic_s"]=now
                 diag["last_received_stamp_ns"]=stamp
-                # Old queued packets cannot seed a new clock generation.
-                if abs(wall-stamp)>200000000:
+                # All monitored publishers share this host's SYSTEM_TIME.
+                # After a backward wall-clock step, a queued pre-step packet
+                # may be <200ms in the future. Never seed the new generation
+                # with it: that would reject current data until wall catches up.
+                # Preserve the existing 200ms maximum *past* source age.
+                if stamp>wall or wall-stamp>200000000:
                     diag["rejected_wrong_epoch"]+=1
+                    if stamp>wall:diag["rejected_future"]=diag.get("rejected_future",0)+1
+                    rejected=diag.setdefault("recent_rejections",[])
+                    rejected.append(dict(stamp_ns=stamp,wall_ns=wall,
+                        receipt_monotonic_s=now,source_epoch=self.source_epoch,
+                        reason="FUTURE" if stamp>wall else "PAST_AGE"))
+                    del rejected[:-16]
                     return
                 if previous and stamp<=previous[0]:
                     diag["duplicates" if stamp==previous[0] else "regressions"]+=1
@@ -576,6 +586,10 @@ def run_probe(smoke_only=False):
                 ages={name:now-self.unique.get(name,(0,0))[1]
                       for name in ("common","imu","leg_state","leg_command")}
                 if any(age>.20 for age in ages.values()):
+                    self.events.append(dict(event="CRITICAL_ROS_TELEMETRY_STALE",
+                        t=now,source_epoch=self.source_epoch,ages=dict(ages),
+                        unique_stamps=dict(self.unique),
+                        receipts=json.loads(json.dumps(self.receipt_diagnostics))))
                     raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
                 if MICRO.get("carry"):
                     health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())

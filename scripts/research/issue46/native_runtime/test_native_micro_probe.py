@@ -321,13 +321,13 @@ class ContinuousFeedbackTests(unittest.TestCase):
         n.unique={};n.messages={};n.receipt_diagnostics={}
         def msg(stamp):return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)))
         from unittest.mock import patch
-        with patch("time.time_ns",return_value=1000000000):
+        with patch("time.time_ns",return_value=1000000100):
             n.store("common",msg(10));before=n.unique["common"]
             n.store("common",msg(10));n.store("common",msg(9))
         self.assertEqual(n.unique["common"],before)
         d=n.receipt_diagnostics["common"]
         self.assertEqual((d["callbacks"],d["duplicates"],d["regressions"]),(3,1,1))
-        with patch("time.time_ns",return_value=1000000000):n.store("common",msg(11))
+        with patch("time.time_ns",return_value=1000000100):n.store("common",msg(11))
         self.assertGreater(n.unique["common"][0],before[0])
 
     def test_stale_native_feedback_still_fails_with_continuous_executor(self):
@@ -371,6 +371,31 @@ class ClockGenerationTests(unittest.TestCase):
         self.assertEqual(n.unique["common"][0],1020000000)
         self.assertEqual(n.receipt_diagnostics["common"]["rejected_wrong_epoch"],1)
         self.assertIsNone(n.feedback_fault)
+
+    def test_small_backward_step_cannot_seed_generation_with_future_queued_packet(self):
+        from unittest.mock import patch
+        n=self.clock_node()
+        with patch("time.monotonic_ns",return_value=10000000000),patch("time.time_ns",return_value=2000000000):
+            n.store("leg_state",self.message(2000000000))
+        # Saved actual run: a 212ms backward wall step while already stopped.
+        # The late pre-step packet is now only 192ms in the future: the old
+        # symmetric 200ms filter admitted it, blocking newer-generation data.
+        with patch("time.monotonic_ns",return_value=10020000000),patch("time.time_ns",return_value=1808000000):
+            n.store("leg_state",self.message(2000000000))
+            self.assertNotIn("leg_state",n.unique)
+            n.store("leg_state",self.message(1808000000))
+        self.assertEqual(n.source_epoch,1)
+        self.assertEqual(n.unique["leg_state"][0],1808000000)
+        self.assertEqual(n.receipt_diagnostics["leg_state"]["rejected_future"],1)
+        self.assertIsNone(n.feedback_fault)
+
+    def test_old_packet_still_cannot_refresh_freshness(self):
+        from unittest.mock import patch
+        n=self.clock_node()
+        with patch("time.monotonic_ns",return_value=10000000000),patch("time.time_ns",return_value=2000000000):
+            n.store("leg_state",self.message(1799999999))
+        self.assertNotIn("leg_state",n.unique)
+        self.assertEqual(n.receipt_diagnostics["leg_state"]["rejected_wrong_epoch"],1)
 
     def test_clock_step_during_motion_latches_zero_and_a_fault(self):
         from unittest.mock import patch
