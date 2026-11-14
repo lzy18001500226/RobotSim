@@ -360,13 +360,20 @@ def run_region_navigation(node, contract):
             if short_forward and first_active_command_at is not None and tick-first_active_command_at>=.20:
                 result["short_forward_activation_pulse"]={"requested_span_m":requested_span,"maximum_nonzero_duration_s":.20,"actual_stopped_pose_must_requalify":True}
                 break
+            # Decide the intended motion phase before evaluating arrival.
+            # A zero-forward heading acquisition can contain real gait drift;
+            # that drift is not commanded progress toward a translation goal.
+            command = ((forward_turn_command(pose,cfg["goal"],output.linear_x,output.angular_z) if cfg.get("point_goal") else
+                        body_translation_velocity(pose,cfg["goal"][:2],gain=controller.config.k_linear,speed_cap=controller.config.max_forward_mps,minimum_speed=.12 if cfg.get("locomotion_action")=="LOCOMOTION_DEFAULT" else 0.))
+                       if output.state in (NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN) else (0.,0.,0.))
+            coarse_heading=bool(cfg.get("point_goal") and command[0]==0. and command[2]>0.)
             brake_pose=navigation_braking_pose(node.trace,pose) if cfg.get("point_goal") else pose
             if cfg.get("point_goal"):row["task_braking_velocity_world_m_s"]=[brake_pose["vx"],brake_pose["vy"]]
             if not short_forward and cfg.get("side_corridor_bounds") and side_corridor_boundary_reached(brake_pose,cfg["side_corridor_bounds"]):
                 result["side_corridor_boundary_stop"]={"pose":pose,"bounds":cfg["side_corridor_bounds"],"claim":"PREDICTIVE_BOUNDARY_STOP_NOT_GRASP_READY"};break
             if not short_forward and not cfg.get("side_corridor_bounds") and cfg.get("point_goal") and forward_table_plane_reached(brake_pose,cfg["goal"],[origin["x"],origin["y"]]):
                 result["functional_forward_plane_stop"]={"root_x_m":pose["x"],"velocity_x_m_s":pose["vx"],"checked_station_x_m":cfg["goal"][0],"lateral_error_m":cfg["goal"][1]-pose["y"],"claim":"PREDICTIVE_STOP_NOT_POSE_ARRIVAL"};break
-            stop_distance=stopping_distance(brake_pose,cfg["goal"]) if cfg.get("point_goal") else controller.config.xy_tolerance_m
+            stop_distance=stopping_distance(brake_pose,cfg["goal"],aligning=coarse_heading) if cfg.get("point_goal") else controller.config.xy_tolerance_m
             if not short_forward and output.distance_m is not None and output.distance_m<=stop_distance:
                 result["position_region_entered"]=True
                 result["legacy_heading_error_rad"]=output.yaw_error_rad
@@ -376,9 +383,6 @@ def run_region_navigation(node, contract):
                 if output.state == NavState.ARRIVED:
                     break
             elif output.state in (NavState.ALIGN, NavState.DRIVE, NavState.FINAL_ALIGN):
-                command = (forward_turn_command(pose,cfg["goal"],output.linear_x,output.angular_z) if cfg.get("point_goal") else
-                    body_translation_velocity(pose,cfg["goal"][:2],gain=controller.config.k_linear,speed_cap=controller.config.max_forward_mps,minimum_speed=.12 if cfg.get("locomotion_action")=="LOCOMOTION_DEFAULT" else 0.))
-                coarse_heading=cfg.get("point_goal") and command[0]==0. and command[2]>0.
                 phase="COARSE_HEADING" if coarse_heading else output.state
                 row["motion_phase"]="COARSE_HEADING_WITH_MEASURED_DRIFT" if coarse_heading else output.state.value
                 if phase != last_nav_state:

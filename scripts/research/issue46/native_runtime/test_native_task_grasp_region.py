@@ -270,7 +270,7 @@ class McTaskTranslationTests(unittest.TestCase):
 
 
 class HeadingPhaseStopTests(unittest.TestCase):
-    def run_turn(self,outside=False):
+    def run_turn(self,outside=False, measured_drift=False):
         import sys,threading
         from pathlib import Path
         from unittest.mock import MagicMock,patch
@@ -297,6 +297,10 @@ class HeadingPhaseStopTests(unittest.TestCase):
         saved=[]
         from scripts.research.issue46.native_runtime import far_observe_approach as far
         helpers={name:getattr(far,name) for name in ('wrap','stopping_distance','side_corridor_boundary_reached','forward_table_plane_reached','forward_turn_command','navigation_braking_pose')}
+        if measured_drift:
+            # The saved case10 emitted zero forward / +0.60 yaw while ALIGN.
+            # Its measured drift inflated the translation stopping distance.
+            helpers["navigation_braking_pose"] = lambda rows, pose: dict(pose, vx=0., vy=.153)
         with patch.dict(task.__dict__,{**helpers,"MICRO":{"task_region":cfg},"rclpy":MagicMock(),
                 "write_durable_milestone":lambda path,value:saved.append(value)}), \
              patch.object(task.time,"monotonic",side_effect=lambda:clock["now"]), \
@@ -311,6 +315,12 @@ class HeadingPhaseStopTests(unittest.TestCase):
         self.assertEqual(value['trace'][0]['controller_state'],'align')
         self.assertEqual(len(value['trace']),2)
         self.assertNotIn('side_corridor_boundary_stop',value)
+
+    def test_measured_turning_drift_cannot_trigger_translation_arrival(self):
+        value=self.run_turn(measured_drift=True)
+        self.assertTrue(value["pass_result"], value["failure"])
+        self.assertEqual(len(value["trace"]),2)
+        self.assertNotIn("side_corridor_boundary_stop",value)
 
     def test_actual_outer_boundary_still_stops_immediately_during_turn(self):
         value=self.run_turn(outside=True)
