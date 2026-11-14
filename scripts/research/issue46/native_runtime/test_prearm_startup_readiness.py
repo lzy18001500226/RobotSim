@@ -7,6 +7,8 @@ from types import SimpleNamespace as NS
 import unittest
 
 from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as launch
+from scripts.research.issue46.native_runtime import mode_handshake
+from unittest.mock import patch
 
 
 class PrearmReadinessTests(unittest.TestCase):
@@ -75,6 +77,24 @@ class PrearmReadinessTests(unittest.TestCase):
         self.assertIn("FEEDBACK_EXECUTOR_FAILURE", str(error))
         self.assertEqual(state["get"], 1)
         self.assertEqual(state["set"], 0)
+
+    def test_persistent_applied_read_timeout_keeps_five_second_deadline(self):
+        state=dict(now=0.,reads=0,sets=0)
+        def read(remaining):
+            state['reads']+=1
+            if state['reads']==1:
+                return dict(name='PASSIVE_DEFAULT',status=100,header_code=0)
+            state['now']+=min(1.,remaining)
+            raise mode_handshake.ModeHandshakeError('service timeout: /GetMcAction')
+        def send(remaining):
+            state['sets']+=1
+            return dict(status=1,header_code=0)
+        clock=NS(sleep=lambda seconds:state.update(now=state['now']+seconds))
+        with patch.object(mode_handshake,'infra_elapsed',lambda:state['now']), patch.object(mode_handshake,'_infra_time',clock):
+            with self.assertRaisesRegex(mode_handshake.ModeHandshakeError,'MODE_READBACK_TIMEOUT'):
+                mode_handshake.ensure_mode('STAND_DEFAULT',read,send,timeout_s=5.)
+        self.assertEqual(state['sets'],1)
+        self.assertLessEqual(state['now'],5.)
 
 
 if __name__ == "__main__":

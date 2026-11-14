@@ -94,19 +94,29 @@ def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0):
     """
     started = infra_elapsed()
     deadline = started + timeout_s
+    read_transport_errors = []
     def remaining():
         value = deadline - infra_elapsed()
         if value <= 0:
             raise ModeHandshakeError("MODE_READBACK_TIMEOUT:" + desired)
         return value
     def read():
-        row = read_mode(remaining())
+        while True:
+            try:
+                row = read_mode(remaining())
+                break
+            except ModeHandshakeError as exc:
+                if not str(exc).startswith(("service timeout:", "service unavailable:")):
+                    raise
+                read_transport_errors.append(str(exc))
+                _infra_time.sleep(min(.05, remaining()))
         if row.get("header_code") != 0 or row.get("status") not in (100, 200):
             raise ModeHandshakeError("MODE_READBACK_INVALID:" + repr(row))
         return row
     initial = read()
     result = {"desired": desired, "initial": initial, "set_sent": False,
-              "acknowledgement": None, "transport_error": None}
+              "acknowledgement": None, "transport_error": None,
+              "read_transport_errors": read_transport_errors}
     # Delivered McActionStatus: IDLE=0, RUNNING=100, TRANSITION=200.
     # A matching name during TRANSITION is not an applied, running mode.
     if initial["name"] == desired and initial["status"] == 100:

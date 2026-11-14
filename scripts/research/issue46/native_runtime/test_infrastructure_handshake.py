@@ -6,7 +6,7 @@ from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as l
 
 
 class GeneratedHandshakeTests(unittest.TestCase):
-    def invoke(self, initial="STAND_DEFAULT", *, lose_ack=False, reject=False, read_fails=False):
+    def invoke(self, initial="STAND_DEFAULT", *, lose_ack=False, reject=False, read_fails=False, lose_applied_read=False):
         code = launch.locomotion_dock_script(world_start_xy=[0.,0.], world_start_yaw_rad=0., dock_world_xy=[1.,0.], dock_world_yaw_rad=0., dock_position_only=False, refine_world_xy=None, refine_world_yaw_rad=None, refine_position_only=False, dock_position_tolerance_m=.1, refine_position_tolerance_m=.1, timeout_s=10.)
         tree = ast.parse(code)
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Dock")
@@ -19,6 +19,9 @@ class GeneratedHandshakeTests(unittest.TestCase):
             calls.append(client)
             if client == "get":
                 if read_fails: raise RuntimeError("service timeout")
+                if lose_applied_read and calls.count("set") and not state.get("lost_applied_read"):
+                    state["lost_applied_read"] = True
+                    raise namespace["ModeHandshakeError"]("service timeout: /GetMcAction")
                 return NS(header=NS(code=0), info=NS(action_desc=state["mode"], status=NS(value=100)))
             if not reject: state["mode"] = request.command.action_desc
             if lose_ack: raise RuntimeError("service timeout")
@@ -58,6 +61,13 @@ class GeneratedHandshakeTests(unittest.TestCase):
         calls, node, error = self.invoke(read_fails=True)
         self.assertIsNotNone(error)
         self.assertEqual(calls.count("set"), 0)
+
+    def test_transient_applied_read_timeout_never_resends_set(self):
+        calls, node, error = self.invoke("PASSIVE_DEFAULT", lose_applied_read=True)
+        self.assertIsNone(error)
+        self.assertEqual(calls.count("set"), 1)
+        self.assertEqual(calls.count("get"), 3)
+        self.assertEqual(len(node.mode_requests[0]["verification"]["read_transport_errors"]), 1)
 
 
     def test_transition_is_not_an_applied_mode(self):
