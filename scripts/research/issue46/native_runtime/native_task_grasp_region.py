@@ -86,11 +86,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
-        # Require measured retreat before braking. At varying actual pickup yaw
-        # this can pass through the existing front opening. Keep its bounded
-        # apron distinct from the room and take the shorter collision-screened
-        # turn away from the pickup table; no changed native motion parameters.
-        result["delivery_turn_direction"]="SHORTEST"
+        # Reuse the clockwise route that completed both endpoint transfers.
+        # The shorter CCW route in040630Z drifted almost1m into the front apron;
+        # static rotation clearance did not predict that loaded gait response.
+        # Keep measured retreat and all live workspace/contact/stop gates.
+        result["delivery_turn_direction"]="CLOCKWISE"
         result["turn_translation_strategy"]="PURE_YAW"
         result["retreat_target_m"]=.75
         result["minimum_actual_retreat_m"]=.60
@@ -127,7 +127,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="FRONT_OPENING_SHORTEST_ROUTE_STATIC_ONLY_NOT_GAIT_CERTIFICATION",evidence="reviews/issue-46/carry-front-opening-static-route-20261114T021331Z/result.json")
+        result["task_turn_selection"].update(classification="RESTORED_MEASURED_CLOCKWISE_TRANSFER_ROUTE_NOT_PIVOT_QUALIFICATION",evidence="reviews/issue-46/carry-turn-direction-measured-failure-audit-20261114T041706Z/result.json; shared-defined-approach-all11-transfer-20261113T202351Z/transfer_matrix.json")
     return result
 
 
