@@ -1347,7 +1347,7 @@ class ContinuousZeroStandStrategyTests(unittest.TestCase):
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
         helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
-        for mode,expected in (("LOCOMOTION_STEP",["zero_window","disable","measured_ready","sd"]),("LOCOMOTION_DEFAULT",["sd","zero_window","disable"])):
+        for mode,expected in (("LOCOMOTION_STEP",["zero_window","disable","sd"]),("LOCOMOTION_DEFAULT",["sd","zero_window","disable"])):
             calls=[]
             n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertEqual(seconds,1.05),calls.append("zero_window")),source_enabled=lambda enabled:(self.assertFalse(enabled),calls.append("disable")))
             ns=dict(cfg={"motion_mode":mode,"release_source_on_stop":True,"delivery":{"stand_transition_strategy":"EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC","release_source_after_zero_window":True}},n=n,baseline={},result={})
@@ -1591,31 +1591,29 @@ class MeasuredStepStandHandoffTests(unittest.TestCase):
         unsupported=copy.deepcopy([rows[i] for i in (0,8,10)])
         self.assertFalse(m.step_stand_handoff_ready(unsupported))
 
-    def test_actual_generated_transition_releases_after_zero_before_measured_handoff(self):
+    def test_step_stop_requests_controller_stand_before_waiting_for_physical_stop(self):
         from types import SimpleNamespace as NS
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
             transit_policy_050=True,compact_turn=True,release_source_on_stop=True,native_action_smoothing=True)
         helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
         calls=[]
         n=NS(observe=lambda *a,**k:calls.append("zero"),source_enabled=lambda enabled:calls.append("disable"),stand_once=lambda:calls.append("sd"))
-        def ready(node,baseline,deadline):
-            self.assertGreater(deadline-__import__("time").monotonic(),8.90)
-            self.assertLessEqual(deadline-__import__("time").monotonic(),8.95)
-            calls.append("measured_ready");return {"ready":True}
+        def not_yet_stopped(*args):
+            raise RuntimeError("physical stop must follow the SD request")
         ns=dict(cfg=dict(motion_mode="LOCOMOTION_STEP",release_source_on_stop=True,
             delivery=dict(release_source_after_zero_window=True)),n=n,baseline=1,result={},
-            time=__import__("time"),stop_wait_s=12.,await_step_stand_handoff=ready)
+            time=__import__("time"),stop_wait_s=12.,await_step_stand_handoff=not_yet_stopped)
         exec(compile(ast.Module(body=[helper],type_ignores=[]),"real_handoff","exec"),ns)
         ns["stand_transition"]()
-        self.assertEqual(calls,["zero","disable","measured_ready","sd"])
+        self.assertEqual(calls,["zero","disable","sd"])
         self.assertNotIn("pass_result",ns["result"])
-        def not_ready(*args):raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
-        ns["await_step_stand_handoff"]=not_ready;calls.clear()
-        with self.assertRaisesRegex(RuntimeError,"NOT_READY"):ns["stand_transition"]()
-        self.assertEqual(calls,["zero","disable"])
-        ns["await_step_stand_handoff"]=ready;calls.clear()
-        ns["stand_transition"](source_already_disabled=True)
-        self.assertEqual(calls,["zero","measured_ready","sd"])
+        calls.clear();ns["stand_transition"](source_already_disabled=True)
+        self.assertEqual(calls,["zero","sd"])
+        # Request acceptance still cannot qualify any stop or authorize rearm.
+        self.assertIn('require_stop=True',code)
+        self.assertIn('retreat_stop_composite',code)
+        self.assertIn('AWAY_TURN_STOP_NOT_QUALIFIED',code)
+        self.assertIn('COMPOSITE_STOP_NOT_QUALIFIED',code)
 
 
 class FrontOpeningTaskAreaTests(unittest.TestCase):

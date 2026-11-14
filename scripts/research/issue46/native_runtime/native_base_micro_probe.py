@@ -1421,32 +1421,19 @@ def run_carry_navigation(n,contract):
         strategy=(cfg.get("delivery") or {}).get("stand_transition_strategy","ZERO_WINDOW_THEN_SD")
         result["stand_transition_strategy"]=strategy
         if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC" and cfg.get("motion_mode")!="LOCOMOTION_STEP":
-            # FoundationWalk's measured retreat benefits from an early request.
-            # Do not apply that ordering to CPGWalk: saved014155Z stayed in
-            # STEP/TRANSITION for >10s and travelled1.4m despite zero commands.
-            # Saved202518Z instead reached native SD during the zero-only
-            # measured handoff, then passed the independent physical stop.
-            # A successful SetMcAction response is not completed braking.
             n.stand_once();n.observe(1.05,baseline=baseline)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
         else:
             if cfg.get("motion_mode")=="LOCOMOTION_STEP":
-                result["stand_transition_strategy"]="STEP_ZERO_MEASURED_HANDOFF_THEN_SD"
+                result["stand_transition_strategy"]="STEP_ZERO_RELEASE_SD_THEN_PHYSICAL_STOP"
             n.observe(1.05,baseline=baseline)
-            # Release our source at the configured zero-window boundary, not
-            # after physical readiness. Saved021716Z completed the disabled-
-            # source clock stop, but its later calibration kept the source
-            # enabled throughout STEP/TRANSITION and failed planar safety.
-            # This orders an existing action; it does not qualify the stop.
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
-            if cfg.get("motion_mode")=="LOCOMOTION_STEP":
-                # Share the existing stop observation budget: reserve the initial
-                # 1.05s zero period and >=2s independent composite stop window.
-                # Saved209..218s physics entersSD only5.45s after zero and
-                # becomes measured-ready after8.3s; a5s subdeadline cut it short.
-                handoff_budget_s=stop_wait_s-1.05-2.
-                readiness=await_step_stand_handoff(n,baseline,time.monotonic()+handoff_budget_s)
-                result.setdefault("step_stand_handoffs",[]).append(readiness)
+            # Saved031553Z: STEP remained in TRANSITION after zero/release and
+            # exceeded physical speed safety before the readiness-first code
+            # ever requested SD. Request the vendor's active stand controller
+            # before asking it to produce the measured stop. Request/ack is
+            # still not acceptance: every caller retains its independent
+            # require_stop=True composite window and cannot rearm on failure.
             n.stand_once()
 
     try:
