@@ -402,15 +402,22 @@ class Dock(Node):
    r=SetMcInputSource.Request();r.action=McInputAction();r.action.value=1003;r.input_source.name=SOURCE;r.input_source.priority=40;r.input_source.timeout=1000;call(self,self.src,r)
   except Exception:pass
  def stand(self,name="STAND_DEFAULT"):
+  events=[]
   def read_mode(remaining_s):
    q=GetMcAction.Request();q.request.header.stamp=self.get_clock().now().to_msg()
-   z=call(self,self.get_mode,q,timeout_s=min(1.,remaining_s))
-   return {'name':z.info.action_desc,'status':int(z.info.status.value),'header_code':int(z.header.code)}
+   try:z=call(self,self.get_mode,q,timeout_s=min(1.,remaining_s))
+   except RuntimeError as exc:
+    events.append({'read_error':str(exc),'t':time.monotonic()});raise
+   row={'name':z.info.action_desc,'status':int(z.info.status.value),'header_code':int(z.header.code)}
+   events.append({'read':row,'t':time.monotonic()});return row
   def send_once(remaining_s):
    r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc=name
    z=call(self,self.mode,r,timeout_s=min(2.,remaining_s))
-   return {'status':int(z.response.status.value),'header_code':int(z.response.header.code),'message':z.response.message}
-  checked=ensure_mode(name,read_mode,send_once,timeout_s=5.)
+   row={'status':int(z.response.status.value),'header_code':int(z.response.header.code),'message':z.response.message}
+   events.append({'ack':row,'t':time.monotonic()});return row
+  try:checked=ensure_mode(name,read_mode,send_once,timeout_s=5.)
+  except RuntimeError as exc:
+   print(json.dumps({'mode_handshake_failure':{'desired':name,'error':str(exc),'events':events,'common':getattr(self,'common_observation',None),'background_mode':getattr(self,'mode_observation',None)}}),flush=True);raise
   self.mode_requests.append({'name':name,'t':time.monotonic(),'verification':checked})
  def refresh_native_pose(self):
   if not PLAN.get('native_pose_feedback'):return
