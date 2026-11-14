@@ -405,15 +405,22 @@ def main():
             if not ready:raise RuntimeError('native circle tracker did not qualify within bounded model-loading readiness')
         return result
     native.run=run
+    preparation_started=time.monotonic()
+    preparation_timings=[]
+    def prepare_step(label, fn, *a, **kw):
+        began=time.monotonic()
+        value=fn(*a, **kw)
+        preparation_timings.append({"stage":label,"wall_s":time.monotonic()-began})
+        return value
     table=Path(baseline["table_overlay"]["path"])
     claw=Path(baseline["claw_control_overlay"]["path"])
     if args.source_pad_coacd_comparison:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import reuse_source_pad_proxy
-        claw=reuse_source_pad_proxy(claw)
+        claw=prepare_step("source_pad_proxy",reuse_source_pad_proxy,claw)
     if args.right_claw_zero_internal_friction and args.both_claws_zero_internal_friction:raise ValueError("select only one friction scope")
     if args.right_claw_zero_internal_friction or args.both_claws_zero_internal_friction:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import build
-        claw=build(claw,both_hands=args.both_claws_zero_internal_friction,right_damping=args.right_claw_damping,right_kp=args.right_claw_kp,noslip_iterations=2 if args.noslip_solver_diagnostic else 0,elliptic_grip_solver=args.elliptic_grip_solver_diagnostic)
+        claw=prepare_step("existing_contact_profile",build,claw,both_hands=args.both_claws_zero_internal_friction,right_damping=args.right_claw_damping,right_kp=args.right_claw_kp,noslip_iterations=2 if args.noslip_solver_diagnostic else 0,elliptic_grip_solver=args.elliptic_grip_solver_diagnostic)
     elif args.right_claw_kp is not None or args.right_claw_damping is not None or args.noslip_solver_diagnostic or args.elliptic_grip_solver_diagnostic:raise ValueError('parameter/solver diagnostics require an explicit existing zero-internal-friction profile')
     if args.approved_pad_friction_reference:
         if args.noslip_solver_diagnostic or not args.source_pad_coacd_comparison or not args.elliptic_grip_solver_diagnostic:raise ValueError('approved local tangent reference requires existing22 source pieces/elliptic10 and NoSlip0')
@@ -424,20 +431,20 @@ def main():
         claw=compare_global_impratio_one(claw)
     if args.fixed_reviewed_checkpoint:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
-        claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint,base_offset_xy=args.checkpoint_base_offset_xy_m)
+        claw=prepare_step("reviewed_initialization",add_reviewed_checkpoint,claw,args.fixed_reviewed_checkpoint,base_offset_xy=args.checkpoint_base_offset_xy_m)
     if args.approved_two_table_layout:
         if not args.fixed_reviewed_checkpoint:raise ValueError("two-table fixed-stance diagnostic requires reviewed episode initialization")
         from scripts.research.issue46.scene.delivery_table_overlay import build as scene_build
-        layout=scene_build(claw,90.,.10,.10,.10)
+        layout=prepare_step("two_table_layout",scene_build,claw,90.,.10,.10,.10)
         claw=Path(json.loads(Path(layout).read_text())["native_overlay_result"]["path"])
     if args.bottle_height_m==.22:
         if abs(args.grasp_height_above_center_m-.01)>1e-9:raise ValueError("H220 task requires section120mm above bottom")
         from scripts.research.issue46.scene.bottle_height_overlay import build as height_build
-        claw=height_build(claw,.22)
+        claw=prepare_step("bottle_height",height_build,claw,.22)
     if any(args.task_bottle_offset_xy_m):
         if not args.task_grasp_region:raise ValueError("task object initialization requires sensor-directed task")
         from scripts.research.issue46.scene.bottle_initial_pose_overlay import build as initial_pose_build
-        claw=initial_pose_build(claw,args.task_bottle_offset_xy_m)
+        claw=prepare_step("bottle_initialization",initial_pose_build,claw,args.task_bottle_offset_xy_m)
     if any(args.initial_bottle_offset_xy_m):
         if not args.visual_stance_adjustment:raise ValueError('object placement is an unknown initial scenario only')
         from scripts.research.issue46.scene.bottle_initial_pose_overlay import build as initial_pose_build
@@ -451,7 +458,7 @@ def main():
     if args.execute_pickup_navigation:
         if not args.fixed_reviewed_checkpoint or not args.approved_two_table_layout:raise ValueError("START execution requires approved native episode keyframe/room")
         from scripts.research.issue46.scene.episode_start_overlay import build as start_build
-        claw=start_build(claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
+        claw=prepare_step("start_initialization",start_build,claw,REPO/"simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json")
         args.dock_world_xy=tuple(json.loads(claw.read_text())["episode_start_navigation"]["pickup_goal_world_xyz_m"][:2])
         if args.task_grasp_region:
             import mujoco
@@ -475,7 +482,7 @@ def main():
     if args.carry_delivery_config is not None:
         if not args.approved_two_table_layout:raise ValueError("delivery requires the exact approved two-table scene")
         from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene
-        claw=prepare_delivery_scene(claw,args.carry_delivery_config)
+        claw=prepare_step("delivery_configuration",prepare_delivery_scene,claw,args.carry_delivery_config)
     if args.carry_retention_only and (not args.allow_carried_bottle_tilt or not args.carry_away_1m):
         raise ValueError("retention-only is explicitly scoped to qualified empty-bottle carry")
     if args.source_pad_coacd_comparison:
@@ -485,10 +492,10 @@ def main():
         candidate['scene']=dict(json.loads(claw.read_text())['generated']['host_scene'])
         candidate['source_pad_collision_comparison']={'source_candidate':str(original_candidate),'source_candidate_sha256':native.sha256(original_candidate),'overlay':str(claw),'overlay_sha256':native.sha256(claw),'classification':'SIMULATION_ONLY_SOURCE_DERIVED_COLLISION_COMPARISON'}
         candidate_dir=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='source-pad-coacd-ik-input').native_path
-        pg.write_new_text(candidate_dir/'candidate.json',json.dumps(candidate,indent=2)+'\n');pg.write_artifact_manifest(candidate_dir);args.candidate=candidate_dir/'candidate.json'
+        pg.write_new_text(candidate_dir/'candidate.json',json.dumps(candidate,indent=2)+'\n');args.candidate=candidate_dir/'candidate.json'
     if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot') and args.body_height_probe_drop_m is None:
         from scripts.research.issue46.perception.native_rgbd_grasp import prepare_host_cache
-        host_model_cache=prepare_host_cache(Path(json.loads(args.candidate.read_text())['scene']['path']))
+        host_model_cache=prepare_step("host_sensor_cache",prepare_host_cache,Path(json.loads(args.candidate.read_text())['scene']['path']))
     if args.reuse_verified_claw_cycle:gain_cycle_reuse=verified_claw_cycle_reuse(args.reuse_verified_claw_cycle,claw)
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
     display=__import__("os").environ.get("DISPLAY")
@@ -593,6 +600,9 @@ def main():
             args.body_height_native_build=prepare_publisher()
         argv.extend(["--standing-grasp-posture",str(args.standing_grasp_posture.resolve()),"--body-height-native-build",str(args.body_height_native_build),"--body-height-native-build-sha256",native.sha256(args.body_height_native_build)])
     if restoring_carry:argv.append("--restore-postured-carry")
+    if args.source_pad_coacd_comparison:
+        pg.write_new_text(candidate_dir/"preparation_timings.json",json.dumps({"scope":"STATIC_PREPARATION_NO_MJ_STEP","total_wall_s":time.monotonic()-preparation_started,"stages":preparation_timings},indent=2)+"\n")
+        pg.write_artifact_manifest(candidate_dir)
     sys.argv=argv
     try:native.main()
     finally:
