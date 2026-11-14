@@ -1,0 +1,100 @@
+{
+  "schema": "robotsim.x2.two-table-delivery.v1",
+  "classification": "SIMULATION_ONLY_LIVE_HUMAN_RETREAT_TURN_REVIEW_NOT_TASK_ACCEPTANCE",
+  "frame": "native_scene_world",
+  "table_body": "raicom_delivery_table",
+  "base_goal_world_xy": [
+    0.015,
+    0.98
+  ],
+  "base_goal_world_yaw_rad": 1.6560482606828113,
+  "placement_center_world_m": [
+    0.2,
+    1.52,
+    0.6968309428515006
+  ],
+  "table_bounds_min_world_m": [
+    -0.45089150290580626,
+    1.321745507199895,
+    -0.010973995898385547
+  ],
+  "table_bounds_max_world_m": [
+    0.45089160438871073,
+    1.87825448304453,
+    0.5468309428515006
+  ],
+  "tabletop_world_z_m": 0.5468309428515006,
+  "bottle_radius_m": 0.035,
+  "bottle_height_m": 0.3,
+  "bottle_mass_kg": 0.2,
+  "task_position_tolerance_m": 0.15,
+  "compact_turn_footprint_m": 0.3,
+  "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates",
+  "intermediate_turn_heading_tolerance_rad": 0.3,
+  "gait_prepare_angular_rad_s": -0.1,
+  "intermediate_turn_stop_reserve_rad": 0.4,
+  "turn_stop_reserve_evidence": "061921 real terminal turn remaining.3941rad radius.2901m, later remaining.3881 radius.2998 before .3003m guard; .40rad trigger stays inside existing planning bound. Actual finalheading/composite/footprint gates unchanged",
+  "retreat_cross_track_limit_m": 0.15,
+  "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification",
+  "turn_braking_footprint_m": 0.35,
+  "turn_footprint_scope": "active30cm retained; table-transfer braking/settled35cm, not legacy strict pivot qualification; actual current pose replanned",
+  "gait_prepare_required_load_states": 1,
+  "gait_readiness_scope": "actual foot unloading AND measured knee motion AND live source/mode; observe full alternation during transit, not a redundant pre-motion complete cycle",
+  "carry_native_neutral_stow": {
+    "classification": "SIMULATION_ONLY_MEASURED_UPRIGHT_CARRY_POSE_WITH_NATIVE_CPG_STEP_NOT_VENDOR_CARRY_QUALIFICATION",
+    "source": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml",
+    "source_sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1",
+    "operational_right_arm_ik": {
+      "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json",
+      "sha256": "f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",
+      "source_native_frame": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/reference_native_frame.json",
+      "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
+    },
+    "arm_target_rad": {
+      "left_shoulder_pitch_joint": 0.4,
+      "left_shoulder_roll_joint": 0.0,
+      "left_shoulder_yaw_joint": 0.0,
+      "left_elbow_joint": -1.2,
+      "left_wrist_yaw_joint": 0.0,
+      "left_wrist_pitch_joint": 0.0,
+      "left_wrist_roll_joint": 0.0,
+      "right_shoulder_pitch_joint": 0.426480446125408,
+      "right_shoulder_roll_joint": -0.32510131786346647,
+      "right_shoulder_yaw_joint": -0.363785453021629,
+      "right_elbow_joint": -1.7276868974466384,
+      "right_wrist_yaw_joint": -0.6582008729633598,
+      "right_wrist_pitch_joint": -0.11454816873639194,
+      "right_wrist_roll_joint": 1.4604811268837392
+    },
+    "duration_s": 6.0,
+    "physical_validation": "NOT_RUN",
+    "reference_profile": "REVIEWED_UPRIGHT_CARRY",
+    "reference_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json",
+    "reference_sha256": "6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5",
+    "carry_reference_frame": "TORSO_RIGID"
+  },
+  "turn_terminal_angular_taper_angle_rad": 0.6,
+  "turn_terminal_translation_free_angle_rad": 0.0,
+  "stand_transition_strategy": "ZERO_WINDOW_THEN_SD",
+  "terminal_braking_aisle_reserve": {
+    "classification": "SIMULATION_ONLY_TERMINAL_AISLE_RESERVE",
+    "frame": "native_scene_world",
+    "maximum_radius_m": 0.5,
+    "lateral_m": 0.2,
+    "terminal_yaw_error_rad": 0.4,
+    "static_clearance_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/two-table-terminal-aisle-reserve040-static-20261109T004240Z/result.json",
+    "static_clearance_sha256": "c6fb73e55e833649f98cfbf8a913edbaccddec8c7ceac958cf699ca3cd6f6c3e",
+    "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
+  },
+  "delivery_forward_command_m_s": 0.3,
+  "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION",
+  "carry_reference_scope": "REVIEWED_HIGH_UPRIGHT_CARRY_NO_NATIVE_ARM_TAKEOVER",
+  "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT",
+  "post_turn_egress_m": 0.0,
+  "post_turn_egress_scope": "SIMULATION_ONLY_MEASURED_1M_AWAY_BEFORE_SECOND_TABLE_ALIGNMENT_SAME_ROUTE_CONTROLLER",
+  "native_arm_follow_scope": "DISABLED",
+  "review_prefix_only": true,
+  "transit_motion_mode": "LOCOMOTION_DEFAULT",
+  "review_contact_policy": "known pelvis-leftHip and bottle-robot touches <=5mm recorded; engine collisions retained; posture/joint/drop/freshness/environment guards unchanged",
+  "incidental_contact_diagnostic": true
+}

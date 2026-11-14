@@ -41,11 +41,18 @@ When an integration, SDK, simulator, controller, ROS interface, or robot behavio
 4. Prefer the smallest reproducible comparison with the vendor's **unchanged** example, then a safe, instrumented RobotSim variant. Distinguish request acknowledgement, task completion, selected input source, applied state, and measured physical behavior. Preserve commands, versions, logs and evidence; don't infer success from an RPC SUCCESS or a visually plausible animation.
 5. Before escalating, record: sources/URLs and versions checked; what is documented versus inferred; the exact minimal reproduction and observed-versus-expected outputs; alternatives already ruled out; and the **specific missing proprietary fact, permission, safety approval, or manual decision**. Only escalate when this source-first investigation and safe in-scope verification genuinely cannot resolve the question. Do not repeat blind parameter/source-string permutations or identical blocked runs.
 
+Reuse an existing version-matched source audit when the relevant build,
+interface and configuration are unchanged. Investigate the newly observed
+difference; do not repeat the complete documentation/hash/startup audit merely
+because a new bounded experiment is being prepared.
+
 This is an **investigation obligation, not blanket execution permission**. Never bypass the [model-integrity approval gate](docs/engineering/model_integrity.md), physical/nonzero-motion safety gates, user approval boundaries, or runtime restrictions simply because a vendor tutorial uses privileged containers, unrestricted X11 access, or nonzero commands. A documentation discrepancy is not authorization to silently alter vendor code or robot mechanics.
 
 ## Mandatory robot model integrity
 
 Before proposing or changing robot/gripper mechanical geometry, links, joints, axes, limits, mimic/equality relations, collision geometry, linkage topology, or model provenance, follow the [mandatory model-integrity contract](docs/engineering/model_integrity.md). It applies to production and `SIMULATION_ONLY` research. Do not invent or reconstruct missing mechanics, and do not promote a research model. Each mechanical change requires explicit case-specific maintainer approval before implementation and a separate human review before merge; general authorization to fix a robot or complete a grasp is not approval to redesign its mechanism.
+
+For Issue #46 OmniPicker, apply the [2026-11-06 standing authorization for simulation parameter debugging](docs/engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging). Bounded gripper gain and joint-internal friction/damping diagnostics in separate overlays do not need repeated approval when reviewed STL geometry, assembly, kinematic relationships and existing safety/force limits remain unchanged. Geometry/topology/collision changes still require specific review. Read the owning contract for exact scope; do not generalize this authorization to other workstreams or hardware.
 
 ## Workspace and change boundaries
 
@@ -60,6 +67,30 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 - Make the smallest change that satisfies the task, then run focused checks relevant to the changed paths.
 - Report which checks ran and their results. Distinguish static checks from environment, simulation, or hardware validation; do not claim checks that were not run.
 - If a required check or Git operation is blocked, preserve the work and report the specific blocker and remaining validation gap.
+
+## Delivery-first iteration and accepted-review reuse
+
+- Use a short loop: identify the first observed failure, make the smallest
+  justified correction, run only the affected checks, then execute the
+  authorized bounded runtime. Do not stop at another audit when execution is
+  authorized and ready.
+- Reuse accepted geometry, contact regions, grasp frames, paths, source pins
+  and passing checks when their relevant inputs have not changed. Record what
+  is reused and its provenance; do not re-review or regenerate the same result
+  on every turn or experiment.
+- For a new or materially changed grasp/contact/path proposal, use the existing
+  lightweight web review first. Show intended geometry/path and actual
+  measurements separately. Once the user accepts that version, continue within
+  existing authorization; routine permitted fixes need no repeated visual
+  approval.
+- Follow [minimum checks and evidence reuse](docs/engineering/validation.md#minimum-checks-and-evidence-reuse).
+  Broad suites, repeated startup audits, new supervisors/frameworks and
+  experiment campaigns need a concrete dependency or failure that makes them
+  necessary. Passing relevant checks is the point to move on.
+- Preserve the named model, motion/force, freshness, stop and hardware
+  boundaries. Visual acceptance covers its stated scope; runtime behavior
+  needs measured evidence. Documents and retired Goals never authorize work
+  beyond the current user's request.
 
 ## Documentation responsibilities
 

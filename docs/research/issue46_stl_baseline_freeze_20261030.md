@@ -23,6 +23,16 @@ RAICOM-room static review.
 - Environment: RAICOM room/table/chair attached around the approved robot.
 - Object: the approved upright cylinder remains on the attached RAICOM table.
 
+## Later progress (2026-11-06)
+
+This remains the immutable October 30 visual/kinematic acceptance record.
+The exclusions below describe what that review did not qualify, not a claim
+that no later experiment exists. Native standing/docking and static arm IK now
+have local passing evidence in derived SIMULATION_ONLY scenes. Grasp/lift in
+the active setup remain unqualified; jaw opening and actual pose alignment
+are the current execution blockers. Consult [measured findings](issue46_truth_grasp_execution_findings.md)
+for source hashes, real traces and the distinction from fresh RGB-D control.
+
 ## Explicitly not frozen as qualified behavior
 
 - Native runtime body/controller integration.
@@ -39,6 +49,6 @@ RAICOM-room static review.
 | `scripts/research/issue46/perception/` | retain as offline perception/docking tools pending ROS adapter implementation |
 | Candidate CAD/G2/passive-loop variants | retain as evidence only; not selectable from the active registry |
 
-The next cleanup step is organizational: move retained research tools into
-topic directories with compatibility-tested imports, then create maintained
-ROS packages for navigation, perception, manipulation, and task execution.
+The original organizational cleanup suggestion is not the current task queue.
+Preserve these inputs and tools while resolving the measured grasp blockers;
+any cleanup or runtime promotion needs its own scoped consumer review.

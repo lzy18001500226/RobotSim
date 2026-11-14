@@ -25,6 +25,16 @@ The 101-row table is source-controlled in this package so runtime selection
 never reads an ad-hoc `reviews/` path. Its SHA-256 is locked in
 `../registry.json`.
 
+## Approved grasp-frame orientation
+
+[`grasp_frame_contract.json`](grasp_frame_contract.json) is the single
+machine-readable orientation convention for subsequent STL grasp reviews:
+the visual cylinder long axis is gripper-frame `+X` (orange/red) and jaw
+closure is `+Y` (green).  The full textured pad surfaces must be fit at each
+command before choosing a cylinder center; a fingertip or fixed midpoint is
+not an accepted substitute.  This is a visual-orientation convention only,
+not a dynamics or contact qualification.
+
 ## Selection
 
 Use the central registry/loader rather than loading XML by path:

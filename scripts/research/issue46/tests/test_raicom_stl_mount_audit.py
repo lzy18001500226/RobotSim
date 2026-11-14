@@ -38,6 +38,28 @@ class RAICOMSTLMountAuditTests(unittest.TestCase):
         self.assertEqual(root.findall("geom")[0].get("group"), "0")
         self.assertEqual(root.findall("geom")[1].get("group"), str(MODULE.STL_COLLISION_RENDER_GROUP))
 
+    def test_add_hand_replaces_only_the_retired_wrist_hand_shell(self) -> None:
+        root = ET.fromstring(
+            "<mujoco><worldbody><body name='right_wrist_roll_link'>"
+            "<inertial mass='1' pos='0 0 0' diaginertia='1 1 1'/>"
+            "<joint name='right_wrist_roll_joint' type='hinge'/>"
+            "<geom name='retired_hand_visual' mesh='right_wrist_roll_link'/>"
+            "<geom name='wrist_housing' mesh='right_wrist_pitch_link'/>"
+            "</body></worldbody></mujoco>"
+        )
+        stl = ET.fromstring("<mujoco><worldbody><body name='R_omnipicker_base_link'/></worldbody></mujoco>")
+        MODULE.add_hand(
+            root,
+            stl,
+            side="right",
+            mount={"parent_link": "right_wrist_roll_link", "xyz": "0 0 0", "rpy": "0 0 0"},
+        )
+        wrist = root.find(".//body[@name='right_wrist_roll_link']")
+        assert wrist is not None
+        self.assertIsNone(wrist.find("geom[@name='retired_hand_visual']"))
+        self.assertIsNotNone(wrist.find("geom[@name='wrist_housing']"))
+        self.assertIsNotNone(wrist.find("body[@name='R_omnipicker_base_link']"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,2082 @@
+"""Carry route adapter checks; no ROS or physical motion."""
+import ast
+from pathlib import Path
+import math
+import unittest
+from scripts.research.issue46.native_runtime import native_base_micro_probe as m
+
+class CarryNavigationTests(unittest.TestCase):
+    def test_retreat_heading_is_continuous_and_cannot_full_scale_tiny_error(self):
+        self.assertEqual(m.retreat_heading_command(.02,.30),0.)
+        self.assertEqual(m.retreat_heading_command(-.01,.30),0.)
+        self.assertAlmostEqual(m.retreat_heading_command(.021,.30),.0008)
+        self.assertAlmostEqual(m.retreat_heading_command(-.10,.30),-.064)
+        self.assertEqual(m.retreat_heading_command(1.,.30),.30)
+        self.assertEqual(m.retreat_heading_command(-1.,.10),-.10)
+        for value in (-.02,.02):
+            self.assertLess(abs(m.retreat_heading_command(value+1e-7,.30)-m.retreat_heading_command(value-1e-7,.30)),2e-7)
+        with self.assertRaises(ValueError):m.retreat_heading_command(float('nan'),.30)
+        with self.assertRaises(ValueError):m.retreat_heading_command(.1,.31)
+
+    def test_predicted_braking_cannot_replace_actual_pickup_table_clearance(self):
+        delivery=dict(retreat_target_m=.75,minimum_actual_retreat_m=.60)
+        self.assertFalse(m.retreat_braking_gate(.322885,.9,True,delivery)["request_stop"])
+        self.assertFalse(m.retreat_braking_gate(.59,.9,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.61,.76,True,delivery)["request_stop"])
+        self.assertFalse(m.retreat_braking_gate(.61,.72,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.75,.75,True,delivery)["request_stop"])
+        self.assertTrue(m.retreat_braking_gate(.04,.51,True,{})["request_stop"])
+        for cfg in (dict(retreat_target_m=.50,minimum_actual_retreat_m=.60),dict(retreat_target_m=.9)):
+            with self.assertRaises(ValueError):m.retreat_braking_gate(.3,.5,True,cfg)
+        with self.assertRaises(ValueError):m.retreat_braking_gate(float('nan'),.5,True,{})
+
+
+    def test_near_terminal_step_heading_requests_zero_not_precise_pivot(self):
+        from scripts.research.issue46.native_runtime.native_micro_stop_contract import PHYSICAL_STOP_MAX_SAMPLE_GAP_S
+        pose=dict(vx=-.127309,vy=.261719)
+        stop=m.delivery_step_heading_stop(.4559702,.45,pose)
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop['max_sample_gap_s'],PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+        self.assertEqual(stop['placement_feasibility'],'NOT_RUN')
+        self.assertEqual(stop['composite_stop'],'STILL_REQUIRED')
+        self.assertAlmostEqual(stop['one_sample_reserve_m'],math.hypot(pose['vx'],pose['vy'])*PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+        self.assertIsNone(m.delivery_step_heading_stop(.60,.45,pose))
+        self.assertIsNone(m.delivery_step_heading_stop(.4559702,.45,dict(vx=0.,vy=0.)))
+        with self.assertRaises(ValueError):m.delivery_step_heading_stop(float('nan'),.45,pose)
+        with self.assertRaises(ValueError):m.delivery_step_heading_stop(.45,.45,pose,.20)
+
+
+    def test_clock_recovery_turn_stop_requires_prior_handshake_and_fresh_stand(self):
+        mission=dict(turn_source_and_mode_observed=True,target_unwrapped_yaw=-3.6822340361,
+                     unwrapped_yaw=-3.4992502788,clock_recovery_turn_stop=dict(
+                     stop={"pass":True},completed_s=10.,command_index=1,generation=1))
+        row=dict(native_generation=1,common_mode_desc="STAND_DEFAULT",get_mode_desc="STAND_DEFAULT",
+                 get_mode_header_code=0,common_mode_status_value=100,get_mode_status_value=100,
+                 state_age_s={"common":.03,"get_mode":.04})
+        commands=[dict(forward=.19,angular=-.3)]
+        self.assertEqual(m.recovered_turn_stop(mission,row,commands,10.02,.30),{"pass":True})
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.21,.30))
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands+[dict(forward=.1)],10.02,.30))
+        mission["turn_source_and_mode_observed"]=False
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.02,.30))
+        mission["turn_source_and_mode_observed"]=True
+        mission["clock_recovery_turn_stop"]["stop"]["pass"]=False
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.02,.30))
+
+    def test_pure_forward_probe_rejects_saved_reverse_displacement_and_cannot_refresh_deadline(self):
+        origin=dict(x=.9651719454847869,y=-1.5375498174742752,yaw=1.9662637305634856)
+        probe=m.delivery_direction_probe(None,origin,0.)
+        actual=dict(x=1.005960704974692,y=-1.705640411700534,yaw=1.8852998892781574)
+        self.assertEqual(m.delivery_direction_probe(probe,actual,.9)["failure"],"DELIVERY_FORWARD_RESPONSE_REVERSED_30MM")
+        self.assertEqual(m.delivery_direction_probe(probe,origin,1.)["failure"],"DELIVERY_FORWARD_RESPONSE_UNCONFIRMED_1S")
+        p=dict(origin,x=origin["x"]+.04*math.cos(origin["yaw"]),y=origin["y"]+.04*math.sin(origin["yaw"]))
+        self.assertTrue(m.delivery_direction_probe(probe,p,.5)["qualified"])
+        self.assertFalse(probe["qualified"])
+
+    def test_real_145703_positive_direction_is_not_rejected_as_speed_performance(self):
+        origin=dict(x=.9632511342194044,y=-1.6665462031117202,yaw=1.9883522628713364)
+        probe=m.delivery_direction_probe(None,origin,0.)
+        forward=.013561144223032338;lateral=-.040509443910514475;yaw=origin["yaw"]
+        pose=dict(origin,x=origin["x"]+forward*math.cos(yaw)-lateral*math.sin(yaw),
+                  y=origin["y"]+forward*math.sin(yaw)+lateral*math.cos(yaw))
+        actual=m.delivery_direction_probe(probe,pose,1.020992114994442)
+        self.assertTrue(actual["qualified"])
+        self.assertNotIn("failure",actual)
+
+    def test_pure_forward_adapter_handles_real_immutable_controller_output(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation"))
+        from robotsim_navigation.point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
+        c=PointGoalController(ControllerConfig(max_forward_mps=.30))
+        actual=c.step(Pose2D(1.0078,-1.4446,2.0085,"native_scene_world",1.),
+                      Goal2D(.015,.98,1.656,"native_scene_world"),now_steady_s=1.)
+        self.assertEqual(actual.state,NavState.DRIVE)
+        adapted=m.pure_forward_activation_output(actual)
+        self.assertEqual(adapted.angular_z,0.)
+        self.assertEqual(adapted.linear_x,actual.linear_x)
+        self.assertNotEqual(actual.angular_z,0.)
+        self.assertIsNot(actual,adapted)
+
+    def test_single_turn_points_at_second_table_instead_of_fixed_180(self):
+        pose=dict(x=.6416,y=-1.4794,yaw=-.2167)
+        bearing,target=m.table_turn_target(pose,[.015,.98])
+        self.assertGreater(target-pose["yaw"],0.)
+        self.assertLess(abs(target-pose["yaw"]),math.pi)
+        self.assertAlmostEqual(math.sin(target-bearing),0.,places=12)
+        self.assertGreater(abs((pose["yaw"]-math.pi-bearing+math.pi)%(2*math.pi)-math.pi),1.)
+
+    def test_clockwise_table_target_unwraps_beyond_180_without_changing_bearing(self):
+        pose=dict(x=.6422,y=-1.5369,yaw=-.2109)
+        bearing,target=m.table_turn_target(pose,[.015,.98],clockwise=True)
+        self.assertLess(target-pose["yaw"],-math.pi)
+        self.assertGreater(target-pose["yaw"],-2.*math.pi)
+        self.assertAlmostEqual(math.sin(target-bearing),0.,places=12)
+        moved_bearing=1.79
+        continuous=target+(moved_bearing-target+math.pi)%(2*math.pi)-math.pi
+        self.assertLess(abs(continuous-target),.2)
+
+    def test_zero_startup_waits_for_fresh_clock_epoch_but_never_swallows_safety_fault(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        n=SimpleNamespace(messages={k:{} for k in ("common","imu","leg_state","leg_command")},
+                          readbacks={"get_mode":{}},await_graph=mock.Mock(),publish=mock.Mock(),pump=mock.Mock())
+        n.sample=mock.Mock(side_effect=[RuntimeError("CLOCK_GENERATION_PENDING"),dict(body_status=1)])
+        self.assertEqual(m.await_carry_initial_state(n)["body_status"],1)
+        self.assertEqual(n.publish.call_count,2)
+        n.sample=mock.Mock(side_effect=RuntimeError("POSTURE"))
+        with self.assertRaisesRegex(RuntimeError,"POSTURE"):m.await_carry_initial_state(n)
+
+    def test_route_generation_uses_existing_controller_and_fixed_caps(self):
+        code=m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.)
+        compile(code,"carry_route","exec")
+        tree=ast.parse(code)
+        self.assertIn("run_carry_navigation", {n.name for n in tree.body if isinstance(n,ast.FunctionDef)})
+        self.assertIn("PointGoalController",code)
+        self.assertIn("max_forward_mps=.12",code)
+        self.assertIn('max_angular_rps=cfg.get("angular_command_cap",.075)',code)
+        self.assertIn("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED",code)
+        self.assertTrue(code.endswith("run_probe()"+chr(10)))
+    def test_sdk_turn_profile_is_explicit_and_retains_physical_speed_limit(self):
+        code=m.build_carry_route_script([-.45,1.],{},['pelvis'],carry_pid=19,angular_command_cap=.1)
+        self.assertIn("'angular_command_cap': 0.1",code)
+        self.assertIn('planar_speed_limit=.20',code)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,angular_command_cap=.3)
+    def test_real_debug_command_duration_is_interpolated_not_literal_code(self):
+        import shlex
+        from types import SimpleNamespace
+        parent=Path(__file__).with_name('xvfb_native_reset_stand.py')
+        tree=ast.parse(parent.read_text())
+        statement=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='debug_command' for t in n.targets))
+        ns=dict(environment='source /opt/ros/humble/setup.bash; ',setup='/workspace/debug/setup.bash',shlex=shlex,expected_debug_node='mc_ros2_node158',args=SimpleNamespace(carry_timeout_s=90.,carry_goal_world_xy=[-.45,1.]))
+        exec(compile(ast.Module(body=[statement],type_ignores=[]),'real_debug_command','exec'),ns)
+        parts=shlex.split(ns['debug_command'])
+        self.assertEqual(parts[parts.index('--max-duration-s')+1],'90')
+        self.assertNotIn('str(args',ns['debug_command'])
+
+    def test_pinned_debug_collectors_real_argument_validator_accepts_carry_capture(self):
+        import argparse,contextlib,io,sys
+        from unittest import mock
+        source=Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-80/foundationwalk-final-left-right-turns-run65-20261022T073901Z/issue80_mc_rl_debug_capture.py')
+        tree=ast.parse(source.read_text());main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+        prefix=[]
+        for node in main.body:
+            if isinstance(node,ast.Expr) and ast.unparse(node)=='rclpy.init()':break
+            prefix.append(node)
+        self.assertTrue(prefix)
+        args=['collector','--output','/unused','--ready-marker','/unused2','--summary','/unused3','--max-duration-s','90']
+        with mock.patch.object(sys,'argv',args):
+            ns=dict(argparse=argparse,__doc__='validation only')
+            exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),ns)
+            self.assertEqual(ns['args'].max_duration_s,90.)
+
+        args[-1]='170'
+        with mock.patch.object(sys,'argv',args),contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),dict(argparse=argparse,__doc__='validation only'))
+
+    def test_step_preparation_allows_zero_sd_but_requires_positive_speed_readback(self):
+        state=dict(body_status=1,get_mode_header_code=0,state_age_s={'get_mode':.05},get_mode_desc='STAND_DEFAULT',common_mode_desc='STAND_DEFAULT',common_mode_status_value=100,raw_common={'speed_status':{'speed_mode':{'value':4}}})
+        self.assertTrue(m.native_step_activation_ready(state,1))
+        state['raw_common']['speed_status']['speed_mode']['value']=1
+        self.assertFalse(m.native_step_activation_ready(state,1))
+        state['raw_common']['speed_status']['speed_mode']['value']=4
+        state['get_mode_desc']='LOCOMOTION_DEFAULT'
+        self.assertFalse(m.native_step_activation_ready(state,1))
+        state['get_mode_desc']='STAND_DEFAULT';state['state_age_s']['get_mode']=.21
+        self.assertFalse(m.native_step_activation_ready(state,1))
+
+    def test_invalid_goals_and_deadlines_are_not_executable(self):
+        for goal,seconds in (([2.,0.],90.),([float("nan"),0.],90.),([0.,0.],91.)):
+            with self.assertRaises(ValueError):m.build_carry_route_script(goal,{},[],carry_pid=19,timeout_s=seconds)
+    def test_only_documented_clock_fault_can_enter_zero_stop_recovery(self):
+        fault={"gate":"CLOCK_STEP_DURING_MOTION"}
+        self.assertTrue(m.recoverable_carry_clock_fault(fault,RuntimeError("NATIVE_FEEDBACK_INVALID:clock"),0))
+        for error in ("PLANAR_SPEED","SOURCE_JOINT_SPEED:knee","STALE_BILATERAL_ARM_FEEDBACK"):
+            self.assertFalse(m.recoverable_carry_clock_fault(fault,RuntimeError(error),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({"gate":"POSTURE"},RuntimeError("NATIVE_FEEDBACK_INVALID:pose"),0))
+        self.assertFalse(m.recoverable_carry_clock_fault(fault,RuntimeError("NATIVE_FEEDBACK_INVALID:clock"),4))
+    def test_intended_pad_contact_is_the_only_new_collision_allowance(self):
+        pose=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
+        contact=dict(body1="R_hand_narrow3_Link",body2="test_cylinder",efc_address=0,distance_m=-.002,local_force_torque=[1.])
+        row=dict(joints={},contacts=[contact],active_contact_count=1,contact_capture_scope="ALL_COMPILED_GEOM_CONTACTS")
+        self.assertIsNone(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]))
+        self.assertTrue(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"}).startswith("ROBOT_ENVIRONMENT_COLLISION"))
+        with self.assertRaises(ValueError):m.physical_fault(row,pose,{},allowed_contact_pairs=[["pelvis","world"]])
+        pose["vx"]=.201
+        self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
+def arm_handoff_fixture(node, baseline, deadline, stop):
+    """Sequencing fixture only; AtomicStoppedRearmTests exercise real arming."""
+    if stop.get("pass") is not True:
+        raise RuntimeError("CARRY_REARM_REQUIRES_QUALIFIED_STOP")
+    node.moving = True
+
+
+class CarryRouteControlFlowTests(unittest.TestCase):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False, graph_delay_s=0., check_cached_native_age=False, reverse_moving_arc=False):
+        import contextlib,io,json,sys,threading
+        from types import SimpleNamespace
+        from unittest import mock
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation/robotsim_navigation"))
+        clock=SimpleNamespace(t=10.)
+        class Node:
+            def __init__(self):
+                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None;self.telemetry_lock=threading.RLock();self.pumped_epoch=self.source_epoch=0
+                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1,"contacts":[dict(geom1="raicom_floor",body2=side+"_ankle_roll_link",local_force_torque=[200.]) for side in ("left","right")]}
+                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT";self.native_sample_at=clock.t
+            def start_feedback(self):pass
+            def stop_feedback(self):pass
+            def destroy_node(self):pass
+            def pump(self):clock.t+=pump_delay_s;self.native_sample_at=clock.t
+            def graph(self):clock.t+=graph_delay_s
+            def await_graph(self):self.graph()
+            def publish(self,f=0.,l=0.,a=0.):
+                if not self.moving:f=l=a=0.
+                self.command_log.append(dict(t=clock.t,forward=f,lateral=l,angular=a))
+                if f:self.x+=.03 if f>0 else -.03
+            def deadline_zero(self):
+                self.moving=False;self.publish();self.events.append(dict(event="ZERO",t=clock.t))
+            def observe(self,seconds,**kwargs):
+                self.events.append(dict(event="OBSERVE",seconds=seconds,require_stop=kwargs.get("require_stop",False),t=clock.t))
+                clock.t+=.02
+                return {"pass":True,"fixture_only":True}
+            def stand_once(self, requested="STAND_DEFAULT"):
+                self.current_mode=requested
+                self.stands+=int(requested=="STAND_DEFAULT");self.events.append(dict(event="STAND" if requested=="STAND_DEFAULT" else "STEP",t=clock.t))
+            def sample(self):
+                if check_cached_native_age and clock.t-self.native_sample_at>.20:raise RuntimeError("NATIVE_FEEDBACK_STALE_OR_INVALID")
+                if self.moving and fault and not self.once:
+                    self.once=True
+                    if fault=="clock":
+                        self.feedback_fault={"gate":"CLOCK_STEP_DURING_MOTION"};self.deadline_zero()
+                        raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
+                    self.feedback_fault={"gate":fault};raise RuntimeError(fault)
+                pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
+                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+        class Timer:
+            def __init__(self,seconds,callback):self.callback=callback
+            def start(self):
+                if immediate_watchdog:self.callback()
+            def cancel(self):pass
+        n=Node();written=[]
+        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[-.3,0.] if reverse_moving_arc else [.3,0.],"timeout_s":5.,"pid":19,"transit_policy_050":transit_policy_050,"reverse_moving_arc":reverse_moving_arc,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
+            m.run_carry_navigation(n,SimpleNamespace())
+        return json.loads(written[-1]),n
+    def test_goal_stop_uses_zero_then_stand_then_independent_observation(self):
+        result,n=self.run_route()
+        self.assertTrue(result["pass_result"])
+        self.assertTrue(result["goal_triggered_stop"])
+        self.assertEqual(n.stands,1)
+        first_stand=next(i for i,x in enumerate(n.events) if x["event"]=="STAND")
+        self.assertTrue(any(x["event"]=="ZERO" for x in n.events[:first_stand]))
+        self.assertTrue(any(x["event"]=="OBSERVE" and x.get("require_stop") for x in n.events[first_stand+1:]))
+    def test_native_step_mode_is_requested_and_confirmed_before_nonzero(self):
+        result,n=self.run_route(native_step=True)
+        self.assertTrue(result['pass_result'])
+        self.assertTrue(result['source_and_motion_mode_observed'])
+        self.assertNotIn('source_and_ld_observed',result)
+        self.assertEqual(n.stands,1)
+        self.assertEqual(sum(e['event']=='STEP' for e in n.events),1)
+        self.assertEqual(result['native_step_transition'][0]['common_mode_desc'],'LOCOMOTION_STEP')
+    def test_startup_graph_must_refresh_native_sample_before_baseline(self):
+        result,n=self.run_route(graph_delay_s=.25,check_cached_native_age=True)
+        self.assertTrue(result["pass_result"])
+        self.assertIn("pre_motion_composite",result)
+
+    def test_pose_sample_newer_than_loop_start_is_still_fresh(self):
+        result,n=self.run_route(pump_delay_s=.003)
+        self.assertTrue(result["pass_result"])
+        self.assertNotIn("controller_rejection",result)
+    def test_physical_fault_never_rearms(self):
+        result,n=self.run_route("PLANAR_SPEED")
+        self.assertFalse(result["pass_result"])
+        self.assertEqual(result["failure"],"PLANAR_SPEED")
+        self.assertEqual(result["clock_recoveries"],[])
+        self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
+    def test_clock_recovery_stops_and_qualifies_before_new_motion(self):
+        result,n=self.run_route("clock")
+        self.assertTrue(result["pass_result"])
+        self.assertEqual(len(result["clock_recoveries"]),1)
+        self.assertEqual(n.stands,2)
+        self.assertTrue(result["clock_recoveries"][0]["stop"]["pass"])
+    def test_deadline_watchdog_cannot_be_rearmed_by_loop(self):
+        result,n=self.run_route(immediate_watchdog=True)
+        self.assertFalse(result["pass_result"])
+        self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
+
+class CarryParentIntegrationTests(unittest.TestCase):
+    def test_complete_parent_handoff_branch_without_docker_or_physics(self):
+        import json,tempfile,subprocess,time
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent,native_grasp_audit as audit
+        with tempfile.TemporaryDirectory() as folder:
+            out=Path(folder);now=time.monotonic_ns()
+            ready=dict(schema="robotsim.x2.carry-ready.v1",pid=19,physical_lift_pass=True,post_lift_retract_pass=True,generation=1,host_monotonic_ns=now)
+            native=dict(engine_version=337,host_monotonic_ns=now,generation=1,sim_time_s=80.,process_pid=7,bodies={n:{} for n in ("pelvis","R_omnipicker_base_link","test_cylinder")})
+            (out/"native_latest.json").write_text(json.dumps(native)+chr(10))
+            (out/"carry_ready.json").write_text(json.dumps(ready))
+            (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
+            (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
+            (out/"native_micro_stop_contract.py").write_text("# fixture")
+            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False,carry_native_action_smoothing=False,carry_native_step_mode=False)
+            plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}
+            result={"gates":{"OFFICIAL_CMD_VEL_BRIDGE":"PASS"},"commands_not_sent":["locomotion velocity"]}
+            calls=[]
+            def run(cmd,**kwargs):
+                calls.append(cmd)
+                (out/"native_carry_owner.stdout").write_text('{"carry_execution":{"pass":true}}')
+                if any("native_carry_route.py" in str(x) for x in cmd):
+                    (out/"native_carry_route_result.json").write_text(json.dumps(dict(pass_result=True,command_log=[dict(forward=.12,lateral=0.,angular=0.)])))
+                    (out/"native_carry_owner.exit").write_text("0")
+                return subprocess.CompletedProcess(cmd,0,"")
+            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"qualify_static_carry_hold",return_value={"pass":True,"fixture_only":True}),mock.patch.object(parent,"run",run),mock.patch.object(parent.time,"monotonic_ns",return_value=now),mock.patch.object(audit,"iter_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
+                completed=parent.execute_grasp_with_carry("fixture", "",out,args,plan,result,48)
+            self.assertEqual(completed.returncode,0)
+            self.assertEqual(result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"],"PASS")
+            self.assertTrue((out/"carry_release").exists())
+            self.assertTrue((out/"point_goal_controller.py").is_file())
+            self.assertEqual(len(calls),2)
+            self.assertNotIn("locomotion velocity",result["commands_not_sent"])
+
+class DurableMilestoneTests(unittest.TestCase):
+    def test_streamed_audit_keeps_late_regression_fail_closed(self):
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import native_grasp_audit as audit
+        def row(stamp):return dict(host_monotonic_ns=stamp,generation=1,engine_version=337,sim_time_s=1.,contacts=[],joints={})
+        with mock.patch.object(m,'native_pose',return_value={'vx':0.,'vy':0.}),mock.patch.object(m,'physical_fault',return_value=None):
+            passed=audit.evaluate_carry_motion(iter([row(1000000000),row(1020000000)]),{},[],start_ns=1000000000,end_ns=1100000000)
+            failed=audit.evaluate_carry_motion(iter([row(1000000000),row(1020000000),row(2000000000),row(1010000000)]),{},[],start_ns=1000000000,end_ns=1100000000)
+        self.assertTrue(passed['pass']);self.assertEqual(passed['sample_count'],2)
+        self.assertFalse(failed['pass']);self.assertEqual(failed['failure'],'CARRY_NATIVE_GAP')
+
+    def test_atomic_milestone_is_complete_and_refuses_rewrite(self):
+        import tempfile,json
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'ready.json'
+            m.write_durable_milestone(path,{'ready':True})
+            self.assertEqual(json.loads(path.read_text()),{'ready':True})
+            self.assertFalse(path.with_name(path.name+'.committing').exists())
+            with self.assertRaises(FileExistsError):m.write_durable_milestone(path,{'ready':False})
+            self.assertEqual(json.loads(path.read_text()),{'ready':True})
+
+
+class ApprovedLocalFrictionGuardTests(unittest.TestCase):
+    def test_unapproved_solver_or_timestep_cannot_generate_a_model(self):
+        import json
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import claw_parameter_diagnostic as c
+        record=dict(classification='SIMULATION_ONLY_STL_CLAW_CONTROL_OVERLAY',source_pad_collision_comparison={'part_count':22},generated={k:{'path':'/unused','sha256':'same'} for k in ('host_scene','runtime_scene','simulator_config')})
+        for options in (dict(npair=1,noslip=0,cone=1,dt=.001),dict(npair=0,noslip=2,cone=1,dt=.001),dict(npair=0,noslip=0,cone=0,dt=.001),dict(npair=0,noslip=0,cone=1,dt=.002)):
+            model=NS(npair=options['npair'],opt=NS(noslip_iterations=options['noslip'],cone=options['cone'],impratio=10.,timestep=options['dt']))
+            with mock.patch.object(Path,'read_text',return_value=json.dumps(record)),mock.patch.object(c,'digest',return_value='same'),mock.patch.object(c.mujoco.MjModel,'from_xml_path',return_value=model),mock.patch.object(c.pg,'create_unique_output_directory') as allocator:
+                with self.assertRaisesRegex(ValueError,'native1ms'):c.add_approved_pad_friction_reference(Path('/unused'))
+                allocator.assert_not_called()
+
+
+class NativeActionSmoothingTests(unittest.TestCase):
+    def test_only_two_native_action_pair_rules_are_added(self):
+        import copy,yaml
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        base=Path('/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5')
+        for path in (base/'action_setting.yaml',base/'sim/action_setting.yaml'):
+            source=yaml.safe_load(path.read_text());original=copy.deepcopy(source)
+            result=h.build_native_carry_transition_setting(source)
+            self.assertEqual(source,original)
+            self.assertEqual(result['smooth_transitions'][:2],source['smooth_transitions'])
+            self.assertEqual(result['smooth_transitions'][2:],[dict(zip(('from','to','duration_ms'),('STAND_DEFAULT','LOCOMOTION_DEFAULT',500))),dict(zip(('from','to','duration_ms'),('LOCOMOTION_DEFAULT','STAND_DEFAULT',500)))])
+            del result['smooth_transitions'];del original['smooth_transitions']
+            self.assertEqual(result,original)
+        step=h.build_native_carry_transition_setting(yaml.safe_load((base/'action_setting.yaml').read_text()),native_step=True)
+        self.assertEqual(len(step['smooth_transitions']),6)
+        self.assertEqual(step['smooth_transitions'][-2]['to'],'LOCOMOTION_STEP')
+        self.assertEqual(step['smooth_transitions'][-1]['to'],'STAND_DEFAULT')
+        with self.assertRaises(ValueError):h.build_native_carry_transition_setting({})
+
+
+class DisabledPublisherIsolationTests(unittest.TestCase):
+    def test_only_carry_isolates_two_disabled_native_endpoints(self):
+        import copy
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        cfg={"MotionControlModule":{"PublisherManager":{"publisher_cfg_list":[
+            {"name":"arm_joint_command","topic":"/aima/hal/joint/arm/command","enable":True,"frequency":500},
+            {"name":"hand_joint_command","topic":"/aima/hal/joint/hand/command","enable":True,"frequency":50},
+            {"name":"leg_joint_command","topic":"/aima/hal/joint/leg/command","enable":True,"frequency":500}]}}}
+        cfg["aimrt"]={"channel":{"pub_topics_options":[{"topic_name":"/aima/hal/joint/arm/command"},{"topic_name":"/aima/hal/joint/hand/command"}]}}
+        original=copy.deepcopy(cfg)
+        default=h.build_arm_hand_split_mc_config(cfg)
+        isolated=h.build_arm_hand_split_mc_config(cfg,isolate_disabled_topics=True)
+        self.assertEqual(cfg,original)
+        a=default["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+        b=isolated["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+        self.assertEqual(a[2],b[2]);self.assertEqual(b[2],original["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"][2])
+        for old,new in zip(a[:2],b[:2]):
+            self.assertFalse(new["enable"]);self.assertEqual(old["frequency"],new["frequency"])
+            self.assertTrue(old["topic"].startswith("/aima/"))
+            self.assertTrue(new["topic"].startswith("/robotsim/issue46/inactive_mc/"))
+
+class StaticCarryHoldTests(unittest.TestCase):
+    def test_prehold_waits_for_eight_sim_seconds_and_unique_samples(self):
+        import json,tempfile
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as p,native_grasp_audit as a
+        clock=NS(t=10.,sim=-.25)
+        def row(*args):
+            clock.sim+=.25
+            return dict(generation=1,sim_time_s=clock.sim,host_monotonic_ns=int(clock.t*1e9))
+        def health(path):
+            return json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=int(clock.t*1e9),native_source_host_ns=int(clock.t*1e9)))
+        with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",side_effect=row),mock.patch.object(Path,"read_text",health),mock.patch.object(p.time,"monotonic",lambda:clock.t),mock.patch.object(p.time,"monotonic_ns",lambda:int(clock.t*1e9)),mock.patch.object(p.time,"sleep",lambda t:setattr(clock,"t",clock.t+t)):
+            result=p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
+        self.assertTrue(result["pass"]);self.assertGreaterEqual(result["sim_span_s"],8.);self.assertGreaterEqual(result["unique_native_samples"],25)
+    def test_stale_held_object_evidence_cannot_qualify(self):
+        import json,tempfile
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as p,native_grasp_audit as a
+        with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",return_value=dict(generation=1,sim_time_s=0.)),mock.patch.object(Path,"read_text",return_value=json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=0,native_source_host_ns=0))):
+            with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED"):p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
+
+
+
+class CarryStopEvidenceTests(unittest.TestCase):
+    def test_zero_publication_does_not_prove_receipt_or_stop(self):
+        result=dict(pass_result=False,failure="PLANAR_SPEED",
+                    command_log=[dict(t=1.,forward=.12),dict(t=1.1,forward=0.),dict(t=2.15,forward=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["first_zero_after_nonzero_publish_s"],1.1)
+        self.assertEqual(evidence["zero_receipt_ack"],"UNAVAILABLE")
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertEqual(evidence["stand_request_count"],0)
+        self.assertFalse(evidence["rearm_authorized"])
+        self.assertEqual(result["failure"],"PLANAR_SPEED")
+    def test_service_acceptance_and_stale_stand_do_not_prove_physical_stop(self):
+        row=dict(sample_monotonic_s=2.,get_mode_header_code=0,get_mode_desc="STAND_DEFAULT",
+                 common_mode_desc="STAND_DEFAULT",get_mode_status_value=100,common_mode_status_value=100,
+                 state_age_s={k:0. for k in ("odom","common","imu","leg_state","leg_command","get_mode")})
+        row["state_age_s"]["leg_state"]=.21
+        result=dict(events=[dict(event="STAND_REQUEST",t=1.2),
+                            dict(event="STAND_RESPONSE",t=1.3,raw={"status":1})],
+                    trace=[row],command_log=[dict(t=1.,angular=.1),dict(t=1.1,angular=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["stand_request_count"],1)
+        self.assertEqual(evidence["fresh_agreeing_stand_after_zero_sample_count"],0)
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertFalse(evidence["rearm_authorized"])
+    def test_complete_gate_is_independent_and_failure_still_prevents_rearm(self):
+        result=dict(post_stop_composite={"pass":True},pass_result=True,failure=None)
+        self.assertTrue(m.carry_stop_evidence(result)["route_acceptance_recorded"])
+        self.assertFalse(m.carry_stop_evidence(result)["rearm_authorized"])
+        result["failure"]="BOTTLE_TILTED"
+        self.assertFalse(m.carry_stop_evidence(result)["rearm_authorized"])
+        result["post_stop_composite"]={"pass":False}
+        self.assertEqual(m.carry_stop_evidence(result)["independent_composite_stop"],"FAIL")
+    def test_no_motion_cannot_select_prelude_zeros_as_a_motion_stop(self):
+        result=dict(command_log=[dict(t=1.,forward=0.),dict(t=2.,forward=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertIsNone(evidence["first_zero_after_nonzero_publish_s"])
+        self.assertEqual(evidence["zero_publish_count_after_nonzero"],0)
+        self.assertFalse(evidence["rearm_authorized"])
+
+
+    def test_duplicate_stand_samples_are_not_counted_as_unique_readbacks(self):
+        row=dict(sample_monotonic_s=2.,get_mode_header_code=0,get_mode_desc="STAND_DEFAULT",
+                 common_mode_desc="STAND_DEFAULT",get_mode_status_value=100,common_mode_status_value=100,
+                 state_age_s={k:.01 for k in ("odom","common","imu","leg_state","leg_command","get_mode")})
+        result=dict(command_log=[dict(t=1.,angular=.1),dict(t=1.1,angular=0.)],
+                    trace=[row,row,dict(row,sample_monotonic_s=2.02)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["fresh_agreeing_stand_after_zero_sample_count"],2)
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertFalse(evidence["rearm_authorized"])
+
+    def test_summary_failure_preserves_physical_fault_and_zero_cleanup(self):
+        from unittest import mock
+        with mock.patch.object(m,"carry_stop_evidence",side_effect=ValueError("bad diagnostic")):
+            result,n=CarryRouteControlFlowTests().run_route("PLANAR_SPEED")
+        self.assertEqual(result["failure"],"PLANAR_SPEED")
+        self.assertEqual(result["stop_evidence_error"],"bad diagnostic")
+        self.assertFalse(result["pass_result"])
+        self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
+
+
+
+
+class CarryTransit050Tests(unittest.TestCase):
+    def permit(self):
+        return dict(schema="robotsim.carry-transit050.v1",owner_pid=42,route_pid=12,route_start_ticks=123,
+                    generation=1,created_ns=10_000_000_000,command_deadline_ns=100_000_000_000,
+                    absolute_deadline_ns=115_000_000_000,braking_ns=None,revoked_ns=None)
+    def test_only_approved_phase_has_higher_speed_limit(self):
+        p=self.permit()
+        self.assertEqual(m.carry_transit_speed_limit(None,11_000_000_000,1,42),.20)
+        for stamp,expected in ((9_999_999_999,.20),(11_000_000_000,.50),(100_000_000_001,.20)):
+            self.assertEqual(m.carry_transit_speed_limit(p,stamp,1,42),expected)
+        p["braking_ns"]=20_000_000_000
+        self.assertEqual(m.carry_transit_speed_limit(p,34_999_999_999,1,42),.50)
+        self.assertEqual(m.carry_transit_speed_limit(p,35_000_000_001,1,42),.20)
+        p["revoked_ns"]=23_000_000_000
+        self.assertEqual(m.carry_transit_speed_limit(p,24_000_000_000,1,42),.20)
+        self.assertEqual(m.carry_transit_speed_limit(p,22_000_000_000,1,42),.50)
+    def test_identity_generation_and_deadline_are_fail_closed(self):
+        p=self.permit()
+        for generation,pid in ((2,42),(1,99)):
+            with self.assertRaises(ValueError):m.carry_transit_speed_limit(p,11_000_000_000,generation,pid)
+        p["command_deadline_ns"]+=1;p["absolute_deadline_ns"]+=1
+        with self.assertRaises(ValueError):m.carry_transit_speed_limit(p,11_000_000_000,1,42)
+    def test_default_physical_and_all_other_safety_guards_remain(self):
+        row=dict(joints={});pose=dict(z=.65,roll=0.,pitch=0.,vx=.3,vy=0.)
+        self.assertEqual(m.physical_fault(row,pose,{}),"PLANAR_SPEED")
+        self.assertIsNone(m.physical_fault(row,pose,{},planar_speed_limit=.50))
+        pose["vx"]=.501
+        self.assertEqual(m.physical_fault(row,pose,{},planar_speed_limit=.50),"PLANAR_SPEED")
+        pose["vx"]=.3;pose["z"]=.4
+        self.assertEqual(m.physical_fault(row,pose,{},planar_speed_limit=.50),"POSTURE")
+        pose["z"]=.65;row["joints"]={"knee":dict(q=0.,qvel=2.,max_abs_qvel_since_previous_sample=2.)}
+        self.assertEqual(m.physical_fault(row,pose,{"knee":(-1.,1.,1.)},planar_speed_limit=.50),"SOURCE_JOINT_SPEED:knee")
+    def test_policy_flag_cannot_enable_other_motion_modes(self):
+        ordinary=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True)
+        self.assertIn("'motion_mode': 'LOCOMOTION_DEFAULT'",ordinary)
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script([-.45,1.],{},[],carry_pid=0,transit_policy_050=True)
+        code=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,native_step=True,transit_policy_050=True)
+        compile(code,"transit050","exec")
+        self.assertIn("'transit_policy_050': True",code)
+    def test_permit_is_one_shot_and_braking_cannot_extend_it(self):
+        import tempfile,json
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as folder,mock.patch.object(m.time,"monotonic_ns",return_value=10_000_000_000):
+            cfg=dict(pid=42,timeout_s=90.)
+            p=m.carry_transit_phase(None,"TRANSIT",cfg,{"generation":1},folder)
+            with self.assertRaises(RuntimeError):m.carry_transit_phase(None,"TRANSIT",cfg,{"generation":1},folder)
+            with mock.patch.object(m.time,"monotonic_ns",return_value=20_000_000_000):
+                p=m.carry_transit_phase(p,"BRAKING",cfg,{},folder)
+            with mock.patch.object(m.time,"monotonic_ns",return_value=25_000_000_000):
+                p=m.carry_transit_phase(p,"BRAKING",cfg,{},folder)
+                self.assertEqual(p["braking_ns"],20_000_000_000)
+                p=m.carry_transit_phase(p,"REVOKED",cfg,{},folder)
+            self.assertEqual(m.carry_transit_speed_limit(p,26_000_000_000,1,42),.20)
+    def test_live_process_verification_rejects_non_route_python(self):
+        import tempfile,json,os
+        from unittest import mock
+        p=self.permit();p.update(route_pid=os.getpid(),route_start_ticks=int(Path("/proc/self/stat").read_text().rsplit(") ",1)[1].split()[19]))
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder)/"carry_transit_permit.json").write_text(json.dumps(p))
+            with mock.patch.object(m.time,"monotonic_ns",return_value=11_000_000_000):
+                with self.assertRaisesRegex(ValueError,"PROCESS_IDENTITY"):
+                    m.current_carry_transit_speed_limit(folder,{"generation":1,"host_monotonic_ns":11_000_000_000},42)
+
+
+
+
+
+    def test_whole_trace_audit_keeps_pre_and_post_transit_strict(self):
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import native_grasp_audit as audit
+        p=self.permit()
+        def row(stamp,speed):
+            return dict(host_monotonic_ns=stamp,generation=1,engine_version=337,sim_time_s=stamp/1e9,
+                        contacts=[],joints={},speed=speed)
+        with mock.patch.object(m,"native_pose",side_effect=lambda r:dict(vx=r["speed"],vy=0.,z=.65,roll=0.,pitch=0.)):
+            a=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
+            self.assertTrue(a["pass"])
+            b=audit.evaluate_carry_motion([row(9_900_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
+            self.assertFalse(b["pass"]);self.assertEqual(b["failure"],"PLANAR_SPEED")
+            p["revoked_ns"]=11_010_000_000
+            c=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
+            self.assertFalse(c["pass"]);self.assertEqual(c["failure"],"PLANAR_SPEED")
+
+
+
+
+    def test_actual_route_invocation_propagates_and_revokes_policy(self):
+        from unittest import mock
+        phases=[]
+        def phase(record,name,cfg,row,evidence="/workspace/evidence"):
+            phases.append(name)
+            self.assertEqual(cfg["pid"],19)
+            self.assertEqual(row["generation"],1)
+            return {"fixture_phase":name}
+        with mock.patch.object(m,"carry_transit_phase",side_effect=phase):
+            result,n=CarryRouteControlFlowTests().run_route(native_step=True,transit_policy_050=True)
+        self.assertTrue(result["pass_result"])
+        self.assertEqual(phases,["TRANSIT","BRAKING","BRAKING","REVOKED"])
+        self.assertEqual(result["transit_policy_record"],{"fixture_phase":"REVOKED"})
+        self.assertEqual(n.stands,1)
+
+
+
+
+    def test_real_outer_parser_forwarding_and_inner_parser_accept_new_option(self):
+        import argparse,sys
+        from unittest import mock
+        outer=Path(__file__).parents[1]/"grasp/stl_approved_circle_native_trial.py"
+        def parser_only(path,variable,arguments):
+            tree=ast.parse(path.read_text());main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="main")
+            body=[]
+            for node in main.body:
+                if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id in (variable,"args") for t in node.targets):
+                    body.append(node)
+                    if any(isinstance(t,ast.Name) and t.id=="args" for t in node.targets):break
+                elif isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and isinstance(node.value.func.value,ast.Name) and node.value.func.value.id==variable:body.append(node)
+            ns=dict(argparse=argparse,Path=Path,__doc__="offline actual parser")
+            with mock.patch.object(sys,"argv",["offline",*arguments]):
+                exec(compile(ast.Module(body=body,type_ignores=[]),"actual_parser","exec"),ns)
+            return ns["args"],main
+        args,main=parser_only(outer,"p",["--baseline","/unused","--circle-review","/unused","--candidate","/unused",
+            "--carry-goal-world-xy","-.45","1.","--carry-native-step-mode","--carry-native-action-smoothing",
+            "--approved-pad-friction-reference","--carry-transit-speed-policy-050"])
+        branch=next(n for n in main.body if isinstance(n,ast.If) and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Attribute) and isinstance(x.func.value,ast.Name) and x.func.value.id=="argv" and "carry_timeout_s" in ast.unparse(x) for x in ast.walk(n)))
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_forwarding","exec"),ns)
+        self.assertIn("--carry-transit-speed-policy-050",ns["argv"])
+        inner=Path(__file__).with_name("xvfb_native_reset_stand.py")
+        parsed,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused","--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        self.assertTrue(parsed.carry_transit_speed_policy_050)
+        self.assertTrue(parsed.carry_native_step_mode)
+        inner_main=next(n for n in ast.parse(inner.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=="main")
+        guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_transit_speed_policy_050"))
+        exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
+        parsed.claw_control_overlay_result=None
+        with self.assertRaises(ValueError):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
+        args.carry_native_step_mode=False;args.carry_reverse_moving_arc=True
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_reverse_forwarding","exec"),ns)
+        self.assertIn("--carry-reverse-moving-arc",ns["argv"])
+        reverse,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused",
+            "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        reverse_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_reverse_moving_arc"))
+        exec(compile(ast.Module(body=[reverse_guard],type_ignores=[]),"actual_reverse_guard","exec"),{"args":reverse})
+        args.carry_reverse_moving_arc=False;args.carry_away_1m=True;args.carry_goal_world_xy=None;args.allow_carried_bottle_tilt=True
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_away_forwarding","exec"),ns)
+        self.assertIn("--carry-away-1m",ns["argv"])
+        self.assertNotIn("--carry-goal-world-xy",ns["argv"])
+        self.assertIn("--allow-carried-bottle-tilt",ns["argv"])
+        away,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused",
+            "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        self.assertTrue(away.allow_carried_bottle_tilt)
+        away_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_away_1m"))
+        exec(compile(ast.Module(body=[away_guard],type_ignores=[]),"actual_away_guard","exec"),{"args":away})
+
+
+
+
+
+
+class CarrySchedulingRepairTests(unittest.TestCase):
+    def test_graph_work_does_not_block_caller_and_deadline_stops(self):
+        import threading
+        from types import SimpleNamespace
+        release=threading.Event();entered=threading.Event();zeros=[]
+        def graph():entered.set();release.wait(1.)
+        node=SimpleNamespace(graph=graph,deadline_zero=lambda:zeros.append(True),events=[])
+        job=m.start_carry_graph_check(node)
+        try:
+            self.assertTrue(entered.wait(.1))
+            self.assertIs(m.poll_carry_graph_check(node,job,job["started"]+.10),job)
+            with self.assertRaisesRegex(RuntimeError,"GRAPH_CHECK_DEADLINE"):
+                m.poll_carry_graph_check(node,job,job["started"]+.201)
+            self.assertEqual(len(zeros),1)
+        finally:release.set();job["thread"].join(.3)
+    def test_graph_identity_failure_is_still_fail_closed(self):
+        from types import SimpleNamespace
+        zeros=[]
+        def graph():raise RuntimeError("CARRY_PUBLISHER_NOT_UNIQUE")
+        node=SimpleNamespace(graph=graph,deadline_zero=lambda:zeros.append(True),events=[])
+        job=m.start_carry_graph_check(node);job["thread"].join(.1)
+        with self.assertRaisesRegex(RuntimeError,"PUBLISHER_NOT_UNIQUE"):
+            m.poll_carry_graph_check(node,job,job["started"]+.01)
+        self.assertTrue(zeros)
+    def test_left_bias_only_applies_in_existing_carry_stage_and_rejects_nan(self):
+        from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
+        # Real generated owner code; extract the new stage branch only.
+        code=generated()
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        import inspect
+        source=inspect.getsource(h._with_carry_lease)
+        tree=ast.parse(source)
+        replacement=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)
+                         and n.func.id=="replace" and isinstance(n.args[0],ast.Constant)
+                         and "bias=({" in str(n.args[0].value))
+        branch_code=replacement.args[1].value
+        branch=next(n for n in ast.parse(inspect.cleandoc(branch_code)).body if isinstance(n,ast.If))
+        from types import SimpleNamespace
+        row=SimpleNamespace(native_row={"joints":{"left":{"bias_force":1.28}}})
+        ns=dict(stage="CARRY_HOLD",USE_NATIVE_BIAS=True,USE_NATIVE_FEEDBACK=True,LEFT=["left"],self=row,bias={},math=math)
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+        self.assertEqual(ns["bias"],{"left":1.28})
+        ns.update(stage="LIFT_HOLD",bias={})
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+        self.assertEqual(ns["bias"],{})
+        ns["stage"]="CARRY_HOLD";row.native_row["joints"]["left"]["bias_force"]=float("nan")
+        with self.assertRaisesRegex(RuntimeError,"NONFINITE_LEFT"):
+            exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+
+
+
+
+
+class CarryDebugTimingTests(unittest.TestCase):
+    def test_carry_capture_starts_after_static_hold_and_before_motion(self):
+        source=Path(__file__).with_name("xvfb_native_reset_stand.py").read_text()
+        tree=ast.parse(source)
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="execute_grasp_with_carry")
+        code=ast.unparse(fn)
+        self.assertLess(code.index("qualify_static_carry_hold"),code.index("start_runtime_rl_debug_capture"))
+        self.assertLess(code.index("start_runtime_rl_debug_capture"),code.index("route = run("))
+        main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="main")
+        calls=[n for n in ast.walk(main) if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.capture_mc_rl_debug and") and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=="start_runtime_rl_debug_capture" for part in n.body for x in ast.walk(part))]
+        self.assertEqual(len(calls),1)
+
+
+
+
+class CarryTurnCapTests(unittest.TestCase):
+    def test_away_turn_obeys_existing_explicit_angular_cap(self):
+        from types import SimpleNamespace
+        for cap in (.075,.10):
+            code=m.build_carry_route_script(None,{},[],carry_pid=42,transit_policy_050=True,away_1m=True,angular_command_cap=cap)
+            tree=ast.parse(code)
+            assignment=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='output' for t in n.targets) and isinstance(n.value,ast.Call) and 'turn_error' in ast.unparse(n.value))
+            for error in (-3.,3.,-.01):
+                ns={'cfg':{'angular_command_cap':cap},'turn_error':error,'control_turn_error':error,'SimpleNamespace':SimpleNamespace,'NavState':SimpleNamespace(ALIGN='align')}
+                exec(compile(ast.Module(body=[assignment],type_ignores=[]),'actual_away_turn','exec'),ns)
+                self.assertLessEqual(abs(ns['output'].angular_z),cap)
+                self.assertEqual(ns['output'].linear_x,-.12)
+            self.assertIn('planar_speed_limit=.20',code)
+
+class MeasuredForceTargetTests(unittest.TestCase):
+    def test_higher_control_target_does_not_raise_load_acceptance(self):
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import grip_force_budget
+        minimum,target=grip_force_budget(.2*9.81,1.,6.)
+        self.assertAlmostEqual(minimum,1.4715)
+        self.assertAlmostEqual(target,5.886)
+        stronger_minimum,stronger_target=grip_force_budget(.2*9.81,1.,15.)
+        self.assertEqual(stronger_minimum,minimum)
+        self.assertAlmostEqual(stronger_target,14.715)
+        self.assertEqual(grip_force_budget(.2*9.81,1.),(minimum,minimum))
+        with self.assertRaises(ValueError):grip_force_budget(.2*9.81,1.,12.)
+
+
+
+
+class ReverseMovingArcTests(unittest.TestCase):
+    def test_reverse_route_stops_by_measured_distance_and_full_existing_stop(self):
+        result,n=CarryRouteControlFlowTests().run_route(reverse_moving_arc=True)
+        self.assertTrue(result["pass_result"])
+        self.assertTrue(result["position_only_chair_area"])
+        self.assertEqual(result["goal_yaw_requirement"],"NOT_REQUIRED_FOR_KNOWN_CHAIR_AREA")
+        nonzero=[c for c in n.command_log if c["forward"] or c["angular"]]
+        self.assertTrue(nonzero);self.assertTrue(all(c["forward"]==-.12 for c in nonzero))
+        self.assertLessEqual(result["final_distance_m"],.15)
+        self.assertTrue(result["post_stop_composite"]["pass"])
+        self.assertEqual(n.stands,1)
+    def test_reverse_profile_cannot_select_step_or_omit_phase_policy(self):
+        for policy,step in ((False,False),(True,True)):
+            with self.assertRaises(ValueError):
+                m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=policy,native_step=step,reverse_moving_arc=True)
+        code=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True,reverse_moving_arc=True)
+        compile(code,"reverse_carry","exec")
+        self.assertIn("'reverse_moving_arc': True",code)
+
+
+
+
+class SourceBoundedCarryParkTests(unittest.TestCase):
+    def test_non_grasping_arm_park_uses_source_margin_without_changing_limits(self):
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import carry_left_roll_park
+        bounds=[-.061,2.993];park=carry_left_roll_park(-.027,bounds)
+        self.assertAlmostEqual(park["target_rad"],.089)
+        self.assertEqual(bounds,[-.061,2.993])
+        self.assertLess(park["target_rad"]-park["start_rad"],.20)
+        self.assertEqual(carry_left_roll_park(.2,bounds)["target_rad"],.2)
+        with self.assertRaises(ValueError):carry_left_roll_park(-.2,bounds)
+        with self.assertRaises(ValueError):carry_left_roll_park(-.027,[0.,-.1])
+
+
+
+
+class RuntimePlanningBoundsTests(unittest.TestCase):
+    def test_intersection_changes_search_constraints_without_editing_model(self):
+        import mujoco,numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import joint_planning_bounds
+        model=mujoco.MjModel.from_xml_string('<mujoco><compiler angle="radian"/><worldbody><body><joint name="right_wrist_pitch_joint" range="-1 1"/><geom size=".01"/></body></worldbody></mujoco>')
+        original=model.jnt_range.copy();name="right_wrist_pitch_joint"
+        bounds=joint_planning_bounds(model,[name],{name:[-.523599,.523599,4.188]})
+        np.testing.assert_allclose(bounds,[[-.523599,.523599]])
+        np.testing.assert_array_equal(model.jnt_range,original)
+        np.testing.assert_array_equal(joint_planning_bounds(model,[name],{name:[-2.,2.]}),original)
+        with self.assertRaises(ValueError):joint_planning_bounds(model,[name],{})
+
+
+
+
+class AwayOneMetreControlFlowTests(unittest.TestCase):
+    def run_mission(self,timeout=90.,turn_stop_pass=True):
+        import sys,threading,tempfile,json,contextlib,io
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation/robotsim_navigation"))
+        clock=NS(t=100.)
+        class Node:
+            def __init__(self):
+                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None;self.telemetry_lock=threading.RLock();self.pumped_epoch=self.source_epoch=0
+                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[]
+                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")}
+                self.readbacks={"get_mode":(100.,{})};self.latest_row={"generation":1}
+                self.x=.85;self.y=-1.5;self.yaw=.1;self.last_t=100.;self.command=(0.,0.);self.stands=0
+            def publish(self,f=0.,l=0.,a=0.):
+                if not self.moving:f=a=0.
+                self.command=(f,a);self.command_log.append(dict(t=clock.t,forward=f,lateral=0.,angular=a))
+            def pump(self):
+                dt=clock.t-self.last_t;f,a=self.command
+                self.x+=f*math.cos(self.yaw)*dt;self.y+=f*math.sin(self.yaw)*dt
+                self.yaw=(self.yaw+a*dt+math.pi)%(2*math.pi)-math.pi;self.last_t=clock.t
+            def sample(self):
+                self.pump();active=self.moving and any(self.command)
+                return dict(native_generation=1,source_clock_generation=0,get_mode_status_value=100,body_status=1,sample_monotonic_s=clock.t,sim_time_s=clock.t,
+                    pose=dict(x=self.x,y=self.y,yaw=self.yaw,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.),
+                    get_mode_header_code=0,get_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
+                    common_mode_status_value=100,state_age_s={"get_mode":0.},
+                    common_source={"name":"robotsim_official_cmd_vel"},
+                    raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
+            def observe(self,seconds,**kw):
+                self.publish();clock.t+=2.1 if kw.get("require_stop") else seconds;self.pump()
+                passed=turn_stop_pass if self.stands==1 and kw.get("require_stop") else True
+                result={"pass":passed,"fixture_only":True,"metrics":{"duration_s":2.,"sample_count":100,"window_end_monotonic_s":clock.t}}
+                self.events.append(dict(event="OBSERVE_FIXTURE",t=clock.t,stands=self.stands,require_stop=kw.get("require_stop",False),pass_result=passed))
+                return result
+            def deadline_zero(self):
+                self.moving=False;self.publish();self.events.append(dict(event="DEADLINE_ZERO_ATTEMPT",t=clock.t))
+            def stand_once(self):
+                self.stands+=1;self.events.append(dict(event="STAND_REQUEST",t=clock.t))
+            def graph(self):pass
+            def await_graph(self):self.graph()
+            def start_feedback(self):pass
+            def stop_feedback(self):pass
+            def destroy_node(self):pass
+        class Timer:
+            durations=[]
+            def __init__(self,seconds,callback):self.durations.append(seconds)
+            def start(self):pass
+            def cancel(self):pass
+        n=Node();written=[]
+        real_phase=m.carry_transit_phase
+        with tempfile.TemporaryDirectory() as folder:
+            def phase(record,name,cfg,row):return real_phase(record,name,cfg,row,folder)
+            with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":None,"timeout_s":timeout,"pid":19,"transit_policy_050":True,"away_1m":True,"angular_command_cap":.10,"motion_mode":"LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",NS(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"monotonic_ns",lambda:int(clock.t*1e9)),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(.001,dt))),mock.patch.object(m,"carry_transit_phase",side_effect=phase),mock.patch.object(m,"start_carry_graph_check",return_value=None),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
+                m.run_carry_navigation(n,NS())
+        return json.loads(written[-1]),n,Timer.durations
+    def test_full_task_uses_measured_turn_stop_then_a_separate_forward_metre(self):
+        result,n,timers=self.run_mission()
+        self.assertTrue(result["pass_result"],result.get("failure"))
+        self.assertTrue(result["turn_stop_composite"]["pass"])
+        mission=result["away_mission"]
+        self.assertGreaterEqual(mission["final_forward_projection_m"],1.)
+        self.assertLessEqual(result["final_distance_m"],.15)
+        self.assertLessEqual(abs(mission["final_heading_error_rad"]),.12)
+        self.assertEqual(n.stands,2);self.assertEqual(len(timers),1)
+        positive=next(c["t"] for c in n.command_log if c["forward"]>0)
+        self.assertGreaterEqual(positive,result["turn_stop_composite"]["metrics"]["window_end_monotonic_s"])
+        records=result["transit_policy_records"]
+        self.assertEqual(len(records),2)
+        self.assertLessEqual(records[0]["revoked_ns"],records[1]["created_ns"])
+        self.assertLessEqual(records[1]["command_deadline_ns"],records[0]["command_deadline_ns"])
+    def test_failed_turn_stop_never_allows_forward_commands(self):
+        result,n,_=self.run_mission(turn_stop_pass=False)
+        self.assertFalse(result["pass_result"])
+        self.assertEqual(result["failure"],"AWAY_TURN_STOP_NOT_QUALIFIED")
+        self.assertFalse(any(c["forward"]>0 for c in n.command_log))
+    def test_mid_stop_does_not_reset_total_command_budget(self):
+        result,n,timers=self.run_mission(timeout=35.)
+        self.assertFalse(result["pass_result"])
+        self.assertEqual(result["failure"],"AWAY_FORWARD_AGGREGATE_DEADLINE_INSUFFICIENT")
+        self.assertFalse(any(c["forward"]>0 for c in n.command_log))
+        self.assertEqual(len(timers),1)
+
+
+
+
+class SequentialCarryPermitTests(unittest.TestCase):
+    def test_second_interval_requires_revoked_first_and_cannot_overlap(self):
+        first=CarryTransit050Tests().permit();first["revoked_ns"]=20_000_000_000
+        second=dict(first,created_ns=21_000_000_000,command_deadline_ns=100_000_000_000,
+                    absolute_deadline_ns=115_000_000_000,revoked_ns=40_000_000_000)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],19_000_000_000,1,42),.50)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],20_500_000_000,1,42),.20)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],22_000_000_000,1,42),.50)
+        first["revoked_ns"]=None
+        with self.assertRaises(ValueError):m.carry_policy_speed_limit([first,second],22_000_000_000,1,42)
+    def test_turn_stop_report_cannot_cover_later_forward_motion(self):
+        gate={"pass":True,"metrics":{"window_end_monotonic_s":4.}}
+        result=dict(turn_stop_composite=gate,command_log=[dict(t=1.,forward=-.12),dict(t=2.,forward=0.)])
+        report=m.carry_stop_evidence(result)
+        self.assertEqual(report["independent_composite_stop"],"PASS")
+        self.assertEqual(report["composite_stop_scope"],"TURN_ONLY")
+        result["command_log"].append(dict(t=5.,forward=.12))
+        self.assertEqual(m.carry_stop_evidence(result)["independent_composite_stop"],"NOT_RUN")
+
+
+
+
+class EmptyBottleOwnerGuardTests(unittest.TestCase):
+    def test_actual_owner_guard_keeps_slip_and_drop_checks(self):
+        import inspect
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        source=inspect.getsource(h._with_carry_lease)
+        tree=ast.parse(source)
+        value=next(n.args[1].value for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="replace"
+                   and len(n.args)>1 and isinstance(n.args[1],ast.Constant) and "CARRY_OBJECT_POSE_OR_SLIP" in str(n.args[1].value))
+        line=next(l.strip() for l in value.splitlines() if "CARRY_OBJECT_POSE_OR_SLIP:" in l and l.strip().startswith("if "))
+        expr=line[len("if "):line.index(":raise")]
+        code=compile(ast.parse(expr,mode="eval"),"actual_owner_guard","eval")
+        ns=dict(slip=0.,B=[0.]*8+[math.cos(.4)],obj={"position_m":[0.,0.,.75]},math=math,
+                LIFT_CONTRACT={"retract_preflight":{}})
+        self.assertTrue(eval(code,ns))
+        ns["LIFT_CONTRACT"]["retract_preflight"]["allow_carried_bottle_tilt"]=True
+        self.assertFalse(eval(code,ns))
+        ns["slip"]=.011;self.assertTrue(eval(code,ns))
+        ns["LIFT_CONTRACT"]["retract_preflight"]["carry_retention_only"]=True
+        self.assertFalse(eval(code,ns))
+        ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
+
+class InplaceCentreHoldTests(unittest.TestCase):
+    def test020_publisher_rejects_rotation_or_other_phase_at_the_higher_limit(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+          native_action_smoothing=True,transit_policy_050=True,angular_command_cap=.1,
+          straight_retreat_turn=True,inplace_centre_hold=True,turn_recovery_speed=.20)
+        tree=ast.parse(code)
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(n) and any(isinstance(stmt,ast.Raise) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(stmt) for stmt in n.body))
+        cfg={'active_centre_recovery':True,'active_mission_phase':'TURN','turn_recovery_speed':.20}
+        ns={'MICRO':{'carry':cfg},'fwd':.2,'lat':0.,'ang':0.,'math':math}
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+        ns['ang']=.1
+        with self.assertRaisesRegex(RuntimeError,'POSITION_ONLY'):exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+        ns['ang']=0.;cfg['active_centre_recovery']=False
+        with self.assertRaisesRegex(RuntimeError,'POSITION_ONLY'):exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+
+    def test_prepared020_recovery_is_opt_in_and_single_axis_only(self):
+        origin={'x':0.,'y':0.}
+        self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin,.20),(.20,0.))
+        self.assertEqual(m.inplace_recovery_command({'x':0.,'y':-.03,'yaw':0.},origin,.20),(0.,.20))
+        with self.assertRaises(ValueError):m.inplace_recovery_command({'x':0.,'y':0.,'yaw':0.},origin,.3)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=42,turn_recovery_speed=.20)
+
+    def test_recovery_uses_eligible_axis_commands_inside_the_same_total_cap(self):
+        origin={'x':0.,'y':0.}
+        self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin),(.12,0.))
+        self.assertEqual(m.inplace_recovery_command({'x':0.,'y':-.03,'yaw':0.},origin),(0.,.05))
+        for yaw in (0.,.7,1.5,3.):
+            f,l=m.inplace_recovery_command({'x':-.03,'y':.02,'yaw':yaw},origin)
+            self.assertLessEqual(math.hypot(f,l),.12)
+            self.assertTrue((abs(f)==.12 and l==0.) or (f==0. and abs(l)==.05))
+
+    def test_startup_is_bounded_monotonic_and_reaches_the_original_cap(self):
+        values=[m.bounded_start_scale(t/100.) for t in range(51)]
+        self.assertEqual(values[0],0.)
+        self.assertEqual(values[-1],1.)
+        self.assertEqual(values,sorted(values))
+        self.assertTrue(all(0<=v<=1 for v in values))
+        self.assertEqual(m.bounded_start_scale(1.),1.)
+        with self.assertRaisesRegex(RuntimeError,'CLOCK'):m.bounded_start_scale(float('nan'))
+
+    def test_world_error_is_rotated_to_body_and_total_speed_is_bounded(self):
+        pose={'x':.1,'y':0.,'yaw':math.pi/2};origin={'x':0.,'y':0.}
+        f,l=m.inplace_centre_command(pose,origin)
+        self.assertAlmostEqual(f,0.,places=12);self.assertAlmostEqual(l,.12)
+        for x,y,yaw in ((.03,.04,0.),(-.3,.4,1.2),(.005,0.,0.)):
+            f,l=m.inplace_centre_command(dict(x=x,y=y,yaw=yaw),origin)
+            self.assertLessEqual(math.hypot(f,l),.120000001)
+        self.assertEqual(m.inplace_centre_command(dict(x=.005,y=0.,yaw=0.),origin),(0.,0.))
+        with self.assertRaisesRegex(RuntimeError,'INVALID_TURN'):
+            m.inplace_centre_command(dict(x=float('nan'),y=0.,yaw=0.),origin)
+
+    def test_pose_hold_is_scoped_to_inplace_and_brake_predictor_is_bounded(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+          native_action_smoothing=True,transit_policy_050=True,angular_command_cap=.1,
+          straight_retreat_turn=True,inplace_centre_hold=True,turn_brake_delay_s=2.73)
+        compile(code,'centre_hold','exec')
+        self.assertIn('LATERAL_COMMAND_OUTSIDE_INPLACE_TURN',code)
+        self.assertIn('OBSERVED_BRIDGE_COMMAND_BOUND',code)
+        self.assertIn('reserve=min(.75',code)
+        self.assertIn('bound=.20 if cfg.get("compact_turn") else .05',code)
+        self.assertIn('if drift>bound:raise RuntimeError',code)
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script([0.,0.],{},[],carry_pid=42,inplace_centre_hold=True)
+
+class PreMotionReadinessTests(unittest.TestCase):
+    def test_reacquire_never_applies_after_nonzero_or_to_physical_faults(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+             native_action_smoothing=True,transit_policy_050=True,
+             angular_command_cap=.10,straight_retreat_turn=True)
+        tree=ast.parse(code)
+        assign=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and
+                    any(isinstance(t,ast.Name) and t.id=='initial_zero_only' for t in n.targets))
+        from types import SimpleNamespace as NS
+        ns=dict(MICRO={'carry':True},self=NS(moving=False,command_log=[dict(forward=0.,angular=0.)]))
+        exec(compile(ast.Module(body=[assign],type_ignores=[]),'zero_only','exec'),ns)
+        self.assertTrue(ns['initial_zero_only'])
+        ns['self'].command_log.append(dict(forward=.12))
+        exec(compile(ast.Module(body=[assign],type_ignores=[]),'zero_only','exec'),ns)
+        self.assertFalse(ns['initial_zero_only'])
+        self.assertIn('str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")',code)
+        self.assertIn('hard_until=until+10.',code)
+        self.assertIn('qualified=None',code)
+
+class StraightRetreatInplaceTests(unittest.TestCase):
+    def test_turn_has_zero_translation_and_rearm_is_after_measured_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+             native_step=True,native_action_smoothing=True,transit_policy_050=True,
+             angular_command_cap=.10,straight_retreat_turn=True)
+        tree=ast.parse(code)
+        assign=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and
+                    any(isinstance(t,ast.Name) and t.id=='forward' for t in n.targets) and
+                    'straight_retreat_turn' in ast.unparse(n.value))
+        from types import SimpleNamespace
+        for phase,expected in [('RETREAT',-.12),('TURN',0.)]:
+            ns=dict(cfg={'straight_retreat_turn':True},mission={'phase':phase},output=SimpleNamespace(linear_x=-.12))
+            exec(compile(ast.Module(body=[assign],type_ignores=[]),'actual_command','exec'),ns)
+            self.assertEqual(ns['forward'],expected)
+        self.assertIn('RETREAT_CROSS_TRACK',code)
+        self.assertIn('INPLACE_TURN_CENTER_TRANSLATION',code)
+        self.assertIn('mission["previous_yaw"]=state["pose"]["yaw"]',code)
+        self.assertIn('mission["target_unwrapped_yaw"]=state["pose"]["yaw"]-math.pi',code)
+        self.assertIn('result["delivery_table_placement"]="NOT_RUN"',code)
+        self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('n.stand_once("LOCOMOTION_STEP")',code.index('result["retreat_stop_composite"]=n.observe')))
+        self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('mission["phase"]="TURN"'))
+        compile(code,'retreat_inplace','exec')
+
+class PlacementSettlingWindowTests(unittest.TestCase):
+    def test_complete_measured_window_after_late_convergence(self):
+        from scripts.research.issue46.native_runtime import native_carry_placement as p
+        from unittest.mock import patch
+        ticks=[];now=[0.]
+        def tick(*args):
+            now[0]+=.02;ticks.append(now[0]);return dict(inside_table=True,bottom_world_z_m=.55,forbidden=[])
+        def evaluate(rows,request):
+            span=max(0.,now[0]-1.56);return dict(pass_result=span>=2.,measured_hold_sim_s=span)
+        with patch.object(p,"HAND_OPEN",1.,create=True),patch.object(p,"evaluate_placed_hold",side_effect=evaluate):
+            result=p.observe_released_support(tick,[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=5.,clock=lambda:now[0])
+        self.assertTrue(result["pass_result"])
+        self.assertGreater(len(ticks),175)
+        self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+    def test_observation_never_exceeds_wall_budget_or_ignores_a_drop(self):
+        from scripts.research.issue46.native_runtime import native_carry_placement as p
+        from unittest.mock import patch
+        now=[0.]
+        def tick(*args):now[0]+=.02;return dict(inside_table=True,bottom_world_z_m=.55,forbidden=[])
+        with patch.object(p,"HAND_OPEN",1.,create=True),patch.object(p,"evaluate_placed_hold",return_value=dict(pass_result=False,measured_hold_sim_s=1.94)):
+            result=p.observe_released_support(tick,[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=1.,clock=lambda:now[0])
+        self.assertFalse(result["pass_result"]);self.assertLess(now[0],1.03)
+        with patch.object(p,"HAND_OPEN",1.,create=True):
+            with self.assertRaisesRegex(RuntimeError,"SAFE_TABLE_SUPPORT"):
+                p.observe_released_support(lambda *x:dict(inside_table=False,bottom_world_z_m=.4,forbidden=[]),[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=10.,clock=lambda:0.)
+
+
+if __name__=="__main__":unittest.main()
+
+class EffectiveTransit020Tests(unittest.TestCase):
+    def test_opt_in_is_scoped_and_keeps_defaults(self):
+        kw=dict(carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,inplace_centre_hold=True,turn_recovery_speed=.20)
+        code=m.build_carry_route_script(None,{},['pelvis'],transit_command_speed=.20,**kw)
+        compile(code,'effective020','exec')
+        self.assertIn("'transit_command_speed': 0.2",code)
+        self.assertEqual(code.count('else MICRO["carry"].get("transit_command_speed",.12)'),2)
+        self.assertIn('cfg.get("transit_command_speed",.12)==.12',code)
+        self.assertIn('ACTIVE_ROBOT_SELF_COLLISION',code)
+        default=m.build_carry_route_script([0.,0.],{},[],carry_pid=19)
+        self.assertIn("'transit_command_speed': 0.12",default)
+        for speed in (.21,float('nan')):
+            with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],transit_command_speed=speed,**kw)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,transit_command_speed=.20)
+
+class GlobalImpedanceComparisonTests(unittest.TestCase):
+    def test_only_global_impedance_changes_on_actual_compilation(self):
+        import tempfile,json
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import claw_parameter_diagnostic as c
+        from types import SimpleNamespace as NS
+        with tempfile.TemporaryDirectory() as folder:
+            d=Path(folder);out=d/"new";out.mkdir()
+            xml='<mujoco><option cone="elliptic" impratio="10" timestep=".001"/><worldbody><geom type="sphere" size=".05"/></worldbody></mujoco>'
+            rec={'approved_local_pad_friction_reference':{'pair_count':22},'generated':{},'diagnostic_parameter_delta':{'elliptic_solver':{'cone_to':1,'impratio_to':10.}}}
+            for label in ('host_scene','runtime_scene','runtime_hostcheck_scene'):
+                src=d/(label+'.xml');src.write_text(xml);rec['generated'][label]={'path':str(src),'sha256':c.digest(src)}
+            cfg=d/'sim.yaml';cfg.write_text('MujocoSimModule: {simulation_model: unused}')
+            rec['generated']['simulator_config']={'path':str(cfg),'sha256':c.digest(cfg)}
+            parent=d/'result.json';parent.write_text(json.dumps(rec));before=parent.read_bytes()
+            with mock.patch.object(c.pg,'create_unique_output_directory',return_value=NS(native_path=out)),mock.patch.object(c.pg,'write_artifact_manifest'),mock.patch.object(c.pg,'write_new_bytes',side_effect=lambda p,b:Path(p).write_bytes(b)),mock.patch.object(c.pg,'write_new_text',side_effect=lambda p,s:Path(p).write_text(s)):
+                result=c.compare_global_impratio_one(parent)
+            generated=json.loads(result.read_text())
+            a=c.mujoco.MjModel.from_xml_path(generated['generated']['host_scene']['path'])
+            self.assertEqual(a.opt.impratio,1.)
+            self.assertEqual(int(a.opt.cone),1)
+            self.assertEqual(parent.read_bytes(),before)
+            self.assertTrue(generated['global_impratio_comparison']['physical_arrays_identical'])
+            self.assertIn('approved_local_pad_friction_reference',generated)
+
+class CompactTurnTests(unittest.TestCase):
+    def test_compact_profile_keeps_actual_pure_yaw_and_bounded_measured_radius(self):
+        code=m.build_carry_route_script(None,{},['pelvis'],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        compile(code,'compact_turn','exec')
+        self.assertIn("'angular_command_cap': 0.3",code)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+        self.assertIn('bound=.20 if cfg.get("compact_turn") else .05',code)
+        self.assertIn('0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN"',code)
+        self.assertIn('retreat_gate=retreat_braking_gate(',code)
+        self.assertEqual(m.retreat_braking_gate(0.,0.,True,{})['target_m'],.50)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,compact_turn=True)
+
+class CompactClockRecoveryTests(unittest.TestCase):
+    def test_pending_epoch_is_not_misclassified_but_physical_faults_never_rearm(self):
+        self.assertTrue(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('CLOCK_GENERATION_PENDING'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'PLANAR_SPEED'},RuntimeError('CLOCK_GENERATION_PENDING'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('SOURCE_JOINT_SPEED:knee'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('CLOCK_GENERATION_PENDING'),4))
+    def test_compact_generated_path_requires_stop_and_keeps_absolute_deadline(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        compile(code,'compact_clock','exec')
+        self.assertIn('cfg["clock_stop_pass"]=bool(stopped["pass"])',code)
+        self.assertIn('CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT',code)
+        self.assertIn('CARRY_POLICY_DEADLINE_RESET',code)
+        self.assertIn('CLOCK_RECOVERY_REARM_NOT_QUALIFIED',code)
+        self.assertLess(code.index('stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)'),code.index('cfg["clock_stop_pass"]=bool(stopped["pass"])'))
+
+class RealCompactBridgeArgumentTests(unittest.TestCase):
+    def test_complete_actual_bridge_argument_path_does_not_overwrite_yaw_cap(self):
+        import shlex
+        from types import SimpleNamespace as NS
+        tree=ast.parse(Path(__file__).with_name('xvfb_native_reset_stand.py').read_text())
+        func=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute_grasp_with_carry')
+        bridge_if=next(n for n in func.body if isinstance(n,ast.If) and any(isinstance(c,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='bridge_command' for t in c.targets) for c in n.body))
+        statements=[n for n in bridge_if.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in ('bridge_linear','carry_angular','bridge_command') for t in n.targets) or isinstance(n,ast.If) and 'carry_compact_turn' in ast.unparse(n.test)]
+        for compact,expected in ((True,.3),(True,.6),(False,.1)):
+            args=NS(carry_compact_turn=compact,carry_compact_angular_cap=expected if compact else .3,carry_sdk_minimum_turn=True,carry_away_1m=True,carry_transit_command_speed=.12,carry_turn_recovery_speed=.12,carry_inplace_centre_hold=False)
+            ns=dict(args=args,environment='')
+            exec(compile(ast.Module(body=statements,type_ignores=[]),'actual_bridge_launch_arguments','exec'),ns)
+            argv=shlex.split(ns['bridge_command'])
+            self.assertIn('max_angular_velocity:='+str(expected),argv)
+            self.assertEqual(ns['carry_angular'],expected)
+
+class NativeGaitPreparationTests(unittest.TestCase):
+    def test_gait_readiness_uses_actual_foot_contact_loads(self):
+        def contact(side,force):return dict(efc_address=0,body1="world",body2=side+"_ankle_roll_link",local_force_torque=[force])
+        self.assertEqual(m.native_foot_loads({'contacts':[contact('left',250),contact('right',20)]})[1],'left')
+        self.assertEqual(m.native_foot_loads({'contacts':[contact('left',20),contact('right',250)]})[1],'right')
+        self.assertIsNone(m.native_foot_loads({'contacts':[contact('left',130),contact('right',130)]})[1])
+    def test_generated_prestep_is_bounded_and_has_zero_forward_input(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,gait_prepare=True)
+        compile(code,'native_prestep','exec')
+        self.assertIn('GAIT_PREPARATION_NOT_OBSERVED',code)
+        self.assertIn('GAIT_PREPARATION_POSE_BOUND',code)
+        self.assertIn('len(supports)>=required and acquired',code)
+        self.assertIn('required==2 or knee_motion>.20',code)
+        self.assertIn('mission["phase"]=="PRESTEP":forward=0.',code)
+
+class SourceReleaseProtocolTests(unittest.TestCase):
+    def test_real_source_method_uses_only_documented_custom_source_actions(self):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,compact_angular_cap=.60,release_source_on_stop=True)
+        method=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=='source_enabled')
+        ns=dict(MICRO={'carry':{'release_source_on_stop':True}},SetMcInputSource=NS(Request=lambda:NS(request=NS(header=NS()),action=NS(),input_source=NS())),McInputAction=NS(INPUTACTION_ENABLE=2001,INPUTACTION_DISABLE=2002),time=__import__('time'),raw=lambda x:x if isinstance(x,dict) else vars(x))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),'actual_source_admin','exec'),ns)
+        requests=[]
+        response={'response':{'header':{'code':0},'state':0,'task_id':1}}
+        future=NS(done=lambda:True,result=lambda:response)
+        node=NS(get_clock=lambda:NS(now=lambda:NS(to_msg=lambda:None)),src=NS(service_is_ready=lambda:True,call_async=lambda q:(requests.append(q) or future)),events=[])
+        ns['source_enabled'](node,False);ns['source_enabled'](node,True)
+        self.assertEqual([q.action.value for q in requests],[2002,2001])
+        self.assertEqual([q.input_source.name for q in requests],['robotsim_official_cmd_vel']*2)
+        self.assertEqual(node.events[0]['meaning'],'SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT')
+        self.assertIn('stand_transition(source_already_disabled=False)',code)
+        transition=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=='stand_transition')
+        calls=[]
+        node=NS(observe=lambda *a,**k:calls.append('zero_window'),source_enabled=lambda x:calls.append('disable'),stand_once=lambda:calls.append('stand'))
+        context=dict(cfg={'release_source_on_stop':True,'delivery':{'release_source_after_zero_window':True}},result={},n=node,baseline=1)
+        exec(compile(ast.Module(body=[transition],type_ignores=[]),'actual_stop_transition','exec'),context)
+        context['stand_transition']()
+        self.assertEqual(calls,['zero_window','disable','stand'])
+
+    def test_completed_turn_keeps_actual_source_history_but_requires_fresh_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        guard=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and isinstance(n.body[0],ast.Raise) and any(isinstance(x,ast.Constant) and x.value=='AWAY_TURN_SOURCE_NOT_CONFIRMED' for x in ast.walk(n.body[0])))
+        condition=compile(ast.Expression(body=guard.test),'actual_turn_source_guard','eval')
+        for acquired,recovery,observed,blocked in [(False,None,False,True),(False,None,True,False),(True,None,False,False)]:
+            self.assertEqual(eval(condition,dict(acquired=acquired,recovery_stop=recovery,mission={'turn_source_and_mode_observed':observed})),blocked)
+        completion=code[code.index('recovery_stop=recovered_turn_stop'):code.index('if cfg.get("review_prefix_only"):',code.index('recovery_stop=recovered_turn_stop'))]
+        self.assertTrue('n.observe(stop_wait_s,baseline=baseline,require_stop=True)' in completion)
+        self.assertTrue('AWAY_TURN_STOP_NOT_QUALIFIED' in completion)
+
+class FunctionalDockHeadingTests(unittest.TestCase):
+    def test_task_heading_retains_legacy_diagnostic_and_physical_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        self.assertEqual(m.delivery_heading_acceptance({},.10)["task_tolerance_rad"],.12)
+        task=m.delivery_heading_acceptance({"approach_task_yaw_tolerance_rad":.30},.25)
+        self.assertTrue(task["pass"])
+        self.assertFalse(task["legacy_yaw012_pass"])
+        self.assertTrue(task["requires_actual_placement_ik_before_arm_motion"])
+        self.assertIn('heading_acceptance=delivery_heading_acceptance(cfg["delivery"],yaw_error)',code)
+        self.assertIn('result["post_stop_composite"]["pass"]',code)
+
+class DirectRetreatSupportEvidenceTests(unittest.TestCase):
+    def test_delivery_records_actual_feet_without_gait_preparation(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        block=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and isinstance(n.body[0],ast.Assign) and any(isinstance(x,ast.Name) and x.id=='foot_forces' for x in ast.walk(n.body[0])))
+        mission={};row={'host_monotonic_ns':123,'contacts':[]}
+        ns=dict(cfg={'gait_prepare':False,'delivery':{'enabled':True}},mission=mission,n=NS(latest_row=row),tick=1.,native_foot_loads=lambda row:({'left':400.,'right':0.},'left'))
+        exec(compile(ast.Module(body=[block],type_ignores=[]),'actual_foot_evidence','exec'),ns)
+        self.assertEqual(mission['observed_support_changes'][0]['side'],'left')
+        self.assertEqual(mission['observed_support_changes'][0]['source_host_ns'],123)
+
+class CombinedCompactCentreTests(unittest.TestCase):
+    def test_bounded_feedback_is_world_fixed_and_preserves_default(self):
+        origin=dict(x=0.,y=0.)
+        self.assertEqual(m.inplace_centre_command(dict(x=-.1,y=0.,yaw=0.),origin,.20),(.20,0.))
+        f,l=m.inplace_centre_command(dict(x=-.1,y=0.,yaw=math.pi/2),origin,.20)
+        self.assertAlmostEqual(f,0.);self.assertAlmostEqual(l,-.20)
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,compact_angular_cap=.60)
+        compile(code,'combined_compact','exec')
+        self.assertIn('inplace_centre_command(p,mission["turn_origin_pose"],.20,forward_only=True)',code)
+        self.assertEqual(m.inplace_centre_command(dict(x=-.1,y=-.1,yaw=0.),origin,.20,forward_only=True),(.20,0.))
+        self.assertIn('UNQUALIFIED_LATERAL_COMPACT_COMMAND',code)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+
+class TwoTableDeliveryTests(unittest.TestCase):
+    def test_actual_delivery_profile_uses_same_controller_and_separate_stop_permit(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,compact_angular_cap=.60,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg)
+        compile(code,"real_two_table_route","exec")
+        self.assertIn('DELIVERY_REARM_NOT_QUALIFIED',code)
+        self.assertIn('DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL',code)
+        self.assertIn('DELIVERY_ALIGNMENT_RADIUS_300MM',code)
+        self.assertIn('mission["phase"]=="DELIVERY"',code)
+        self.assertIn('turn_and_braking_peak_radius_m',code)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,delivery=cfg)
+
+    def test_three_segments_and_clock_recovery_never_reset_task_deadline(self):
+        def rec(i,last=False):
+            t=1000000000+i*3000000000
+            return dict(schema="robotsim.carry-transit050.v1",owner_pid=19,generation=1,route_pid=6,route_start_ticks=1,created_ns=t,command_deadline_ns=90000000000,absolute_deadline_ns=105000000000,braking_ns=None if last else t+1000000000,revoked_ns=None if last else t+2000000000,task_interval_budget=7)
+        xs=[rec(i,i==6) for i in range(7)]
+        self.assertEqual(m.carry_policy_speed_limit(xs,20000000000,1,19),.50)
+        with self.assertRaises(ValueError):m.carry_policy_speed_limit(xs+[rec(7,True)],23000000000,1,19)
+        xs[-1]["command_deadline_ns"]+=1
+        with self.assertRaisesRegex(ValueError,"DEADLINE"):m.carry_policy_speed_limit(xs,20000000000,1,19)
+
+class VendorActionTableTests(unittest.TestCase):
+    def test_original_transition_profile_does_not_masquerade_as_added_smoothing(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        compile(code,"vendor_action_table_carry","exec")
+        self.assertIn("'native_action_smoothing': False",code)
+        self.assertIn("'vendor_transition_table': True",code)
+        with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,native_action_smoothing=True)
+
+class DeliveryTurnStopGoTests(unittest.TestCase):
+    def test_real_generated_handoff_never_rearms_without_complete_stop(self):
+        import json,threading,time
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        config=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=config,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and 'output.state == NavState.DRIVE and mission.get' in ast.unparse(n.test))
+        wrapper=ast.parse("def actual_handoff():\n for _ in [0]:\n  pass\n")
+        wrapper.body[0].body[0].body=[node];wrapper.body[0].body.insert(0,ast.Global(names=["transit_permit"]));ast.fix_missing_locations(wrapper)
+        for passed in (False,True):
+            events=[]
+            n=NS(deadline_zero=lambda:events.append("zero"),source_enabled=lambda value:events.append("enable" if value else "disable"),
+                 observe=Mock(side_effect=[None,dict(pass_result=passed,**{"pass":passed})]),stand_once=lambda:events.append("stand"),
+                 await_graph=lambda:None,pump=lambda:None,sample=lambda:{"pose":{"x":0.,"y":0.,"yaw":0.}},
+                 latest_row={},lock=threading.Lock())
+            cfg=dict(release_source_on_stop=True,permit_filename="delivery.json")
+            ns=dict(stand_transition=lambda:(n.observe(1.05,baseline={}),n.stand_once()),n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
+                    baseline={},result={},transit_permit={},closed_permits=[],carry_transit_phase=lambda old,phase,c,row:{"phase":phase},
+                    arm_carry_motion=arm_handoff_fixture,time=time,until=1e99,stop_wait_s=8.,controller=NS(reset=lambda:events.append("controller_reset")))
+            exec(compile(wrapper,"actual_delivery_handoff","exec"),ns)
+            if passed:
+                ns["actual_handoff"]();self.assertEqual(events,["zero","disable","stand","controller_reset","enable"])
+                self.assertIsNone(ns["mission"]["delivery_alignment_state"])
+            else:
+                with self.assertRaisesRegex(RuntimeError,"DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED"):ns["actual_handoff"]()
+                self.assertNotIn("enable",events)
+            self.assertEqual(n.observe.call_args_list[0].args,(1.05,))
+            self.assertTrue(n.observe.call_args_list[1].kwargs["require_stop"])
+
+class TerminalPivotControlTests(unittest.TestCase):
+    def test_actual_terminal_turn_removes_translation_without_changing_bounds(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        cfg["turn_terminal_translation_free_angle_rad"]=1.
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,release_source_on_stop=True,delivery=cfg,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and "cfg.get('compact_centre_feedback')" in ast.unparse(n.test) and any('terminal_turn_translation_free_ticks' in ast.unparse(x) for x in n.body))
+        for error,expect_zero in ((.5,True),(1.5,False)):
+            out=NS(linear_x=9.,lateral_y=9.)
+            ns=dict(cfg={"compact_centre_feedback":True,"delivery":cfg},turn_error=error,output=out,p=dict(x=-.10,y=0.,yaw=0.),
+                    mission={"turn_origin_pose":dict(x=0.,y=0.)},inplace_centre_command=m.inplace_centre_command)
+            exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_terminal_turn_control","exec"),ns)
+            self.assertEqual(out.linear_x==0.,expect_zero)
+            self.assertEqual(out.lateral_y,0.)
+            self.assertLessEqual(abs(out.linear_x),.20)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+        self.assertEqual(cfg["turn_braking_footprint_m"],.35)
+
+class ContinuousZeroStandStrategyTests(unittest.TestCase):
+    def test_actual_stop_strategy_preserves_zero_duration_and_default_order(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        for strategy,expected in (("ZERO_WINDOW_THEN_SD",["zero_window","sd"]),("EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC",["sd","zero_window"])):
+            calls=[]
+            n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertGreaterEqual(seconds,1.05),calls.append("zero_window")))
+            ns=dict(cfg={"motion_mode":"LOCOMOTION_DEFAULT","delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
+            exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_stop_strategy","exec"),ns)
+            ns["stand_transition"]();self.assertEqual(calls,expected)
+            self.assertNotIn("pass_result",ns["result"])
+        self.assertIn('require_stop=True',code)
+        self.assertIn('DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED',code)
+
+    def test_early_native_request_retains_zero_then_releases_only_owned_source(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        for mode,expected in (("LOCOMOTION_STEP",["zero_window","measured_ready","disable","sd"]),("LOCOMOTION_DEFAULT",["sd","zero_window","disable"])):
+            calls=[]
+            n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertEqual(seconds,1.05),calls.append("zero_window")),source_enabled=lambda enabled:(self.assertFalse(enabled),calls.append("disable")))
+            ns=dict(cfg={"motion_mode":mode,"release_source_on_stop":True,"delivery":{"stand_transition_strategy":"EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC","release_source_after_zero_window":True}},n=n,baseline={},result={})
+            ns.update(time=__import__("time"),stop_wait_s=12.,
+                await_step_stand_handoff=lambda *args:(calls.append("measured_ready") or {"ready":True}))
+            exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_early_stop","exec"),ns)
+            ns["stand_transition"]();self.assertEqual(calls,expected)
+            self.assertNotIn("pass_result",ns["result"])
+
+class TerminalAisleClearanceTests(unittest.TestCase):
+    def test_extension_is_terminal_heading_and_one_sided_not_a_larger_circle(self):
+        origin=dict(x=0.,y=0.)
+        extension=dict(frame="native_scene_world",maximum_radius_m=.5,lateral_m=.2,terminal_yaw_error_rad=.4)
+        pose=lambda x,y,yaw=math.pi:dict(x=x,y=y,yaw=yaw)
+        self.assertTrue(m.table_terminal_braking_footprint([pose(.40,.10)],origin,math.pi,.35,extension)["pass_clearance"])
+        self.assertFalse(m.table_terminal_braking_footprint([pose(.40,.10)],origin,math.pi,.35)["pass_clearance"])
+        for unsafe in (pose(-.40,.10),pose(.40,-.25),pose(.51,0.),pose(.40,.10,math.pi/2)):
+            self.assertFalse(m.table_terminal_braking_footprint([unsafe],origin,math.pi,.35,extension)["pass_clearance"])
+        actual=m.table_terminal_braking_footprint([pose(.4,.1)],origin,math.pi,.35,extension)
+        self.assertFalse(actual["original_radial_criterion_pass"])
+        self.assertTrue(actual["used_aisle_reserve"])
+
+class DeliveryAlignmentPermitTests(unittest.TestCase):
+    def test_actual_writer_requires_stop_revocation_and_shared_deadline(self):
+        import tempfile,time,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            deadline=time.monotonic_ns()+90000000000
+            cfg=dict(pid=19,timeout_s=90.,compact_turn=True,delivery={"scope":"test"},absolute_command_deadline_ns=deadline)
+            row=dict(generation=1)
+            first=m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            first=m.carry_transit_phase(first,"BRAKING",cfg,row,evidence=folder)
+            first=m.carry_transit_phase(first,"REVOKED",cfg,row,evidence=folder)
+            cfg.update(previous_permit_filename="carry_transit_permit.json",permit_filename="carry_transit_delivery_rearm_1.json")
+            with self.assertRaisesRegex(RuntimeError,"DELIVERY_ALIGNMENT_REARM_NOT_QUALIFIED"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            cfg["delivery_alignment_stop_pass"]=True
+            record=m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            self.assertEqual(record["command_deadline_ns"],first["command_deadline_ns"])
+            self.assertEqual(record["task_interval_budget"],7)
+            self.assertEqual(m.carry_policy_speed_limit([first,record],time.monotonic_ns(),1,19),.50)
+            with self.assertRaisesRegex(RuntimeError,"CARRY_TRANSIT_REARM_FORBIDDEN"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            cfg["permit_filename"]="carry_transit_delivery_rearm_99.json"
+            with self.assertRaisesRegex(ValueError,"CARRY_PERMIT_PATH"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+
+class DeliveryCumulativeProgressTests(unittest.TestCase):
+    def test_alignment_interleaving_does_not_reset_forward_failure(self):
+        state=None
+        for i in range(80):
+            state=m.delivery_forward_progress(state,2.+i*.001,i*.1,i%4!=3,"same")
+        self.assertTrue(state["no_progress"])
+        self.assertGreater(state["active_without_progress_s"],3.)
+        state=m.delivery_forward_progress(state,1.8,8.1,True,"same")
+        self.assertFalse(state["no_progress"])
+    def test_rearm_gap_does_not_count_as_command_time_or_clear_prior_failure_budget(self):
+        state=m.delivery_forward_progress(None,2.,0.,True,"one")
+        state=m.delivery_forward_progress(state,2.1,.1,True,"one")
+        before=state["active_without_progress_s"]
+        after=m.delivery_forward_progress(state,2.2,8.,True,"two")
+        self.assertEqual(after["active_without_progress_s"],before)
+        self.assertEqual(after["best_distance_m"],2.)
+
+class VendorDirectRetreatTests(unittest.TestCase):
+    def test_explicit_direct_profile_uses_formal_retreat_not_synthetic_yaw_prestep(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,transit_command_speed=.20,gait_prepare=False)
+        compile(code,"direct_vendor_retreat","exec")
+        self.assertIn("'gait_prepare': False",code)
+        self.assertIn("'transit_command_speed': 0.2",code)
+        self.assertIn('bilateral_support_alternation_observed',code)
+        # Without the explicit protocol, the established experimental baseline
+        # still requires its own gait-preparation flag.
+        cfg.pop("activation_protocol")
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,transit_command_speed=.20)
+
+class OutwardEgressHandoffTests(unittest.TestCase):
+    def test_egress_requires_real_stop_before_second_table_rearm(self):
+        import copy,json,threading
+        from pathlib import Path
+        from types import SimpleNamespace as NS
+        cfgfile=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,
+            release_source_on_stop=True,delivery=cfgfile,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and ast.unparse(n.test)=="mission['phase'] == 'EGRESS'")
+        wrapper=ast.parse("for _ in range(1):\n pass")
+        wrapper.body[0].body=node.body
+        for passed in (False,True):
+            events=[]
+            n=NS(lock=threading.RLock(),latest_row={"generation":1},deadline_zero=lambda:events.append("zero"),source_enabled=lambda x:events.append(("source",x)),
+                observe=lambda *a,**k:{"pass":passed},await_graph=lambda:events.append("graph"),
+                pump=lambda:None,sample=lambda:{"pose":{"x":-1.01,"y":0.,"yaw":math.pi}})
+            config=dict(delivery=cfgfile,pid=19,release_source_on_stop=True,permit_filename="carry_transit_delivery_permit.json",angular_command_cap=.6)
+            scope=dict(n=n,cfg=config,mission={"egress_origin_pose":{"x":0.,"y":0.},"egress_heading_rad":math.pi},
+                p={"x":-1.01,"y":0.},math=math,result={},transit_permit={"old":True},closed_permits=[],baseline={},
+                stand_transition=lambda:events.append("stand"),carry_transit_phase=lambda rec,phase,*a:events.append(phase) or {"phase":phase},
+                arm_carry_motion=arm_handoff_fixture,Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.,stop_wait_s=8.)
+            if passed:exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
+            else:
+                with self.assertRaisesRegex(RuntimeError,"OUTWARD_EGRESS_STOP_NOT_QUALIFIED"):
+                    exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
+            self.assertEqual(events[0],"zero")
+            if passed:
+                self.assertEqual(scope["mission"]["phase"],"DELIVERY")
+                self.assertTrue(config["egress_stop_pass"])
+                self.assertEqual(config["permit_filename"],"carry_transit_delivery_rearm_1.json")
+                self.assertIn("TRANSIT",events)
+            else:self.assertNotIn("TRANSIT",events)
+
+class NativeStepAllTransitTests(unittest.TestCase):
+    def test_original_step_controller_is_explicit_and_does_not_edit_action_rules(self):
+        import json,yaml
+        from pathlib import Path
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery_native_step.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,release_source_on_stop=True,
+            transit_command_speed=.20,compact_angular_cap=.30,native_step=True,vendor_transition_table=True,delivery=cfg)
+        options=next(ast.literal_eval(n.value.args[0]) for n in ast.walk(ast.parse(code)) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and ast.unparse(n.value.func)=="MICRO.update")
+        self.assertEqual(options["carry"]["motion_mode"],"LOCOMOTION_STEP")
+        self.assertTrue(options["carry"]["native_step_all_transit"])
+        self.assertFalse(options["carry"]["native_action_smoothing"])
+        self.assertIn('step_prepared_permit',code)
+        root=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5")
+        rules=yaml.safe_load((root/"sim/action_ruler.yaml").read_text())["action_rules"]
+        self.assertIn("LOCOMOTION_STEP",rules["STAND_DEFAULT"]["next_actions"])
+        self.assertIn("STAND_DEFAULT",rules["LOCOMOTION_STEP"]["next_actions"])
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+                transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,release_source_on_stop=True,
+                transit_command_speed=.20,vendor_transition_table=True,delivery=cfg)
+
+
+
+class MeasuredStepStopPredictionTests(unittest.TestCase):
+    def test_stopped_clock_recovery_does_not_reuse_cruising_brake_reserve(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        pose=dict(x=0.,y=.77,vx=0.,vy=0.)
+        old=[dict(sample_monotonic_s=5.,pose=dict(vx=0.,vy=.3))]
+        self.assertEqual(task_along_speed(old,pose,(0.,1.),10.),0.)
+    def test_duplicate_receipts_cannot_bias_the_unique_velocity_average(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        trace=[dict(sample_monotonic_s=9.8,pose=dict(vx=.4,vy=0.))]*20
+        trace.append(dict(sample_monotonic_s=9.9,pose=dict(vx=0.,vy=0.)))
+        self.assertAlmostEqual(task_along_speed(trace,dict(x=0.,y=0.,vx=0.,vy=0.),(1.,0.),10.),.2)
+    def test_motion_away_from_goal_never_creates_forward_stop_reserve(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        self.assertEqual(task_along_speed([],dict(x=0.,y=0.,vx=-.2,vy=0.),(1.,0.),1.),0.)
+
+class RightClawStaticScreenReuseTests(unittest.TestCase):
+    def test_only_bounded_pd_delta_preserves_geometry_screen(self):
+        import tempfile,hashlib
+        from pathlib import Path
+        from scripts.research.issue46.native_runtime.native_carry_placement import verify_right_claw_pd_only
+        xml='<mujoco><worldbody><body><joint name="R_claw_joint"/><geom size=".1" mass=".2"/></body></worldbody><actuator><position name="motor_R_claw_joint" joint="R_claw_joint" kp="4" kv="1.27" forcerange="-2 2"/></actuator></mujoco>'
+        with tempfile.TemporaryDirectory() as root:
+            a=Path(root)/"a.xml";b=Path(root)/"b.xml";a.write_text(xml)
+            sha=hashlib.sha256(a.read_bytes()).hexdigest()
+            b.write_text(xml.replace('kp="4"','kp="6"'))
+            self.assertEqual(verify_right_claw_pd_only(a,b,sha)["new_kp"],6.)
+            for wrong in (xml.replace('size=".1"','size=".2"'),xml.replace('forcerange="-2 2"','forcerange="-3 3"')):
+                b.write_text(wrong)
+                with self.assertRaises(ValueError):verify_right_claw_pd_only(a,b,sha)
+
+
+
+class StepCalibrationEpochTests(unittest.TestCase):
+    def test_one_step_sample_after_clock_recovery_is_not_cruising(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import step_cruise_reference
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="STAND_DEFAULT",common_mode_desc="STAND_DEFAULT",pose=dict(x=0.,y=0.)) for i in range(10)]
+        rows.append(dict(sample_monotonic_s=1.,sim_time_s=1.,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=.001,y=0.)))
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.001,y=0.),(1.,0.),1.))
+    def test_contiguous_measured_progress_qualifies_calibration(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import step_cruise_reference
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=i*.02,y=0.),native_generation=1,source_clock_generation=1) for i in range(10)]
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9))
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=i*.02,y=0.),native_generation=1,source_clock_generation=1) for i in range(26)]
+        self.assertAlmostEqual(step_cruise_reference(rows,dict(x=.5,y=0.),(1.,0.),2.5),.2)
+        rows[-2]["source_clock_generation"]=2
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.5,y=0.),(1.,0.),2.5))
+
+class NativeProgressSpeedTests(unittest.TestCase):
+    def test_gait_velocity_peak_does_not_become_mean_braking_speed(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,pose=dict(x=i*.025,y=0.,vx=.45 if i%2 else .05,vy=0.)) for i in range(11)]
+        self.assertAlmostEqual(task_along_speed(rows,dict(x=.25,y=0.,vx=.45,vy=0.),(1.,0.),1.),.25)
+
+class FunctionalTableHandoffTests(unittest.TestCase):
+    def test_precision_result_and_task_reach_candidate_are_separate(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import functional_approach_limit
+        self.assertEqual(functional_approach_limit({},dict(phase="DELIVERY")),.15)
+        cfg=dict(delivery=dict(approach_task_position_tolerance_m=.25))
+        self.assertEqual(functional_approach_limit(cfg,dict(phase="DELIVERY")),.25)
+        self.assertEqual(functional_approach_limit(cfg,dict(phase="FORWARD")),.15)
+        with self.assertRaises(ValueError):functional_approach_limit(dict(delivery=dict(approach_task_position_tolerance_m=.30)),dict(phase="DELIVERY"))
+
+class FunctionalArrivalRegionStopTests(unittest.TestCase):
+    def test_entering_task_region_zeros_instead_of_inventing_final_turn(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        block=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and 'stop_inside_functional_arrival_region' in ast.unparse(n.test))
+        wrapper=ast.parse('for _ in range(1):\n pass');wrapper.body[0].body=[block];ast.fix_missing_locations(wrapper)
+        for observed,distance,expected in [(True,.24,True),(False,.24,False),(True,.26,False)]:
+            result={};mission={'phase':'DELIVERY','delivery_source_and_mode_observed':observed};pose={'x':0.,'y':.98}
+            ns=dict(cfg={'delivery':{'stop_inside_functional_arrival_region':True,'approach_task_position_tolerance_m':.25}},mission=mission,distance=distance,result=result,p=pose,functional_approach_limit=m.functional_approach_limit)
+            exec(compile(wrapper,'actual_arrival_stop','exec'),ns)
+            self.assertEqual(bool(result.get('goal_triggered_stop')),expected)
+
+
+class MeasuredStepStandHandoffTests(unittest.TestCase):
+    def test_sampling_bound_matches_existing_stop_contract(self):
+        import inspect
+        from scripts.research.issue46.native_runtime import native_micro_stop_contract as stop
+        bound=inspect.signature(m.step_stand_handoff_ready).parameters['max_sample_gap_s'].default
+        self.assertEqual(bound,stop.PHYSICAL_STOP_MAX_SAMPLE_GAP_S)
+
+    def rows(self):
+        return [dict(sim_time_s=i*.02,native_generation=1,source_clock_generation=0,
+                     pose=dict(vx=.01,vy=0.,vz=.001),leg_states=[dict(velocity=.02)],
+                     floor_support_n=dict(left=190.,right=240.)) for i in range(11)]
+
+    def test_measured_window_and_double_support_are_required(self):
+        import copy
+        rows=self.rows();self.assertTrue(m.step_stand_handoff_ready(rows))
+        self.assertFalse(m.step_stand_handoff_ready(rows[:8]))
+        for key,value in (("vx",.11),("vz",.006)):
+            bad=copy.deepcopy(rows);bad[5]["pose"][key]=value
+            self.assertFalse(m.step_stand_handoff_ready(bad))
+        for field,value in (("floor_support_n",dict(left=0.,right=430.)),
+                            ("leg_states",[dict(velocity=.051)]),
+                            ("leg_states",[dict(velocity=float("nan"))]),
+                            ("source_clock_generation",2)):
+            bad=copy.deepcopy(rows);bad[5][field]=value
+            self.assertFalse(m.step_stand_handoff_ready(bad))
+        # The shared stop contract permits up to150ms source gaps. A60ms
+        # observation gap was rejecting an otherwise1.8s stationary real trace.
+        supported=copy.deepcopy([rows[i] for i in (0,3,5,7,10)])
+        self.assertTrue(m.step_stand_handoff_ready(supported))
+        unsupported=copy.deepcopy([rows[i] for i in (0,8,10)])
+        self.assertFalse(m.step_stand_handoff_ready(unsupported))
+
+    def test_step_stop_requires_support_readiness_before_sd_and_preserves_stop_gate(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,release_source_on_stop=True,native_action_smoothing=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        calls=[]
+        n=NS(observe=lambda *a,**k:calls.append("zero"),source_enabled=lambda enabled:calls.append("disable"),stand_once=lambda:calls.append("sd"))
+        def support_ready(*args):
+            calls.append("support_ready");return {"ready":True}
+        ns=dict(cfg=dict(motion_mode="LOCOMOTION_STEP",release_source_on_stop=True,
+            delivery=dict(release_source_after_zero_window=True)),n=n,baseline=1,result={},
+            time=__import__("time"),stop_wait_s=12.,await_step_stand_handoff=support_ready)
+        exec(compile(ast.Module(body=[helper],type_ignores=[]),"real_handoff","exec"),ns)
+        ns["stand_transition"]()
+        self.assertEqual(calls,["zero","support_ready","disable","sd"])
+        self.assertEqual(ns["result"]["step_stand_handoffs"],[{"ready":True}])
+        self.assertNotIn("pass_result",ns["result"])
+        calls.clear();ns["stand_transition"](source_already_disabled=True)
+        self.assertEqual(calls,["zero","support_ready","sd"])
+        def unsafe_support(*args):
+            raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
+        calls.clear();ns["await_step_stand_handoff"]=unsafe_support
+        with self.assertRaisesRegex(RuntimeError,"STEP_STAND_MEASURED_HANDOFF_NOT_READY"):
+            ns["stand_transition"]()
+        self.assertEqual(calls,["zero"])
+        # An SD acknowledgment still cannot authorize motion or placement.
+        self.assertIn('require_stop=True',code)
+        self.assertIn('retreat_stop_composite',code)
+        self.assertIn('AWAY_TURN_STOP_NOT_QUALIFIED',code)
+        self.assertIn('COMPOSITE_STOP_NOT_QUALIFIED',code)
+
+
+class FrontOpeningTaskAreaTests(unittest.TestCase):
+    def test_default_box_retained_and_only_bounded_apron_added(self):
+        box=[-1.85,1.85,-1.9,1.85];apron=[-.65,.65,-2.35,-1.9]
+        for x,y in [(0.,0.),(.47,-1.901),(.35,-2.),(-.006,-2.234)]:
+            self.assertTrue(m.carry_workspace_contains(dict(x=x,y=y),box,apron))
+        self.assertFalse(m.carry_workspace_contains(dict(x=.47,y=-1.901),box))
+        for x,y in [(.66,-2.),(-.66,-2.),(0.,-2.36),(1.86,0.),(0.,1.86)]:
+            self.assertFalse(m.carry_workspace_contains(dict(x=x,y=y),box,apron))
+    def test_invalid_and_wider_aprons_fail_closed(self):
+        box=[-1.85,1.85,-1.9,1.85]
+        for a in [[-.9,.65,-2.35,-1.9],[-.65,.65,-3.,-1.9],[-.65,.65,-2.35,-1.8],[float('nan'),.65,-2.35,-1.9]]:
+            with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=0.,y=0.),box,a)
+        with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=float('nan'),y=0.),box)
+
+
+class RejectedCarryHandshakeEvidenceTests(unittest.TestCase):
+    def test_rejected_live_readback_is_preserved_without_relaxing_gate(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,
+            release_source_on_stop=True,native_action_smoothing=True)
+        guard=next(node for node in ast.walk(ast.parse(code)) if isinstance(node,ast.If)
+            and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
+        row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="LOCOMOTION_DEFAULT",
+            get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+        ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=True,
+            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=.75)
+        with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"rejected_handshake","exec"),ns)
+        saved=ns["result"]["rejected_motion_handshake"]
+        self.assertTrue(saved["previously_acquired"])
+        self.assertEqual(saved["observation"],row)
+        self.assertEqual(saved["expected_mode"],"LOCOMOTION_DEFAULT")
+        self.assertNotIn("pass_result",ns["result"])
+
+
+class AtomicStoppedRearmTests(unittest.TestCase):
+    def node(self, samples=None):
+        import threading
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        good=dict(source_clock_generation=1, native_generation=1, body_status=1,
+                  get_mode_header_code=0, get_mode_desc="STAND_DEFAULT",
+                  common_mode_desc="STAND_DEFAULT", get_mode_status_value=100,
+                  common_mode_status_value=100, state_age_s={"common": .01, "get_mode": .01})
+        n=S(moving=False, feedback_fault=None, pumped_epoch=1, source_epoch=1,
+            telemetry_lock=threading.RLock(), lock=threading.RLock(), events=[],
+            publish=Mock(), pump=Mock())
+        items=iter(samples if samples is not None else [good])
+        def sample():
+            self.assertTrue(n.telemetry_lock._is_owned())
+            value=next(items)
+            if isinstance(value, Exception):raise value
+            return value
+        n.sample=sample
+        return n,good
+
+    def test_stopped_clock_pending_waits_zero_then_arms_current_epoch(self):
+        import time
+        n,good=self.node();items=iter([RuntimeError("CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING"), good])
+        def sample():
+            self.assertTrue(n.telemetry_lock._is_owned());value=next(items)
+            if isinstance(value,Exception):raise value
+            return value
+        n.sample=sample
+        self.assertEqual(m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True}),good)
+        self.assertTrue(n.moving);self.assertEqual(n.publish.call_count,2)
+        for call in n.publish.call_args_list:self.assertEqual(call.args,())
+        self.assertEqual(n.events[-1]["source_epoch"],1)
+
+    def test_physical_or_actual_motion_clock_fault_is_never_rearmed(self):
+        import time
+        n,_=self.node([RuntimeError("SOURCE_JOINT_SPEED:knee")])
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_JOINT_SPEED"):
+            m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True})
+        self.assertFalse(n.moving)
+        n,_=self.node();n.feedback_fault={"gate":"CLOCK_STEP_DURING_MOTION"}
+        with self.assertRaisesRegex(RuntimeError,"NATIVE_FEEDBACK_INVALID"):
+            m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True})
+        self.assertFalse(n.moving)
+
+    def test_failed_stop_or_already_moving_cannot_enter_readiness(self):
+        import time
+        for passed,moving in [(False,False),(True,True)]:
+            n,_=self.node();n.moving=moving
+            with self.assertRaisesRegex(RuntimeError,"QUALIFIED_STOP"):
+                m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":passed})
+            n.publish.assert_not_called()
+
+    def test_stale_or_wrong_epoch_never_arms_and_readiness_is_bounded(self):
+        from unittest.mock import patch
+        n,good=self.node();good["source_clock_generation"]=0;n.sample=lambda:good
+        times=iter([0.,0.,.1,.6,1.1])
+        with patch.object(m.time,"monotonic",side_effect=lambda:next(times)), patch.object(m.time,"sleep"):
+            with self.assertRaisesRegex(RuntimeError,"FRESH_EPOCH_NOT_READY"):
+                m.arm_carry_motion(n,1,2.,{"pass":True})
+        self.assertFalse(n.moving)
+
+    def test_all_common_carry_arms_require_atomic_readiness(self):
+        import inspect
+        code=inspect.getsource(m.run_carry_navigation)
+        self.assertNotIn("with n.lock:n.moving=True",code)
+        self.assertNotIn("n.moving=True",code)
+        compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"atomic_carry_runtime","exec")
+
+
+class LoadedDeliveryAngularStartTests(unittest.TestCase):
+    def test_loaded_step_rearm_preserves_sign_and_full_command_after_two_seconds(self):
+        d={"delivery_motion_mode":"LOCOMOTION_STEP","loaded_terminal_slowdown":True}
+        for demand in (-.6,.6):
+            actual=[m.loaded_delivery_angular_start(d,t,demand) for t in (0.,.5,1.,1.5,2.,3.)]
+            self.assertEqual(actual[0],0.)
+            self.assertAlmostEqual(actual[2],demand*.5)
+            self.assertEqual(actual[-2:],[demand,demand])
+            self.assertTrue(all(abs(a)<=abs(b) for a,b in zip(actual,actual[1:])))
+            self.assertLess(abs(actual[1]),.1)
+
+    def test_other_modes_and_nonfinite_inputs_are_not_silently_reinterpreted(self):
+        self.assertEqual(m.loaded_delivery_angular_start({},0.,.6),.6)
+        self.assertEqual(m.loaded_delivery_angular_start({"delivery_motion_mode":"LOCOMOTION_DEFAULT","loaded_terminal_slowdown":True},0.,.6),.6)
+        d={"delivery_motion_mode":"LOCOMOTION_STEP","loaded_terminal_slowdown":True}
+        for t in (-.1,float("nan")):
+            with self.assertRaises(RuntimeError):m.loaded_delivery_angular_start(d,t,.6)
+        with self.assertRaises(ValueError):m.loaded_delivery_angular_start(d,0.,float("nan"))
+
+    def test_common_route_applies_the_ramp_after_terminal_command_shaping(self):
+        import inspect
+        s=inspect.getsource(m.run_carry_navigation)
+        self.assertIn('angular=loaded_delivery_angular_start(cfg["delivery"],max(0.,tick-activation_started),angular)',s)
+        compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"loaded_angular_runtime","exec")
+
+
+class RearwardFoundationDeliveryTests(unittest.TestCase):
+    def test_body_faces_away_while_negative_forward_tracks_toward_table(self):
+        for actual in (-math.pi,-1.5,0.,1.5,math.pi):
+            virtual=m.delivery_control_yaw({"rearward_foundation_transit":True},actual)
+            self.assertAlmostEqual(-math.cos(actual),math.cos(virtual),places=12)
+            self.assertAlmostEqual(-math.sin(actual),math.sin(virtual),places=12)
+            self.assertEqual(m.delivery_control_yaw({},actual),actual)
+        pose=dict(x=-.14,y=-1.59,yaw=-.20);goal=[.015,.9]
+        back,unwrapped=m.table_turn_target(pose,goal,rearward=True)
+        vx,vy=-math.cos(back),-math.sin(back)
+        self.assertGreater(vx*(goal[0]-pose['x'])+vy*(goal[1]-pose['y']),2.)
+        self.assertLess(abs(unwrapped-pose['yaw']),math.pi)
+        self.assertLess(unwrapped-pose['yaw'],0.)
+
+    def test_rearward_has_no_implicit_model_or_stop_gate_changes(self):
+        import inspect
+        s=inspect.getsource(m.run_carry_navigation)
+        self.assertIn('delivery_control_yaw(cfg["delivery"],p["yaw"])',s)
+        self.assertIn('if cfg["delivery"].get("rearward_foundation_transit"):forward=-forward',s)
+        self.assertIn("FINAL_DOCK_TURN_FOOTPRINT",s)
+        self.assertIn("result['post_stop_composite'].get('pass')",s)
+        self.assertNotIn("n.moving=True",s)
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,delivery={"rearward_foundation_transit":True,"delivery_motion_mode":"LOCOMOTION_STEP"})
+
+
+class LoadedFoundationStartTests(unittest.TestCase):
+    def test_translation_and_steering_ramp_without_changing_final_command(self):
+        d=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT")
+        for phase in ("RETREAT","DELIVERY"):
+            for forward,angular in ((-.2,0.),(-.2,.6),(-.2,-.6)):
+                values=[m.loaded_foundation_start(d,phase,t,forward,angular) for t in (0.,.5,1.,1.5,2.,3.)]
+                self.assertEqual(values[0],(0.,0.))
+                self.assertEqual(values[2],(forward*.5,angular*.5))
+                self.assertEqual(values[-1],(forward,angular))
+                self.assertTrue(all(abs(a[0])<=abs(b[0]) for a,b in zip(values,values[1:])))
+        self.assertEqual(m.loaded_foundation_start(d,"TURN",0.,0.,.6),(0.,.6))
+        self.assertEqual(m.loaded_foundation_start({},"RETREAT",0.,-.2,0.),(-.2,0.))
+
+    def test_grace_is_bounded_to_initial_ramped_activation(self):
+        cfg=dict(delivery=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT"))
+        self.assertEqual(m.carry_activation_grace_s(cfg,"RETREAT",False),2.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"DELIVERY",False),2.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"DELIVERY",True),.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"TURN",False),.75)
+        self.assertEqual(m.carry_activation_grace_s({},"RETREAT",False),.75)
+        d=cfg["delivery"]
+        for t in (-.1,float("nan")):
+            with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",t,-.2,0.)
+        with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",0.,float("nan"),0.)
+
+    def test_handshake_still_rejects_nonactivation_after_ramp_deadline(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,
+            release_source_on_stop=True,native_action_smoothing=True)
+        guard=next(node for node in ast.walk(ast.parse(code)) if isinstance(node,ast.If)
+            and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
+        row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="STAND_DEFAULT",
+            get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+        ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=False,
+            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=2.75)
+        exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_pending","exec"),ns)
+        ns['tick']=12.751
+        with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_expired","exec"),ns)
+        self.assertIn('rejected_motion_handshake',ns['result'])
+
+
+class RearwardArrivalBrakingTests(unittest.TestCase):
+    def test_reverse_transit_brakes_before_final_forward_facing_turn(self):
+        d=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT")
+        self.assertTrue(m.delivery_braking_due(d,.599,.60,2.30))
+        self.assertFalse(m.delivery_braking_due(d,.601,.60,2.30))
+        self.assertFalse(m.delivery_braking_due({},.599,.60,2.30))
+        self.assertTrue(m.delivery_braking_due({},.599,.60,.10))
+        self.assertTrue(m.delivery_braking_due(dict(delivery_motion_mode="LOCOMOTION_STEP"),.599,.60,2.30))
+        for bad in (float("nan"),float("inf"),-.1):
+            with self.assertRaises(RuntimeError):m.delivery_braking_due(d,bad,.60,2.30)
+
+
+class MeasuredForwardDockTests(unittest.TestCase):
+    def test_recorded_safe_stopped_pose_requests_one_bounded_approach(self):
+        cfg=dict(rearward_foundation_transit=True)
+        self.assertTrue(m.measured_forward_dock_needed(cfg,dict(x=.86464,y=.68894,yaw=2.39168),[.015,.9]))
+        self.assertFalse(m.measured_forward_dock_needed(cfg,dict(x=.015,y=.90,yaw=2.39168),[.015,.9]))
+        self.assertFalse(m.measured_forward_dock_needed({},dict(x=.86464,y=.68894,yaw=2.39168),[.015,.9]))
+        for pose in [dict(x=1.3,y=-.5,yaw=2.3),dict(x=.86464,y=.68894,yaw=0.),dict(x=float('nan'),y=.68,yaw=2.3)]:
+            with self.assertRaises(RuntimeError):m.measured_forward_dock_needed(cfg,pose,[.015,.9])
+
+    def test_generated_runtime_keeps_full_stop_and_actual_placement_requirement(self):
+        code=m.build_carry_route_script([.015,.9],{},['pelvis'],carry_pid=19,timeout_s=90.)
+        compile(code,'forward_dock_runtime','exec')
+        self.assertIn('MEASURED_FORWARD_DOCK_NOT_COMPLETED_AND_STOPPED',code)
+        self.assertIn('actual_placement_ik="STILL_REQUIRED"',code)
+        self.assertIn('command.state!=NavState.DRIVE',code)
+
+
+class QualifiedCarryClockStopTests(unittest.TestCase):
+    def node(self,passed=True,fault="CLOCK_STEP_DURING_MOTION"):
+        import types
+        from unittest.mock import Mock
+        events=[]
+        n=types.SimpleNamespace(moving=True,feedback_fault=dict(gate=fault))
+        def zero():events.append('zero');n.moving=False
+        n.deadline_zero=Mock(side_effect=zero);n.source_enabled=Mock(side_effect=lambda x:events.append(('source',x)))
+        n.observe=Mock(side_effect=lambda *a,**k:(events.append('independent_stop') or dict(pass_result=passed,**{'pass':passed})))
+        return n,events
+    def test_clock_fault_stops_then_uses_source_retaining_handoff_and_new_full_stop(self):
+        import time
+        n,events=self.node();transition=lambda **kw:events.append(('stand',kw))
+        stopped=m.qualified_carry_clock_stop(n,dict(release_source_on_stop=True),1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),0,transition,8.)
+        self.assertTrue(stopped['pass']);self.assertFalse(n.moving);self.assertIsNone(n.feedback_fault)
+        self.assertEqual(events,['zero',('stand',{'source_already_disabled':False}),'independent_stop'])
+    def test_physical_fault_never_cleared_or_rearmed(self):
+        import time
+        n,events=self.node(fault='SOURCE_JOINT_SPEED:knee')
+        with self.assertRaisesRegex(RuntimeError,'SOURCE_JOINT_SPEED'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('SOURCE_JOINT_SPEED:knee'),0,lambda **kw:None,8.)
+        self.assertFalse(events);self.assertIsNotNone(n.feedback_fault)
+    def test_failed_stop_or_exhausted_recoveries_never_pass(self):
+        import time
+        n,_=self.node(passed=False)
+        with self.assertRaisesRegex(RuntimeError,'PHYSICAL_STOP_FAILED'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),0,lambda **kw:None,8.)
+        n,events=self.node()
+        with self.assertRaisesRegex(RuntimeError,'CLOCK_GENERATION_PENDING'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),4,lambda **kw:None,8.)
+        self.assertFalse(events)
+
+
+class MeasuredDockClockTests(unittest.TestCase):
+    def controller(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation/robotsim_navigation"))
+        from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
+        return PointGoalController(ControllerConfig()),Pose2D,Goal2D(1.,0.,0.,"native_scene_world"),NavState
+    def test_frame_received_during_pump_uses_post_sample_control_time(self):
+        from unittest.mock import patch
+        driver,pose,goal,state=self.controller()
+        row=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=100.01)
+        with patch.object(m.time,'monotonic',return_value=100.02):
+            self.assertEqual(m.measured_dock_step(driver,pose,row,goal).state,state.DRIVE)
+        old,pose,goal,state=self.controller()
+        self.assertEqual(old.step(pose(0.,0.,0.,"native_scene_world",100.01),goal,now_steady_s=100.).state,state.STALE_STATE)
+    def test_genuinely_old_or_future_frame_remains_rejected(self):
+        from unittest.mock import patch
+        for stamp in (99.,100.03):
+            driver,pose,goal,state=self.controller()
+            row=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=stamp)
+            with patch.object(m.time,'monotonic',return_value=100.02):
+                self.assertEqual(m.measured_dock_step(driver,pose,row,goal).state,state.STALE_STATE)
+
+
+class FinalDockAngularCommandTests(unittest.TestCase):
+    def test_near_table_reverse_arrival_cannot_use_full_transit_pivot_input(self):
+        self.assertEqual(m.final_dock_angular_command(-2.,.60,3.),-.30)
+        self.assertEqual(m.final_dock_angular_command(2.,.20,3.),.20)
+        self.assertEqual(m.final_dock_angular_command(-2.,.60,0.),0.)
+        self.assertAlmostEqual(m.final_dock_angular_command(-2.,.60,1.),-.15)
+    def test_two_second_ramp_is_continuous_and_invalid_inputs_rejected(self):
+        values=[m.final_dock_angular_command(2.,.6,i/100.) for i in range(201)]
+        self.assertTrue(all(0.<=v<=.3 for v in values))
+        self.assertLess(max(abs(a-b) for a,b in zip(values,values[1:])),.003)
+        for args in [(float('nan'),.6,1.),(1.,0.,1.),(1.,.6,float('inf'))]:
+            with self.assertRaises(ValueError):m.final_dock_angular_command(*args)
+
+
+class StationaryCarrySampleTests(unittest.TestCase):
+    def node(self):
+        from types import SimpleNamespace
+        from threading import RLock
+        rows=[RuntimeError('CLOCK_GENERATION_PENDING'),dict(source_clock_generation=2,body_status=1)]
+        events=[]
+        def sample():
+            row=rows.pop(0)
+            if isinstance(row,Exception):raise row
+            return row
+        n=SimpleNamespace(moving=False,feedback_fault=None,telemetry_lock=RLock(),source_epoch=2,pumped_epoch=2,
+            publish=lambda:events.append('zero'),pump=lambda:None,sample=sample)
+        return n,events
+    def test_stationary_epoch_pending_waits_for_complete_state_without_arming(self):
+        import time
+        n,events=self.node()
+        self.assertEqual(m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':True})['source_clock_generation'],2)
+        self.assertFalse(n.moving);self.assertEqual(events,['zero','zero'])
+    def test_no_physical_fault_is_cleared_and_no_unqualified_stop_is_used(self):
+        import time
+        for passed,moving,fault in [(False,False,None),(True,True,None),(True,False,{'gate':'SOURCE_JOINT_SPEED'})]:
+            n,events=self.node();n.moving=moving;n.feedback_fault=fault
+            with self.assertRaises(RuntimeError):m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':passed})
+            self.assertEqual(n.moving,moving);self.assertEqual(n.feedback_fault,fault)
+    def test_critical_missing_telemetry_is_not_masked(self):
+        import time
+        n,_=self.node()
+        def missing():raise RuntimeError('CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING')
+        n.sample=missing
+        with self.assertRaisesRegex(RuntimeError,'CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING'):
+            m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':True})
+
+class PlannedStepDecelerationTests(unittest.TestCase):
+    """Task-layer deceleration must not turn safety stops into soft stops."""
+
+    def fixture(self, *, fault=None, cancel=False, mode="LOCOMOTION_STEP"):
+        from types import SimpleNamespace
+        clock=SimpleNamespace(now=100.)
+        class Node:
+            moving=True
+            def __init__(self):
+                self.command_log=[dict(t=100.,forward=.20,lateral=0.,angular=.437)]
+                self.trace=[];self.zero_count=0;self.pumps=0
+            def pump(self):
+                self.pumps+=1
+                if cancel and self.pumps==2:self.moving=False
+            def sample(self):
+                if fault and self.pumps==2:raise RuntimeError(fault)
+                return dict(body_status=1,sim_time_s=200.+clock.now-100.,
+                    common_mode_desc=mode,get_mode_desc=mode,
+                    common_source=dict(name="robotsim_official_cmd_vel"))
+            def publish(self,fwd=0.,lat=0.,ang=0.):
+                if not self.moving:fwd=lat=ang=0.
+                self.command_log.append(dict(t=clock.now,forward=fwd,lateral=lat,angular=ang))
+            def deadline_zero(self):
+                self.zero_count+=1;self.moving=False;self.publish()
+        n=Node()
+        cfg=dict(motion_mode="LOCOMOTION_STEP",delivery=dict(planned_step_deceleration_s=.6))
+        return n,cfg,clock
+
+    def execute(self,n,cfg,clock,deadline=102.):
+        from unittest.mock import patch
+        def sleep(dt):clock.now+=dt
+        with patch.object(m.time,"monotonic",side_effect=lambda:clock.now),patch.object(m.time,"sleep",side_effect=sleep):
+            return m.planned_step_deceleration(n,cfg,1,deadline)
+
+    def test_planned_stop_tapers_both_inputs_and_keeps_absolute_budget(self):
+        n,cfg,clock=self.fixture()
+        evidence=self.execute(n,cfg,clock)
+        self.assertTrue(evidence["applied"]);self.assertEqual(n.zero_count,1)
+        self.assertFalse(n.moving);self.assertAlmostEqual(clock.now,100.6)
+        self.assertGreater(len(evidence["commands"]),20)
+        for key in ("forward","angular"):
+            values=[r[key] for r in n.command_log]
+            self.assertTrue(all(a+1e-12>=b>=0. for a,b in zip(values,values[1:])))
+            self.assertEqual(values[-1],0.)
+        self.assertTrue(all(r["lateral"]==0. for r in n.command_log))
+
+    def test_fault_and_cancel_stop_immediately_without_more_nonzero(self):
+        for fault,cancel in (("SOURCE_JOINT_SPEED:left_knee_joint",False),
+                             ("NATIVE_FEEDBACK_STALE_OR_INVALID",False),(None,True)):
+            n,cfg,clock=self.fixture(fault=fault,cancel=cancel)
+            with self.assertRaises(RuntimeError):self.execute(n,cfg,clock)
+            self.assertLess(clock.now,100.1);self.assertEqual(n.zero_count,1)
+            self.assertFalse(n.moving)
+            self.assertEqual(n.command_log[-1]["forward"],0.)
+            self.assertEqual(n.command_log[-1]["angular"],0.)
+
+    def test_no_extension_or_nonzero_on_insufficient_deadline(self):
+        n,cfg,clock=self.fixture()
+        with self.assertRaisesRegex(RuntimeError,"DEADLINE"):
+            self.execute(n,cfg,clock,100.2)
+        self.assertEqual(clock.now,100.);self.assertEqual(n.zero_count,1)
+        self.assertEqual(len(n.command_log),2)
+
+    def test_mode_change_cannot_be_smoothed_over(self):
+        n,cfg,clock=self.fixture(mode="STAND_DEFAULT")
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_CHANGED"):self.execute(n,cfg,clock)
+        self.assertEqual(len(n.command_log),2);self.assertEqual(n.zero_count,1)
+
+    def test_unconfigured_or_other_mode_keeps_immediate_zero(self):
+        for mode,duration in (("LOCOMOTION_STEP",0.),("LOCOMOTION_DEFAULT",.6)):
+            n,cfg,clock=self.fixture()
+            cfg["motion_mode"]=mode;cfg["delivery"]["planned_step_deceleration_s"]=duration
+            self.assertFalse(self.execute(n,cfg,clock)["applied"])
+            self.assertEqual(clock.now,100.);self.assertEqual(n.zero_count,1)
+            self.assertEqual(n.pumps,0)
+
+    def test_generated_script_keeps_fault_path_immediate_and_ramp_only_planned(self):
+        code=m.build_carry_route_script([.015,.9],{},["pelvis"],carry_pid=19)
+        compile(code,"planned_step_deceleration_runtime","exec")
+        tree=ast.parse(code)
+        run=next(x for x in ast.walk(tree) if isinstance(x,ast.FunctionDef) and x.name=="run_carry_navigation")
+        fault_stop=next(x for x in ast.walk(run) if isinstance(x,ast.FunctionDef) and x.name=="terminal_clock_stop")
+        self.assertNotIn("planned_step_deceleration",ast.unparse(fault_stop))
+        self.assertIn("n.deadline_zero()",ast.unparse(fault_stop))
+        helper=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=="planned_step_deceleration")
+        self.assertTrue(any(isinstance(x,ast.Try) and x.finalbody for x in ast.walk(helper)))
+
+class RequestedStepStandTransitionTests(unittest.TestCase):
+    def test_explicit_step_stop_requests_sd_before_physical_composite(self):
+        import inspect
+        from types import SimpleNamespace
+        source=inspect.getsource(m.run_carry_navigation)
+        tree=ast.parse(source)
+        fn=next(x for x in ast.walk(tree) if isinstance(x,ast.FunctionDef) and x.name=="stand_transition")
+        standalone=ast.Module(body=[fn],type_ignores=[])
+        code=compile(ast.fix_missing_locations(standalone),"step_requested_stand","exec")
+        for mode in ("LOCOMOTION_STEP","LOCOMOTION_DEFAULT"):
+            calls=[]
+            def forbidden(*args):raise AssertionError("already-stationary prerequisite must not block vendor stop request")
+            n=SimpleNamespace(observe=lambda t,**kw:calls.append(("zero_window",t)),
+                source_enabled=lambda enabled:calls.append(("source",enabled)),
+                stand_once=lambda:calls.append(("request_sd",)))
+            ns=dict(cfg=dict(motion_mode=mode,release_source_on_stop=True,
+                            delivery=dict(stand_transition_strategy="STEP_ZERO_WINDOW_THEN_SD_REQUEST",
+                                          release_source_after_zero_window=True)),
+                    result={},baseline=1,n=n,stop_wait_s=12.,await_step_stand_handoff=forbidden)
+            exec(code,ns);ns["stand_transition"]()
+            self.assertEqual(calls,[("zero_window",1.05),("source",False),("request_sd",)])
+        # Acceptance remains in the outer workflow and requires the independent
+        # measured stop; an RPC or chosen strategy alone is not PASS.
+        assignments=[x for x in ast.walk(tree) if isinstance(x,ast.Assign)
+            and any(isinstance(t,ast.Subscript) and isinstance(t.value,ast.Name)
+                    and t.value.id=="result" and isinstance(t.slice,ast.Constant)
+                    and t.slice.value=="post_stop_composite" for t in x.targets)]
+        self.assertTrue(any(isinstance(x.value,ast.Call) and isinstance(x.value.func,ast.Attribute)
+            and x.value.func.attr=="observe"
+            and any(k.arg=="require_stop" and isinstance(k.value,ast.Constant)
+                    and k.value.value is True for k in x.value.keywords) for x in assignments))

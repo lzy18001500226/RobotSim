@@ -65,6 +65,30 @@ Higher-level algorithms should not depend directly on vendor SDKs.
 
 Do not design a large universal robot abstraction before at least two real backends have been exercised. Start with G1, add X2, then generalize only the interfaces that are genuinely shared.
 
+## Progress terminology (updated 2026-11-06)
+
+The P0–P7 sections below are the original platform roadmap, not a current
+sequential task queue or completion checklist. X2 native MuJoCo/MC work is
+already underway; do not defer it until every earlier roadmap item is finished.
+No generic roadmap section is declared PASS by this update.
+
+For the current user-defined X2 task stages:
+
+- **Stage 2:** preplan a feasible fixed table stance; travel there; execute
+  open, approach, measured arrival, close, lift and unsupported hold using the
+  reviewed lower concave-pad circle. Prefer fresh depth-camera targets; the
+  maintainer permits truth-first grasp debugging followed by depth-camera
+  replacement. Truth-based success must remain separately labeled.
+- **Stage 3:** know the table but not bottle position in advance; use fresh
+  depth perception to choose/adjust the base stance fore/aft/laterally and
+  repeat grasp planning. A fixed docking coordinate is not this capability.
+- LiDAR localization and unknown-obstacle navigation are distinct qualification
+  targets; passing ground-truth routes does not prove them.
+
+Stage 2 is currently incomplete: the measured opening and pose-tracking blockers
+are recorded in [Issue #46 findings](research/issue46_truth_grasp_execution_findings.md).
+A geometry review or static IK PASS does not establish grasp/lift success.
+
 ## Development Phases
 
 ### P0 - Development environment

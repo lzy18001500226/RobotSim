@@ -1,0 +1,176 @@
+"""Bounded mode verification for research clients; no motion publishers.
+
+A service reply and a confirmed mode are separate observations. Transport
+failure never permits a second state-changing request. Physical readiness
+continues to be owned by the existing posture/contact/safety gates.
+"""
+import time as _infra_time
+
+
+def infra_elapsed():
+    raw = getattr(_infra_time, "CLOCK_MONOTONIC_RAW", None)
+    return _infra_time.clock_gettime(raw) if raw is not None else _infra_time.perf_counter()
+
+
+class ModeHandshakeError(RuntimeError):
+    pass
+
+
+def call_service(node, client, request, *, timeout_s=5.0):
+    """One request, one callback owner, cancellation of timed-out local futures."""
+    import rclpy
+    deadline = infra_elapsed() + timeout_s
+    while rclpy.ok():
+        remaining = deadline - infra_elapsed()
+        if remaining <= 0:
+            raise ModeHandshakeError("service unavailable: " + client.srv_name)
+        if client.wait_for_service(timeout_sec=min(.05, remaining)):
+            break
+    else:
+        raise ModeHandshakeError("ROS_SHUTDOWN")
+    future = client.call_async(request)
+    temporary_owner = None
+    try:
+        while rclpy.ok() and not future.done():
+            remaining = deadline - infra_elapsed()
+            if remaining <= 0:
+                raise ModeHandshakeError("service timeout: " + client.srv_name)
+            executor = getattr(node, "feedback_executor", None)
+            if executor is None:
+                owner = getattr(node, "executor", None)
+                if owner is None:
+                    owner = rclpy.get_global_executor()
+                # Humble remove_node() leaves Node.executor pointing at that
+                # executor. rclpy.spin_once() temporarily adds/removes nodes,
+                # so the property alone does not prove callback membership.
+                # add_node is idempotent; undo only membership acquired here.
+                if owner.add_node(node):
+                    temporary_owner = owner
+                owner.spin_once(timeout_sec=min(.01, remaining))
+            else:
+                error = getattr(node, "feedback_executor_error", None)
+                thread = getattr(node, "feedback_thread", None)
+                if error is not None or (thread is not None and not thread.is_alive()):
+                    raise ModeHandshakeError("FEEDBACK_EXECUTOR_FAILURE:" + str(error))
+                _infra_time.sleep(min(.005, remaining))
+        if not future.done() or future.cancelled() or future.result() is None:
+            raise ModeHandshakeError("service timeout: " + client.srv_name)
+        return future.result()
+    finally:
+        # Humble queues done-callback cleanup on the executor. Prune this
+        # transaction immediately as well; the installed API is idempotent.
+        client.remove_pending_request(future)
+        if not future.done():
+            future.cancel()
+        if temporary_owner is not None:
+            temporary_owner.remove_node(node)
+
+
+def wait_initial_mode(read_mode, *, timeout_s=4.0):
+    """Retry only read-only startup queries within one elapsed-time deadline.
+
+    Discovery may precede a usable ROS service response. No Set request is
+    allowed until a fresh, running initialization mode has been observed.
+    """
+    deadline = infra_elapsed() + timeout_s
+    observations = []
+    while True:
+        remaining = deadline - infra_elapsed()
+        if remaining <= 0:
+            raise ModeHandshakeError("MC_NOT_INITIALIZED_NO_SET:" + repr(observations))
+        try:
+            row = read_mode(min(1.0, remaining))
+        except ModeHandshakeError as exc:
+            if not str(exc).startswith(("service timeout:", "service unavailable:")):
+                raise
+            observations.append({"transport_error": str(exc)})
+        else:
+            observations.append(row)
+            if row.get("header_code") != 0:
+                raise ModeHandshakeError("MODE_READBACK_INVALID:" + repr(row))
+            if row.get("name") in ("PASSIVE_DEFAULT", "STAND_DEFAULT") and row.get("status") == 100:
+                return observations
+        _infra_time.sleep(min(.05, max(0.0, deadline - infra_elapsed())))
+
+
+def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0, pending_readiness=None):
+    """Fresh RPC readback; no cached mode and no retry of SetMcAction.
+
+    read_mode(remaining_s) returns name/status/header_code. send_once returns
+    acknowledgement status/header_code. A transport timeout is ambiguous;
+    only a subsequent valid applied-mode readback can resolve it.
+    """
+    # Delivered MC can arm STEP while remaining STAND at zero velocity. This
+    # optional contract is deliberately unavailable to any other mode. It is
+    # not an applied-mode PASS; the caller must verify motion activation later.
+    if pending_readiness is not None and desired != 'LOCOMOTION_STEP':
+        raise ValueError('pending readiness is only defined for LOCOMOTION_STEP')
+    started = infra_elapsed()
+    deadline = started + timeout_s
+    read_transport_errors = []
+    def remaining():
+        value = deadline - infra_elapsed()
+        if value <= 0:
+            raise ModeHandshakeError("MODE_READBACK_TIMEOUT:" + desired)
+        return value
+    def read():
+        while True:
+            try:
+                row = read_mode(remaining())
+                break
+            except ModeHandshakeError as exc:
+                if not str(exc).startswith(("service timeout:", "service unavailable:")):
+                    raise
+                read_transport_errors.append(str(exc))
+                _infra_time.sleep(min(.05, remaining()))
+        if row.get("header_code") != 0 or row.get("status") not in (100, 200):
+            raise ModeHandshakeError("MODE_READBACK_INVALID:" + repr(row))
+        return row
+    initial = read()
+    result = {"desired": desired, "initial": initial, "set_sent": False,
+              "acknowledgement": None, "transport_error": None,
+              "read_transport_errors": read_transport_errors}
+    # Delivered McActionStatus: IDLE=0, RUNNING=100, TRANSITION=200.
+    # A matching name during TRANSITION is not an applied, running mode.
+    if initial["name"] == desired and initial["status"] == 100:
+        result.update(outcome="ALREADY_APPLIED", applied=initial,
+                      elapsed_s=infra_elapsed()-started)
+        return result
+    if initial["name"] != desired:
+        if initial["status"] != 100:
+            raise ModeHandshakeError("MODE_TRANSITION_NOT_READY:" + repr(initial))
+        result["set_sent"] = True
+        try:
+            ack = send_once(remaining())
+        except RuntimeError as exc:
+            # Only an ambiguous service timeout may be reconciled by readback.
+            if "service timeout" not in str(exc):
+                raise
+            result["transport_error"] = str(exc)
+        else:
+            result["acknowledgement"] = ack
+            if ack.get("header_code") != 0 or ack.get("status") != 1:
+                raise ModeHandshakeError("MODE_REQUEST_REJECTED:" + repr(ack))
+    while True:
+        observed = read()
+        if observed["name"] == desired and observed["status"] == 100:
+            outcome = ("APPLIED_NO_SET" if not result["set_sent"] else
+                       "APPLIED_ACK_MISSING" if result["transport_error"] else "APPLIED")
+            result.update(outcome=outcome, applied=observed,
+                          elapsed_s=infra_elapsed()-started)
+            return result
+        if (pending_readiness is not None and observed['name'] == 'STAND_DEFAULT'
+                and observed['status'] == 100):
+            pending = pending_readiness()
+            if pending is not None:
+                result.update(outcome='ARMED_PENDING_VELOCITY', applied=None,
+                              armed_stand=observed, pending_readiness=pending,
+                              elapsed_s=infra_elapsed()-started)
+                return result
+        _infra_time.sleep(min(.05, remaining()))
+
+# END EMBEDDED
+
+def generated_source():
+    from pathlib import Path
+    return Path(__file__).read_text().split("# END EMBEDDED" + "\n")[0]
