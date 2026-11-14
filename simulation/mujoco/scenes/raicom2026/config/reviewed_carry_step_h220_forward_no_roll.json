@@ -73,6 +73,8 @@
   "delivery_motion_mode": "LOCOMOTION_STEP",
   "delivery_align_reentry_rad": 0.45,
   "measure_step_braking_after_progress_m": 0.35,
+  "planned_step_deceleration_s": 0.6,
+  "planned_step_deceleration_evidence": "204417Z: abrupt STEP input (.20m/s,+.437rad/s) to zero preceded left-knee peak12.613911rad/s above unchanged11.936rad/s source limit. Hypothesis: healthy planned stops need an input taper. A0.6s linear command ramp is an explicit unvalidated task-layer experiment; fault/watchdog zero stays immediate, original measured support and composite stop gates unchanged. Brake-distance evidence includes ramp travel.",
   "delivery_heading_gain": 2.4,
   "heading_response_evidence": "185743Z actual yaw rate~.05rad/s under requests~.15rad/s; task-layer gain .8->2.4 compensates measured response, unchanged nativeMC gains. Stop trigger uses measured braking peak without .35m truncation; final position.15/yaw.12/composite gates retained.",
   "turn_drift_is_diagnostic": true,

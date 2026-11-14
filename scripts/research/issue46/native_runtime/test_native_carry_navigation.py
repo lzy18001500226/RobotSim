@@ -1961,3 +1961,90 @@ class StationaryCarrySampleTests(unittest.TestCase):
         n.sample=missing
         with self.assertRaisesRegex(RuntimeError,'CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING'):
             m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':True})
+
+class PlannedStepDecelerationTests(unittest.TestCase):
+    """Task-layer deceleration must not turn safety stops into soft stops."""
+
+    def fixture(self, *, fault=None, cancel=False, mode="LOCOMOTION_STEP"):
+        from types import SimpleNamespace
+        clock=SimpleNamespace(now=100.)
+        class Node:
+            moving=True
+            def __init__(self):
+                self.command_log=[dict(t=100.,forward=.20,lateral=0.,angular=.437)]
+                self.trace=[];self.zero_count=0;self.pumps=0
+            def pump(self):
+                self.pumps+=1
+                if cancel and self.pumps==2:self.moving=False
+            def sample(self):
+                if fault and self.pumps==2:raise RuntimeError(fault)
+                return dict(body_status=1,sim_time_s=200.+clock.now-100.,
+                    common_mode_desc=mode,get_mode_desc=mode,
+                    common_source=dict(name="robotsim_official_cmd_vel"))
+            def publish(self,fwd=0.,lat=0.,ang=0.):
+                if not self.moving:fwd=lat=ang=0.
+                self.command_log.append(dict(t=clock.now,forward=fwd,lateral=lat,angular=ang))
+            def deadline_zero(self):
+                self.zero_count+=1;self.moving=False;self.publish()
+        n=Node()
+        cfg=dict(motion_mode="LOCOMOTION_STEP",delivery=dict(planned_step_deceleration_s=.6))
+        return n,cfg,clock
+
+    def execute(self,n,cfg,clock,deadline=102.):
+        from unittest.mock import patch
+        def sleep(dt):clock.now+=dt
+        with patch.object(m.time,"monotonic",side_effect=lambda:clock.now),patch.object(m.time,"sleep",side_effect=sleep):
+            return m.planned_step_deceleration(n,cfg,1,deadline)
+
+    def test_planned_stop_tapers_both_inputs_and_keeps_absolute_budget(self):
+        n,cfg,clock=self.fixture()
+        evidence=self.execute(n,cfg,clock)
+        self.assertTrue(evidence["applied"]);self.assertEqual(n.zero_count,1)
+        self.assertFalse(n.moving);self.assertAlmostEqual(clock.now,100.6)
+        self.assertGreater(len(evidence["commands"]),20)
+        for key in ("forward","angular"):
+            values=[r[key] for r in n.command_log]
+            self.assertTrue(all(a+1e-12>=b>=0. for a,b in zip(values,values[1:])))
+            self.assertEqual(values[-1],0.)
+        self.assertTrue(all(r["lateral"]==0. for r in n.command_log))
+
+    def test_fault_and_cancel_stop_immediately_without_more_nonzero(self):
+        for fault,cancel in (("SOURCE_JOINT_SPEED:left_knee_joint",False),
+                             ("NATIVE_FEEDBACK_STALE_OR_INVALID",False),(None,True)):
+            n,cfg,clock=self.fixture(fault=fault,cancel=cancel)
+            with self.assertRaises(RuntimeError):self.execute(n,cfg,clock)
+            self.assertLess(clock.now,100.1);self.assertEqual(n.zero_count,1)
+            self.assertFalse(n.moving)
+            self.assertEqual(n.command_log[-1]["forward"],0.)
+            self.assertEqual(n.command_log[-1]["angular"],0.)
+
+    def test_no_extension_or_nonzero_on_insufficient_deadline(self):
+        n,cfg,clock=self.fixture()
+        with self.assertRaisesRegex(RuntimeError,"DEADLINE"):
+            self.execute(n,cfg,clock,100.2)
+        self.assertEqual(clock.now,100.);self.assertEqual(n.zero_count,1)
+        self.assertEqual(len(n.command_log),2)
+
+    def test_mode_change_cannot_be_smoothed_over(self):
+        n,cfg,clock=self.fixture(mode="STAND_DEFAULT")
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_CHANGED"):self.execute(n,cfg,clock)
+        self.assertEqual(len(n.command_log),2);self.assertEqual(n.zero_count,1)
+
+    def test_unconfigured_or_other_mode_keeps_immediate_zero(self):
+        for mode,duration in (("LOCOMOTION_STEP",0.),("LOCOMOTION_DEFAULT",.6)):
+            n,cfg,clock=self.fixture()
+            cfg["motion_mode"]=mode;cfg["delivery"]["planned_step_deceleration_s"]=duration
+            self.assertFalse(self.execute(n,cfg,clock)["applied"])
+            self.assertEqual(clock.now,100.);self.assertEqual(n.zero_count,1)
+            self.assertEqual(n.pumps,0)
+
+    def test_generated_script_keeps_fault_path_immediate_and_ramp_only_planned(self):
+        code=m.build_carry_route_script([.015,.9],{},["pelvis"],carry_pid=19)
+        compile(code,"planned_step_deceleration_runtime","exec")
+        tree=ast.parse(code)
+        run=next(x for x in ast.walk(tree) if isinstance(x,ast.FunctionDef) and x.name=="run_carry_navigation")
+        fault_stop=next(x for x in ast.walk(run) if isinstance(x,ast.FunctionDef) and x.name=="terminal_clock_stop")
+        self.assertNotIn("planned_step_deceleration",ast.unparse(fault_stop))
+        self.assertIn("n.deadline_zero()",ast.unparse(fault_stop))
+        helper=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=="planned_step_deceleration")
+        self.assertTrue(any(isinstance(x,ast.Try) and x.finalbody for x in ast.walk(helper)))

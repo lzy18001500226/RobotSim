@@ -1136,6 +1136,8 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if step_all and (not native_step or not vendor_transition_table):raise ValueError("native STEP transit requires original table and explicit source mode")
     if vendor_transition_table and (native_action_smoothing or native_step and not step_all or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
+        if float(delivery.get("planned_step_deceleration_s",0.)) not in (0.,.6):
+            raise ValueError("PLANNED_STEP_DECELERATION_SCOPE")
         if delivery.get("delivery_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported delivery motion mode")
         if delivery.get("rearward_foundation_transit"):
             if delivery.get("delivery_motion_mode")!="LOCOMOTION_DEFAULT" or not delivery.get("bounded_final_dock_alignment"):raise ValueError("rearward transit needs source-native FoundationWalk and final turn")
@@ -1285,6 +1287,54 @@ def await_step_stand_handoff(n, baseline, deadline_s):
                         meaning="TRANSITION_PERMISSION_ONLY_COMPOSITE_STOP_STILL_REQUIRED")
         time.sleep(.02)
     raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
+
+
+def planned_step_deceleration(n, cfg, baseline, deadline_s):
+    """Taper only a healthy planned STEP stop; faults always send immediate zero.
+
+    This is a task-layer input ramp, not a change to MC, joint limits or the
+    physical stop gate. The absolute route/watchdog deadline is never extended.
+    Coast measurements begin before the ramp, so its displacement is included.
+    """
+    duration=float((cfg.get("delivery") or {}).get("planned_step_deceleration_s",0.))
+    if not duration or cfg.get("motion_mode")!="LOCOMOTION_STEP":
+        n.deadline_zero()
+        return dict(applied=False,reason="LEGACY_IMMEDIATE_ZERO")
+    if duration!=.6:raise ValueError("PLANNED_STEP_DECELERATION_SCOPE")
+    start=time.monotonic()
+    commands=[]
+    initial=dict(n.command_log[-1]) if n.command_log else dict(forward=0.,lateral=0.,angular=0.)
+    evidence=dict(applied=True,duration_s=duration,initial_command=initial,
+                  start_monotonic_s=start,commands=commands)
+    try:
+        if not n.moving or deadline_s-start<duration:
+            raise RuntimeError("PLANNED_STEP_STOP_NOT_ARMED_OR_DEADLINE")
+        if initial["lateral"] or initial["forward"]<0.:
+            raise RuntimeError("PLANNED_STEP_STOP_DIRECTION")
+        end=start+duration
+        while time.monotonic()<end:
+            tick=time.monotonic()
+            if tick>=deadline_s or not n.moving:
+                raise RuntimeError("PLANNED_STEP_STOP_CANCELLED_OR_DEADLINE")
+            n.pump();row=n.sample()
+            if time.monotonic()>=deadline_s or not n.moving:
+                raise RuntimeError("PLANNED_STEP_STOP_CANCELLED_OR_DEADLINE")
+            if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
+            if (row["common_mode_desc"]!="LOCOMOTION_STEP"
+                    or row["get_mode_desc"]!="LOCOMOTION_STEP"
+                    or row["common_source"]["name"]!="robotsim_official_cmd_vel"):
+                raise RuntimeError("PLANNED_STEP_STOP_SOURCE_CHANGED")
+            scale=max(0.,1.-(time.monotonic()-start)/duration)
+            n.publish(initial["forward"]*scale,0.,initial["angular"]*scale)
+            commands.append(dict(n.command_log[-1],sim_time_s=row["sim_time_s"]))
+            n.trace.append(row)
+            time.sleep(max(0.,min(.02,start+duration-time.monotonic())))
+    finally:
+        # Also runs on stale/unsafe feedback, cancellation and watchdog expiry.
+        # Micro.publish itself zeros any concurrent nonzero after disarming.
+        n.deadline_zero()
+    evidence["end_monotonic_s"]=time.monotonic()
+    return evidence
 
 
 def carry_stop_evidence(result):
@@ -2090,7 +2140,9 @@ def run_carry_navigation(n,contract):
                     if calibration and acquired and not mission.get("step_braking_measured") and initial_distance-distance>=calibration and calibration_speed is not None:
                         if not acquired:raise RuntimeError("STEP_BRAKING_SOURCE_NOT_CONFIRMED")
                         zero_pose=dict(p);zero_stamp=row["sample_monotonic_s"]
-                        n.deadline_zero();n.stop_started=True
+                        deceleration=planned_step_deceleration(n,cfg,baseline,until)
+                        result.setdefault("planned_step_decelerations",[]).append(deceleration)
+                        n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                         n.source_enabled(False) if cfg.get("release_source_on_stop") and not (cfg.get("delivery") or {}).get("release_source_after_zero_window") else None
                         stand_transition()
@@ -2101,7 +2153,7 @@ def run_carry_navigation(n,contract):
                         dx=goal[0]-zero_pose["x"];dy=goal[1]-zero_pose["y"];length=math.hypot(dx,dy)
                         coast=[((r["pose"]["x"]-zero_pose["x"])*dx+(r["pose"]["y"]-zero_pose["y"])*dy)/length for r in n.trace if r["sample_monotonic_s"]>=zero_stamp]
                         signed=((settled["pose"]["x"]-zero_pose["x"])*dx+(settled["pose"]["y"]-zero_pose["y"])*dy)/length
-                        mission["step_braking_measured"]=dict(zero_pose=zero_pose,settled_pose=settled["pose"],signed_final_coast_m=signed,maximum_forward_coast_m=max([0.]+coast),stop_gate_pass=True)
+                        mission["step_braking_measured"]=dict(zero_pose=zero_pose,settled_pose=settled["pose"],signed_final_coast_m=signed,maximum_forward_coast_m=max([0.]+coast),stop_gate_pass=True,braking_reference="PRE_DECELERATION_POSE_INCLUDES_RAMP_TRAVEL")
                         speed_reference=max(calibration_speed,task_along_speed(n.trace,zero_pose,goal,zero_stamp))
                         if speed_reference<=.02:raise RuntimeError("STEP_BRAKING_VELOCITY_NOT_QUALIFIED")
                         delay=max([0.]+coast)/speed_reference
@@ -2281,7 +2333,9 @@ def run_carry_navigation(n,contract):
             if tick-last_graph>=1. and graph_job is None:
                 graph_job=start_carry_graph_check(n);last_graph=tick
             time.sleep(max(0.,tick+.02-time.monotonic()))
-        n.deadline_zero();n.stop_started=True
+        deceleration=planned_step_deceleration(n,cfg,baseline,until)
+        result.setdefault("planned_step_decelerations",[]).append(deceleration)
+        n.stop_started=True
         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
         if watchdog:watchdog.cancel()
         n.source_enabled(False) if cfg.get("release_source_on_stop") and not (cfg.get("delivery") or {}).get("release_source_after_zero_window") else None
