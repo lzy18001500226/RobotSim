@@ -1023,6 +1023,19 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def measured_forward_dock_needed(delivery, pose, goal):
+    """One measured forward approach after the rearward route's coarse turn."""
+    if not delivery.get("rearward_foundation_transit"):return False
+    dx,dy=goal[0]-pose["x"],goal[1]-pose["y"]
+    if not all(math.isfinite(v) for v in (dx,dy,pose["yaw"])):
+        raise RuntimeError("INVALID_MEASURED_DOCK_GEOMETRY")
+    distance=math.hypot(dx,dy)
+    if distance<=.60:return False
+    error=(math.atan2(dy,dx)-pose["yaw"]+math.pi)%(2*math.pi)-math.pi
+    if distance>1. or abs(error)>.75:raise RuntimeError("MEASURED_FORWARD_DOCK_OUTSIDE_VERIFIED_CORRIDOR")
+    return True
+
+
 def delivery_braking_due(delivery, distance_m, trigger_m, final_yaw_error):
     """Reverse transit must stop before its separate forward-facing dock turn."""
     if not all(math.isfinite(v) for v in (distance_m,trigger_m,final_yaw_error)) or distance_m<0. or trigger_m<0.:
@@ -2282,6 +2295,55 @@ def run_carry_navigation(n,contract):
                 transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row);closed_permits.append(transit_permit);transit_permit=None
             cfg['motion_mode']=saved_mode;result['end_pose']=end
         acceptance=mission["forward_acceptance_xy_m"] if mission is not None and mission["phase"]=="FORWARD" else goal
+        if mission is not None and mission.get("phase")=="DELIVERY" and measured_forward_dock_needed(cfg["delivery"],end,goal):
+            # Correct measured turn/stop drift once with the existing point-goal
+            # driver; full stop and actual placement IK remain independent gates.
+            if not result["post_stop_composite"].get("pass") or until-time.monotonic()<12.:
+                raise RuntimeError("MEASURED_FORWARD_DOCK_NO_QUALIFIED_STOP_OR_TIME")
+            dock_start=dict(end);cfg["motion_mode"]="LOCOMOTION_DEFAULT"
+            transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+            if transit_permit is not None:closed_permits.append(transit_permit)
+            cfg["previous_permit_filename"]=cfg["permit_filename"];cfg["delivery_measured_stop_pass"]=True
+            cfg["delivery_rearm_count"]=cfg.get("delivery_rearm_count",0)+1
+            cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(cfg["delivery_rearm_count"])+".json"
+            transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+            n.await_graph();n.stand_once("LOCOMOTION_DEFAULT");n.source_enabled(True);n.stop_started=False
+            arm_carry_motion(n,baseline,until,result["post_stop_composite"])
+            dock_begin=time.monotonic();dock_until=min(until-8.,dock_begin+8.)
+            driver=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.30,
+                max_forward_mps=.20,max_angular_rps=cfg["angular_command_cap"],align_tolerance_rad=.75,
+                k_angular=float(cfg["delivery"].get("delivery_heading_gain",.8)),goal_timeout_s=8.))
+            dock_goal=Goal2D(*goal,end["yaw"],"native_scene_world");dock_acquired=False;dock_rows=[];dock_zero=False
+            result["measured_forward_dock"]=dict(start_pose=dock_start,samples=dock_rows,actual_placement_ik="STILL_REQUIRED")
+            watchdog=threading.Timer(max(.01,dock_until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
+            while time.monotonic()<dock_until:
+                tick=time.monotonic();n.pump();row=n.sample();pose=row["pose"]
+                if pose is None or row["body_status"]!=baseline:raise RuntimeError("MEASURED_DOCK_BODY_STATE")
+                if not carry_workspace_contains(pose,cfg["delivery"].get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75]),cfg["delivery"].get("front_opening_apron_xy_bounds")):
+                    raise RuntimeError("MEASURED_DOCK_TASK_WORKSPACE")
+                handshake=(row["common_mode_desc"]=="LOCOMOTION_DEFAULT" and row["get_mode_desc"]=="LOCOMOTION_DEFAULT"
+                    and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20
+                    and row["common_source"]["name"]=="robotsim_official_cmd_vel")
+                dock_acquired=dock_acquired or handshake
+                if tick-dock_begin>2.75 and not handshake:raise RuntimeError("MEASURED_DOCK_SOURCE_MODE_NOT_CONFIRMED")
+                distance=math.hypot(goal[0]-pose["x"],goal[1]-pose["y"])
+                if distance<=.60 and dock_acquired:dock_zero=True;break
+                command=driver.step(Pose2D(pose["x"],pose["y"],pose["yaw"],"native_scene_world",row["sample_monotonic_s"]),dock_goal,now_steady_s=tick)
+                if command.state!=NavState.DRIVE:raise RuntimeError("MEASURED_DOCK_CONTROLLER_"+command.state.value)
+                forward,angular=loaded_foundation_start(cfg["delivery"],"DELIVERY",max(0.,tick-dock_begin),.20,command.angular_z)
+                bounds=row["raw_common"]["speed_status"]
+                if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:
+                    raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
+                n.publish(forward,0.,angular);n.trace.append(row)
+                dock_rows.append(dict(t=tick,pose=pose,distance_m=distance,forward=forward,angular=angular))
+                time.sleep(max(0.,tick+.02-time.monotonic()))
+            n.deadline_zero();n.stop_started=True;watchdog.cancel()
+            transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+            stand_transition();result["post_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
+            end=n.sample()["pose"];result["end_pose"]=end
+            result["measured_forward_dock"].update(zero_requested_in_reserve=dock_zero,source_and_mode_observed=dock_acquired,
+                actual_stopped_pose=end,physical_stop=result["post_stop_composite"])
+            if not dock_zero or not result["post_stop_composite"].get("pass"):raise RuntimeError("MEASURED_FORWARD_DOCK_NOT_COMPLETED_AND_STOPPED")
         result["final_distance_m"]=math.hypot(acceptance[0]-end["x"],acceptance[1]-end["y"]) if acceptance else None
         result["measured_distance_m"]=math.hypot(end["x"]-start["x"],end["y"]-start["y"])
         result["measured_yaw_change_rad"]=(end["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi

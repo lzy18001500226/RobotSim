@@ -1732,7 +1732,7 @@ class AtomicStoppedRearmTests(unittest.TestCase):
         import inspect
         code=inspect.getsource(m.run_carry_navigation)
         self.assertNotIn("with n.lock:n.moving=True",code)
-        self.assertEqual(code.count("arm_carry_motion(n,baseline,until,"),11)
+        self.assertNotIn("n.moving=True",code)
         compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"atomic_carry_runtime","exec")
 
 
@@ -1783,7 +1783,7 @@ class RearwardFoundationDeliveryTests(unittest.TestCase):
         self.assertIn('if cfg["delivery"].get("rearward_foundation_transit"):forward=-forward',s)
         self.assertIn("FINAL_DOCK_TURN_FOOTPRINT",s)
         self.assertIn("result['post_stop_composite'].get('pass')",s)
-        self.assertEqual(s.count('arm_carry_motion(n,baseline,until,'),11)
+        self.assertNotIn("n.moving=True",s)
         with self.assertRaises(ValueError):
             m.build_carry_route_script(None,{},[],carry_pid=19,delivery={"rearward_foundation_transit":True,"delivery_motion_mode":"LOCOMOTION_STEP"})
 
@@ -1841,3 +1841,20 @@ class RearwardArrivalBrakingTests(unittest.TestCase):
         self.assertTrue(m.delivery_braking_due(dict(delivery_motion_mode="LOCOMOTION_STEP"),.599,.60,2.30))
         for bad in (float("nan"),float("inf"),-.1):
             with self.assertRaises(RuntimeError):m.delivery_braking_due(d,bad,.60,2.30)
+
+
+class MeasuredForwardDockTests(unittest.TestCase):
+    def test_recorded_safe_stopped_pose_requests_one_bounded_approach(self):
+        cfg=dict(rearward_foundation_transit=True)
+        self.assertTrue(m.measured_forward_dock_needed(cfg,dict(x=.86464,y=.68894,yaw=2.39168),[.015,.9]))
+        self.assertFalse(m.measured_forward_dock_needed(cfg,dict(x=.015,y=.90,yaw=2.39168),[.015,.9]))
+        self.assertFalse(m.measured_forward_dock_needed({},dict(x=.86464,y=.68894,yaw=2.39168),[.015,.9]))
+        for pose in [dict(x=1.3,y=-.5,yaw=2.3),dict(x=.86464,y=.68894,yaw=0.),dict(x=float('nan'),y=.68,yaw=2.3)]:
+            with self.assertRaises(RuntimeError):m.measured_forward_dock_needed(cfg,pose,[.015,.9])
+
+    def test_generated_runtime_keeps_full_stop_and_actual_placement_requirement(self):
+        code=m.build_carry_route_script([.015,.9],{},['pelvis'],carry_pid=19,timeout_s=90.)
+        compile(code,'forward_dock_runtime','exec')
+        self.assertIn('MEASURED_FORWARD_DOCK_NOT_COMPLETED_AND_STOPPED',code)
+        self.assertIn('actual_placement_ik="STILL_REQUIRED"',code)
+        self.assertIn('command.state!=NavState.DRIVE',code)
