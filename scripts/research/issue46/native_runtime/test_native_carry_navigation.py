@@ -6,6 +6,18 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_retreat_heading_is_continuous_and_cannot_full_scale_tiny_error(self):
+        self.assertEqual(m.retreat_heading_command(.02,.30),0.)
+        self.assertEqual(m.retreat_heading_command(-.01,.30),0.)
+        self.assertAlmostEqual(m.retreat_heading_command(.021,.30),.0008)
+        self.assertAlmostEqual(m.retreat_heading_command(-.10,.30),-.064)
+        self.assertEqual(m.retreat_heading_command(1.,.30),.30)
+        self.assertEqual(m.retreat_heading_command(-1.,.10),-.10)
+        for value in (-.02,.02):
+            self.assertLess(abs(m.retreat_heading_command(value+1e-7,.30)-m.retreat_heading_command(value-1e-7,.30)),2e-7)
+        with self.assertRaises(ValueError):m.retreat_heading_command(float('nan'),.30)
+        with self.assertRaises(ValueError):m.retreat_heading_command(.1,.31)
+
     def test_predicted_braking_cannot_replace_actual_pickup_table_clearance(self):
         delivery=dict(retreat_target_m=.75,minimum_actual_retreat_m=.60)
         self.assertFalse(m.retreat_braking_gate(.322885,.9,True,delivery)["request_stop"])

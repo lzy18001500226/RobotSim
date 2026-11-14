@@ -980,6 +980,13 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def retreat_heading_command(error, angular_cap):
+    """Continuous bounded P steering; retain the original20mrad deadband."""
+    if not math.isfinite(error) or not math.isfinite(angular_cap) or not 0.<angular_cap<=.30:
+        raise ValueError("invalid retreat heading input")
+    return math.copysign(min(angular_cap,.8*max(0.,abs(error)-.02)),error)
+
+
 def retreat_braking_gate(progress, predicted, compact_turn, delivery):
     """Measured spatial clearance must precede a predicted braking request."""
     target=float(delivery.get("retreat_target_m",.50 if compact_turn else .30))
@@ -1575,7 +1582,7 @@ def run_carry_navigation(n,contract):
                     if not retreat_gate["request_stop"]:
                         output=SimpleNamespace(state=NavState.DRIVE,distance_m=retreat_goal-progress,
                                                yaw_error_rad=error,linear_x=-.12,
-                                               angular_z=(0. if abs(error)<=.02 else math.copysign(min(.30 if cfg.get("compact_turn") else .1,cfg["angular_command_cap"]),error)))
+                                               angular_z=retreat_heading_command(error,min(.30 if cfg.get("compact_turn") else .1,cfg["angular_command_cap"])))
                     else:
                         if not acquired:raise RuntimeError("RETREAT_SOURCE_NOT_CONFIRMED")
                         n.deadline_zero();n.stop_started=True
