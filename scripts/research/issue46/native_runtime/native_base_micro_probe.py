@@ -1502,6 +1502,21 @@ def arm_carry_motion(n, baseline, deadline, qualified_stop):
     raise RuntimeError("CARRY_REARM_FRESH_EPOCH_NOT_READY")
 
 
+def qualified_carry_clock_stop(n,cfg,baseline,until,error,recovery_count,stop_transition,stop_wait_s):
+    """Clock faults always stop; only a new independent stop permits recovery."""
+    fault=n.feedback_fault or {}
+    if not recoverable_carry_clock_fault(fault,error,recovery_count):raise error
+    n.deadline_zero();n.stop_started=True
+    if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
+    n.feedback_fault=None
+    if cfg.get("release_source_on_stop"):n.source_enabled(False)
+    stop_transition(source_already_disabled=True)
+    stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
+    if stopped.get("pass") is not True:raise RuntimeError("CLOCK_RECOVERY_PHYSICAL_STOP_FAILED")
+    if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
+    return stopped
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -1539,6 +1554,20 @@ def run_carry_navigation(n,contract):
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
             n.stand_once()
 
+    def terminal_clock_stop(error,phase):
+        nonlocal transit_permit,watchdog
+        fault=dict(n.feedback_fault or {})
+        if not recoverable_carry_clock_fault(fault,error,len(result["clock_recoveries"])):raise error
+        n.deadline_zero();n.stop_started=True
+        if watchdog:watchdog.cancel()
+        transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+        stopped=qualified_carry_clock_stop(n,cfg,baseline,until,error,len(result["clock_recoveries"]),stand_transition,stop_wait_s)
+        result["clock_recoveries"].append(dict(fault=fault,phase=phase,stop=stopped,t=time.monotonic()))
+        transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+        if transit_permit is not None:closed_permits.append(transit_permit)
+        transit_permit=None;cfg["previous_permit_filename"]=cfg["permit_filename"]
+        cfg["clock_stop_pass"]=True;result["post_stop_composite"]=stopped
+        n.await_graph();n.pump();return n.sample()["pose"]
     try:
         n.start_feedback();baseline=await_carry_initial_state(n)["body_status"]
         if baseline!=1:raise RuntimeError("CARRY_NAVIGATION_REQUIRES_RESTORED_STAND_BODY")
@@ -2264,11 +2293,18 @@ def run_carry_navigation(n,contract):
                 arm_carry_motion(n,baseline,until,result['post_stop_composite'])
                 align_started=time.monotonic();align_until=min(until-5.,align_started+8.);align_acquired=False
                 watchdog=threading.Timer(max(.01,align_until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
-                trigger_yaw=end['yaw']
+                trigger_yaw=end['yaw'];align_clock_stop=False
                 while time.monotonic()<align_until:
                     tick=time.monotonic()
-                    if not n.moving:raise RuntimeError('FINAL_DOCK_ALIGNMENT_WATCHDOG')
-                    n.pump();row=n.sample();pose=row['pose'];trigger_yaw=pose['yaw']
+                    try:
+                        if not n.moving:
+                            if n.feedback_fault:raise RuntimeError("NATIVE_FEEDBACK_INVALID:"+str(n.feedback_fault))
+                            raise RuntimeError('FINAL_DOCK_ALIGNMENT_WATCHDOG')
+                        n.pump();row=n.sample()
+                    except RuntimeError as exc:
+                        end=terminal_clock_stop(exc,"FINAL_DOCK_ALIGNMENT");result['end_pose']=end
+                        align_clock_stop=True;break
+                    pose=row['pose'];trigger_yaw=pose['yaw']
                     if row['body_status']!=baseline:raise RuntimeError('BODY_STATUS_CHANGED')
                     raw_error=(cfg['delivery']['base_goal_world_yaw_rad']-pose['yaw']+math.pi)%(2*math.pi)-math.pi
                     demand=raw_error-rebound
@@ -2285,6 +2321,7 @@ def run_carry_navigation(n,contract):
                     n.publish(0.,0.,angular)
                     time.sleep(max(0.,tick+.02-time.monotonic()))
                 else:raise RuntimeError('FINAL_DOCK_ALIGNMENT_TIMEOUT')
+                if align_clock_stop:continue
                 n.deadline_zero();n.stop_started=True;watchdog.cancel()
                 transit_permit=carry_transit_phase(transit_permit,'BRAKING',cfg,n.latest_row)
                 n.source_enabled(False) if cfg.get('release_source_on_stop') and not (cfg.get('delivery') or {}).get('release_source_after_zero_window') else None
@@ -2309,7 +2346,7 @@ def run_carry_navigation(n,contract):
             transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
             n.await_graph();n.stand_once("LOCOMOTION_DEFAULT");n.source_enabled(True);n.stop_started=False
             arm_carry_motion(n,baseline,until,result["post_stop_composite"])
-            dock_begin=time.monotonic();dock_until=min(until-8.,dock_begin+8.)
+            dock_begin=time.monotonic();dock_active_spent=0.;dock_until=min(until-8.,dock_begin+8.)
             driver=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.30,
                 max_forward_mps=.20,max_angular_rps=cfg["angular_command_cap"],align_tolerance_rad=.75,
                 k_angular=float(cfg["delivery"].get("delivery_heading_gain",.8)),goal_timeout_s=8.))
@@ -2317,7 +2354,22 @@ def run_carry_navigation(n,contract):
             result["measured_forward_dock"]=dict(start_pose=dock_start,samples=dock_rows,actual_placement_ik="STILL_REQUIRED")
             watchdog=threading.Timer(max(.01,dock_until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
             while time.monotonic()<dock_until:
-                tick=time.monotonic();n.pump();row=n.sample();pose=row["pose"]
+                tick=time.monotonic()
+                try:n.pump();row=n.sample()
+                except RuntimeError as exc:
+                    dock_active_spent+=max(0.,tick-dock_begin)
+                    end=terminal_clock_stop(exc,"MEASURED_FORWARD_DOCK");result["end_pose"]=end
+                    if not measured_forward_dock_needed(cfg["delivery"],end,goal):
+                        dock_zero=True;break
+                    if dock_active_spent>=8. or until-time.monotonic()<12.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
+                    cfg["permit_filename"]="carry_transit_clock_recovery_"+str(len(result["clock_recoveries"]))+".json"
+                    transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                    n.stand_once("LOCOMOTION_DEFAULT");n.source_enabled(True);n.stop_started=False
+                    arm_carry_motion(n,baseline,until,result["post_stop_composite"])
+                    driver.reset();dock_begin=time.monotonic();dock_until=min(until-8.,dock_begin+8.-dock_active_spent);dock_acquired=False
+                    watchdog=threading.Timer(max(.01,dock_until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
+                    continue
+                pose=row["pose"]
                 if pose is None or row["body_status"]!=baseline:raise RuntimeError("MEASURED_DOCK_BODY_STATE")
                 if not carry_workspace_contains(pose,cfg["delivery"].get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75]),cfg["delivery"].get("front_opening_apron_xy_bounds")):
                     raise RuntimeError("MEASURED_DOCK_TASK_WORKSPACE")
@@ -2338,7 +2390,7 @@ def run_carry_navigation(n,contract):
                 dock_rows.append(dict(t=tick,pose=pose,distance_m=distance,forward=forward,angular=angular))
                 time.sleep(max(0.,tick+.02-time.monotonic()))
             n.deadline_zero();n.stop_started=True;watchdog.cancel()
-            transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+            transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row) if transit_permit is not None else None
             stand_transition();result["post_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
             end=n.sample()["pose"];result["end_pose"]=end
             result["measured_forward_dock"].update(zero_requested_in_reserve=dock_zero,source_and_mode_observed=dock_acquired,

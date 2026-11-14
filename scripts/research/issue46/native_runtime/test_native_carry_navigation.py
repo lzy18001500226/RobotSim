@@ -1858,3 +1858,36 @@ class MeasuredForwardDockTests(unittest.TestCase):
         self.assertIn('MEASURED_FORWARD_DOCK_NOT_COMPLETED_AND_STOPPED',code)
         self.assertIn('actual_placement_ik="STILL_REQUIRED"',code)
         self.assertIn('command.state!=NavState.DRIVE',code)
+
+
+class QualifiedCarryClockStopTests(unittest.TestCase):
+    def node(self,passed=True,fault="CLOCK_STEP_DURING_MOTION"):
+        import types
+        from unittest.mock import Mock
+        events=[]
+        n=types.SimpleNamespace(moving=True,feedback_fault=dict(gate=fault))
+        def zero():events.append('zero');n.moving=False
+        n.deadline_zero=Mock(side_effect=zero);n.source_enabled=Mock(side_effect=lambda x:events.append(('source',x)))
+        n.observe=Mock(side_effect=lambda *a,**k:(events.append('independent_stop') or dict(pass_result=passed,**{'pass':passed})))
+        return n,events
+    def test_clock_fault_stops_disables_source_and_requires_new_full_stop(self):
+        import time
+        n,events=self.node();transition=lambda **kw:events.append(('stand',kw))
+        stopped=m.qualified_carry_clock_stop(n,dict(release_source_on_stop=True),1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),0,transition,8.)
+        self.assertTrue(stopped['pass']);self.assertFalse(n.moving);self.assertIsNone(n.feedback_fault)
+        self.assertEqual(events,['zero',('source',False),('stand',{'source_already_disabled':True}),'independent_stop'])
+    def test_physical_fault_never_cleared_or_rearmed(self):
+        import time
+        n,events=self.node(fault='SOURCE_JOINT_SPEED:knee')
+        with self.assertRaisesRegex(RuntimeError,'SOURCE_JOINT_SPEED'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('SOURCE_JOINT_SPEED:knee'),0,lambda **kw:None,8.)
+        self.assertFalse(events);self.assertIsNotNone(n.feedback_fault)
+    def test_failed_stop_or_exhausted_recoveries_never_pass(self):
+        import time
+        n,_=self.node(passed=False)
+        with self.assertRaisesRegex(RuntimeError,'PHYSICAL_STOP_FAILED'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),0,lambda **kw:None,8.)
+        n,events=self.node()
+        with self.assertRaisesRegex(RuntimeError,'CLOCK_GENERATION_PENDING'):
+            m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),4,lambda **kw:None,8.)
+        self.assertFalse(events)
