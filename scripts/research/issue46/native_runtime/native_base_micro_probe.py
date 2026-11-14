@@ -1400,6 +1400,43 @@ def await_carry_initial_state(n):
     raise RuntimeError("CARRY_INITIAL_FRESH_EPOCH_NOT_READY")
 
 
+def arm_carry_motion(n, baseline, deadline, qualified_stop):
+    """Acquire feedback while zero after a qualified stop; atomically arm.
+
+    The final check shares store()'s telemetry lock. This cannot recover an
+    in-motion clock/physical fault or replace the independent stop gate.
+    """
+    if qualified_stop.get("pass") is not True or n.moving:
+        raise RuntimeError("CARRY_REARM_REQUIRES_QUALIFIED_STOP")
+    end = min(deadline, time.monotonic() + 1.)
+    while time.monotonic() < end:
+        n.publish(); n.pump()
+        with n.telemetry_lock:
+            if n.feedback_fault:
+                raise RuntimeError("NATIVE_FEEDBACK_INVALID:" + json.dumps(n.feedback_fault))
+            try:
+                row = n.sample()
+            except RuntimeError as exc:
+                if (str(exc) not in ("CLOCK_GENERATION_PENDING", "CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING")
+                        and not str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")):
+                    raise
+            else:
+                if (n.pumped_epoch == n.source_epoch == row["source_clock_generation"]
+                        and row["body_status"] == baseline
+                        and row["get_mode_header_code"] == 0
+                        and row["get_mode_desc"] == row["common_mode_desc"]
+                        and row["get_mode_status_value"] == row["common_mode_status_value"] == 100
+                        and all(0. <= age <= .20 for age in row["state_age_s"].values())):
+                    with n.lock:
+                        n.moving = True
+                    n.events.append(dict(event="CARRY_ARM_FRESH_EPOCH",t=time.monotonic(),
+                                         source_epoch=n.source_epoch,native_generation=row["native_generation"],
+                                         prior_independent_stop_pass=True))
+                    return row
+        time.sleep(.01)
+    raise RuntimeError("CARRY_REARM_FRESH_EPOCH_NOT_READY")
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -1479,7 +1516,7 @@ def run_carry_navigation(n,contract):
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
         if cfg.get("away_1m"):cfg["absolute_command_deadline_ns"]=int(until*1e9)
         if cfg.get("transit_policy_050"):transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
-        with n.lock:n.moving=True
+        arm_carry_motion(n,baseline,until,result["pre_motion_composite"])
         watchdog=threading.Timer(max(.001,until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
         while time.monotonic()<until:
             if Path("/workspace/evidence/human_review_stop").exists():raise RuntimeError("HUMAN_REVIEW_STOP")
@@ -1539,7 +1576,7 @@ def run_carry_navigation(n,contract):
                     if cfg.get("release_source_on_stop"):n.source_enabled(True)
                     acquired=False
                 n.stop_started=False
-                with n.lock:n.moving=True
+                arm_carry_motion(n,baseline,until,stopped)
                 activation_started=time.monotonic()
                 progress_state=None;progress_best=None;progress_at=activation_started
                 continue
@@ -1661,7 +1698,7 @@ def run_carry_navigation(n,contract):
                         acquired=False;activation_started=time.monotonic()
                         progress_state=None;progress_best=None;progress_at=activation_started
                         n.stop_started=False
-                        with n.lock:n.moving=True
+                        arm_carry_motion(n,baseline,until,result["retreat_stop_composite"])
                         continue
                 elif mission["phase"]=="TURN":
                     source=row["sample_monotonic_s"]
@@ -1761,7 +1798,7 @@ def run_carry_navigation(n,contract):
                             transit_permit=carry_transit_phase(None,'TRANSIT',cfg,n.latest_row)
                             n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                             progress_state=None;progress_best=None;progress_at=activation_started
-                            with n.lock:n.moving=True
+                            arm_carry_motion(n,baseline,until,result["turn_stop_composite"])
                             continue
                         mission["turn_active_unwrapped_change_rad"]=mission["unwrapped_yaw"]-(mission["turn_origin_pose"]["yaw"] if cfg.get("straight_retreat_turn") else start["yaw"])
                         tail_delta=(stopped["pose"]["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
@@ -1827,7 +1864,7 @@ def run_carry_navigation(n,contract):
                                 transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                                 n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                                 progress_state=None;progress_best=None;progress_at=activation_started
-                                with n.lock:n.moving=True
+                                arm_carry_motion(n,baseline,until,result["turn_stop_composite"])
                                 continue
                             result["pass_result"]=True;result["failure"]=None
                             return result
@@ -1845,7 +1882,7 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         n.stop_started=False;acquired=False;activation_started=time.monotonic()
                         progress_state=None;progress_best=None;progress_at=activation_started
-                        with n.lock:n.moving=True
+                        arm_carry_motion(n,baseline,until,result["turn_stop_composite"])
                         continue
                 elif mission["phase"]=="EGRESS":
                     origin=mission["egress_origin_pose"];heading=mission["egress_heading_rad"]
@@ -1877,7 +1914,7 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                         progress_state=None;progress_best=None;progress_at=activation_started
-                        with n.lock:n.moving=True
+                        arm_carry_motion(n,baseline,until,result["egress_stop_composite"])
                         continue
                     output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
                 elif mission["phase"]=="DELIVERY":
@@ -1946,7 +1983,7 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         controller.reset();n.source_enabled(True);n.stop_started=False
                         acquired=False;activation_started=time.monotonic();progress_state=None;progress_best=None;progress_at=activation_started
-                        with n.lock:n.moving=True
+                        arm_carry_motion(n,baseline,until,stopped_gate)
                         continue
                     origin=mission["delivery_origin_pose"];dx=goal[0]-origin["x"];dy=goal[1]-origin["y"];length=math.hypot(dx,dy)
                     along=((p["x"]-origin["x"])*dx+(p["y"]-origin["y"])*dy)/length
@@ -1983,7 +2020,7 @@ def run_carry_navigation(n,contract):
                         mission["delivery_alignment_state"]=None;controller.reset()
                         n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                         progress_state=None;progress_best=None;progress_at=activation_started
-                        with n.lock:n.moving=True
+                        arm_carry_motion(n,baseline,until,alignment_stop)
                         continue
 
                 else:
@@ -2119,7 +2156,7 @@ def run_carry_navigation(n,contract):
                 cfg['permit_filename']='carry_transit_delivery_rearm_'+str(cfg['delivery_rearm_count'])+'.json'
                 n.await_graph();n.stand_once('LOCOMOTION_STEP')
                 transit_permit=carry_transit_phase(None,'TRANSIT',cfg,n.latest_row);n.source_enabled(True);n.stop_started=False
-                with n.lock:n.moving=True
+                arm_carry_motion(n,baseline,until,result['post_stop_composite'])
                 pulse_started=time.monotonic();pulse_acquired=False;first_pulse=None
                 while time.monotonic()-pulse_started<.20:
                     n.pump();pulse=n.sample();pose=pulse['pose']
@@ -2153,7 +2190,7 @@ def run_carry_navigation(n,contract):
                 cfg['permit_filename']='carry_transit_delivery_rearm_'+str(cfg['delivery_rearm_count'])+'.json'
                 transit_permit=carry_transit_phase(None,'TRANSIT',cfg,n.latest_row)
                 n.await_graph();n.stand_once('LOCOMOTION_DEFAULT');n.source_enabled(True);n.stop_started=False
-                with n.lock:n.moving=True
+                arm_carry_motion(n,baseline,until,result['post_stop_composite'])
                 align_started=time.monotonic();align_until=min(until-5.,align_started+8.);align_acquired=False
                 watchdog=threading.Timer(max(.01,align_until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
                 trigger_yaw=end['yaw']

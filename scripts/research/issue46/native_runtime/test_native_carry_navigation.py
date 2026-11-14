@@ -203,6 +203,13 @@ class CarryNavigationTests(unittest.TestCase):
         with self.assertRaises(ValueError):m.physical_fault(row,pose,{},allowed_contact_pairs=[["pelvis","world"]])
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
+def arm_handoff_fixture(node, baseline, deadline, stop):
+    """Sequencing fixture only; AtomicStoppedRearmTests exercise real arming."""
+    if stop.get("pass") is not True:
+        raise RuntimeError("CARRY_REARM_REQUIRES_QUALIFIED_STOP")
+    node.moving = True
+
+
 class CarryRouteControlFlowTests(unittest.TestCase):
     def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False, graph_delay_s=0., check_cached_native_age=False, reverse_moving_arc=False):
         import contextlib,io,json,sys,threading
@@ -212,7 +219,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         clock=SimpleNamespace(t=10.)
         class Node:
             def __init__(self):
-                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
+                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None;self.telemetry_lock=threading.RLock();self.pumped_epoch=self.source_epoch=0
                 self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1,"contacts":[dict(geom1="raicom_floor",body2=side+"_ankle_roll_link",local_force_torque=[200.]) for side in ("left","right")]}
                 self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT";self.native_sample_at=clock.t
             def start_feedback(self):pass
@@ -243,7 +250,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
@@ -817,7 +824,7 @@ class AwayOneMetreControlFlowTests(unittest.TestCase):
         clock=NS(t=100.)
         class Node:
             def __init__(self):
-                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
+                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None;self.telemetry_lock=threading.RLock();self.pumped_epoch=self.source_epoch=0
                 self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[]
                 self.messages={k:{} for k in ("common","imu","leg_state","leg_command")}
                 self.readbacks={"get_mode":(100.,{})};self.latest_row={"generation":1}
@@ -831,7 +838,7 @@ class AwayOneMetreControlFlowTests(unittest.TestCase):
                 self.yaw=(self.yaw+a*dt+math.pi)%(2*math.pi)-math.pi;self.last_t=clock.t
             def sample(self):
                 self.pump();active=self.moving and any(self.command)
-                return dict(body_status=1,sample_monotonic_s=clock.t,sim_time_s=clock.t,
+                return dict(native_generation=1,source_clock_generation=0,get_mode_status_value=100,body_status=1,sample_monotonic_s=clock.t,sim_time_s=clock.t,
                     pose=dict(x=self.x,y=self.y,yaw=self.yaw,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.),
                     get_mode_header_code=0,get_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
                     common_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
@@ -1294,7 +1301,7 @@ class DeliveryTurnStopGoTests(unittest.TestCase):
             cfg=dict(release_source_on_stop=True,permit_filename="delivery.json")
             ns=dict(stand_transition=lambda:(n.observe(1.05,baseline={}),n.stand_once()),n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
                     baseline={},result={},transit_permit={},closed_permits=[],carry_transit_phase=lambda old,phase,c,row:{"phase":phase},
-                    time=time,until=1e99,stop_wait_s=8.,controller=NS(reset=lambda:events.append("controller_reset")))
+                    arm_carry_motion=arm_handoff_fixture,time=time,until=1e99,stop_wait_s=8.,controller=NS(reset=lambda:events.append("controller_reset")))
             exec(compile(wrapper,"actual_delivery_handoff","exec"),ns)
             if passed:
                 ns["actual_handoff"]();self.assertEqual(events,["zero","disable","stand","controller_reset","enable"])
@@ -1448,7 +1455,7 @@ class OutwardEgressHandoffTests(unittest.TestCase):
             scope=dict(n=n,cfg=config,mission={"egress_origin_pose":{"x":0.,"y":0.},"egress_heading_rad":math.pi},
                 p={"x":-1.01,"y":0.},math=math,result={},transit_permit={"old":True},closed_permits=[],baseline={},
                 stand_transition=lambda:events.append("stand"),carry_transit_phase=lambda rec,phase,*a:events.append(phase) or {"phase":phase},
-                Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.,stop_wait_s=8.)
+                arm_carry_motion=arm_handoff_fixture,Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.,stop_wait_s=8.)
             if passed:exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
             else:
                 with self.assertRaisesRegex(RuntimeError,"OUTWARD_EGRESS_STOP_NOT_QUALIFIED"):
@@ -1657,3 +1664,73 @@ class RejectedCarryHandshakeEvidenceTests(unittest.TestCase):
         self.assertEqual(saved["observation"],row)
         self.assertEqual(saved["expected_mode"],"LOCOMOTION_DEFAULT")
         self.assertNotIn("pass_result",ns["result"])
+
+
+class AtomicStoppedRearmTests(unittest.TestCase):
+    def node(self, samples=None):
+        import threading
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        good=dict(source_clock_generation=1, native_generation=1, body_status=1,
+                  get_mode_header_code=0, get_mode_desc="STAND_DEFAULT",
+                  common_mode_desc="STAND_DEFAULT", get_mode_status_value=100,
+                  common_mode_status_value=100, state_age_s={"common": .01, "get_mode": .01})
+        n=S(moving=False, feedback_fault=None, pumped_epoch=1, source_epoch=1,
+            telemetry_lock=threading.RLock(), lock=threading.RLock(), events=[],
+            publish=Mock(), pump=Mock())
+        items=iter(samples if samples is not None else [good])
+        def sample():
+            self.assertTrue(n.telemetry_lock._is_owned())
+            value=next(items)
+            if isinstance(value, Exception):raise value
+            return value
+        n.sample=sample
+        return n,good
+
+    def test_stopped_clock_pending_waits_zero_then_arms_current_epoch(self):
+        import time
+        n,good=self.node();items=iter([RuntimeError("CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING"), good])
+        def sample():
+            self.assertTrue(n.telemetry_lock._is_owned());value=next(items)
+            if isinstance(value,Exception):raise value
+            return value
+        n.sample=sample
+        self.assertEqual(m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True}),good)
+        self.assertTrue(n.moving);self.assertEqual(n.publish.call_count,2)
+        for call in n.publish.call_args_list:self.assertEqual(call.args,())
+        self.assertEqual(n.events[-1]["source_epoch"],1)
+
+    def test_physical_or_actual_motion_clock_fault_is_never_rearmed(self):
+        import time
+        n,_=self.node([RuntimeError("SOURCE_JOINT_SPEED:knee")])
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_JOINT_SPEED"):
+            m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True})
+        self.assertFalse(n.moving)
+        n,_=self.node();n.feedback_fault={"gate":"CLOCK_STEP_DURING_MOTION"}
+        with self.assertRaisesRegex(RuntimeError,"NATIVE_FEEDBACK_INVALID"):
+            m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":True})
+        self.assertFalse(n.moving)
+
+    def test_failed_stop_or_already_moving_cannot_enter_readiness(self):
+        import time
+        for passed,moving in [(False,False),(True,True)]:
+            n,_=self.node();n.moving=moving
+            with self.assertRaisesRegex(RuntimeError,"QUALIFIED_STOP"):
+                m.arm_carry_motion(n,1,time.monotonic()+1.,{"pass":passed})
+            n.publish.assert_not_called()
+
+    def test_stale_or_wrong_epoch_never_arms_and_readiness_is_bounded(self):
+        from unittest.mock import patch
+        n,good=self.node();good["source_clock_generation"]=0;n.sample=lambda:good
+        times=iter([0.,0.,.1,.6,1.1])
+        with patch.object(m.time,"monotonic",side_effect=lambda:next(times)), patch.object(m.time,"sleep"):
+            with self.assertRaisesRegex(RuntimeError,"FRESH_EPOCH_NOT_READY"):
+                m.arm_carry_motion(n,1,2.,{"pass":True})
+        self.assertFalse(n.moving)
+
+    def test_all_common_carry_arms_require_atomic_readiness(self):
+        import inspect
+        code=inspect.getsource(m.run_carry_navigation)
+        self.assertNotIn("with n.lock:n.moving=True",code)
+        self.assertEqual(code.count("arm_carry_motion(n,baseline,until,"),11)
+        compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"atomic_carry_runtime","exec")
