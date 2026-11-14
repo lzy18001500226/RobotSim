@@ -930,6 +930,17 @@ def loaded_foundation_start(delivery, phase, elapsed_s, forward, angular):
     return forward*scale,angular*scale
 
 
+def validate_delivery_direction(delivery, phase, forward, angular):
+    """Keep retreat distinct from the qualified forward delivery route."""
+    if not all(math.isfinite(value) for value in (forward, angular)):
+        raise RuntimeError("NONFINITE_CARRY_COMMAND")
+    if delivery.get("require_forward_delivery"):
+        if delivery.get("rearward_foundation_transit"):
+            raise RuntimeError("CONFLICTING_DELIVERY_DIRECTION_PROFILE")
+        if phase == "DELIVERY" and forward < 0.:
+            raise RuntimeError("REVERSE_COMMAND_IN_FORWARD_DELIVERY")
+
+
 def carry_activation_grace_s(cfg, phase, acquired):
     # The installed policy starts above0.1m/s; a2s ramp reaches that after1s.
     # This only covers initial mode acquisition. Freshness and physical guards
@@ -2235,6 +2246,7 @@ def run_carry_navigation(n,contract):
                 if mission is not None:
                     forward,angular=loaded_foundation_start(cfg.get("delivery") or {},mission["phase"],
                         max(0.,tick-activation_started),forward,angular)
+                validate_delivery_direction(cfg.get("delivery") or {}, mission["phase"] if mission else None, forward, angular)
                 activation_grace_s=carry_activation_grace_s(cfg,mission["phase"] if mission else None,acquired)
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["lateral_bounds"]["min_value"]<=lateral<=bounds["lateral_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")

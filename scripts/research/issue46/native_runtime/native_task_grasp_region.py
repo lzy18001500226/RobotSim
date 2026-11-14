@@ -69,7 +69,7 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
     raise RuntimeError("TASK_RGBD_ACQUISITION_TIMEOUT")
 
 def task_route_profile(profile, *, fast_task_timing=False):
-    """Select the measured-clearance carry route; retain physical/control bounds."""
+    """Select the short checked turn; preserve every physical/control bound."""
     import copy
     result = copy.deepcopy(profile)
     if (result.get("schema") != "robotsim.x2.two-table-delivery.v1"
@@ -86,16 +86,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
-        # Reuse the clockwise route that completed both endpoint transfers.
-        # The shorter CCW route in040630Z drifted almost1m into the front apron;
-        # static rotation clearance did not predict that loaded gait response.
-        # Keep measured retreat and all live workspace/contact/stop gates.
+        # Loaded CCW forward arcs at the measured south-wall start drifted
+        # into the wall-side workspace. Reuse the physically successful
+        # clockwise/pure-yaw prefix; actual-pose route screening remains required.
         result["delivery_turn_direction"]="CLOCKWISE"
         result["turn_translation_strategy"]="PURE_YAW"
-        result["retreat_target_m"]=.75
-        result["minimum_actual_retreat_m"]=.60
-        result["front_opening_apron_xy_bounds"]=[-.65,.65,-2.35,-1.9]
-        result["front_opening_apron_scope"]="COARSE_TASK_AREA_THROUGH_EXISTING_OPENING_NOT_COLLISION_CLEARANCE_CERTIFICATION; full physical/source/contact gates unchanged"
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
         # handoff only after a new physical stop and actual-pose placement IK.
@@ -104,11 +99,6 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
         result["loaded_terminal_slowdown"]=True
-        # FoundationWalk received the positive command but moved away from the
-        # goal in saved214119Z. Retain STEP with the measured support-before-SD
-        # sequence from full START-to-placement case0/10, not early SD042030Z.
-        result["delivery_motion_mode"]="LOCOMOTION_STEP"
-        result["stand_transition_strategy"]="ZERO_WINDOW_THEN_SD"
         result["conservative_terminal_stop"]=True
         result["bounded_terminal_forward_reapproach"]=True
         # Saved actual near-table stop blocked30mm lowering at rightknee.
@@ -120,18 +110,6 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.
         result["delivery_align_reentry_rad"]=.75
-        # Zero entered the installed CPG policy yet STEP drifted for >8s in
-        #055506Z. Use the already measured loaded negative-forward FoundationWalk
-        #primitive instead; no vendor/controller/model alteration or stop waiver.
-        result.update(rearward_foundation_transit=True,
-            delivery_motion_mode="LOCOMOTION_DEFAULT",delivery_turn_direction="SHORTEST",
-            loaded_terminal_slowdown=False,conservative_terminal_stop=True,
-            route_goal_scope="Measured-pose rearward FoundationWalk transit, full stop then coarse physical yaw turn; actual-placement IK mandatory",
-            forward_response_profile="Existing loaded negative-forward primitive, unchanged source-native model and input bounds",
-            measure_step_braking_after_progress_m=0.,
-            bounded_terminal_forward_reapproach=False,bounded_final_dock_alignment=True,
-            rearward_static_preflight_path="/home/lzy18001500226/projects/RobotSim/reviews/issue-46/rearward-foundation-carry-feasibility-20261114T061812Z/static_route_result.json",
-            rearward_static_preflight_sha256="3d21a43bd6e5c63dc948756f90fe32010da77eff9cfc8c0a85b309b4ba068867")
 
     result["task_turn_selection"] = {
         "classification": "TASK_COLLISION_CHECKED_FORWARD_ARC_NOT_MC_RETUNING",
@@ -139,7 +117,14 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="EXISTING_LOADED_REARWARD_AND_YAW_PRIMITIVES_NEW_ROUTE_STATIC_ONLY",evidence=result["rearward_static_preflight_path"],runtime_validation_required=True)
+        # Restore the shared0/10 physical baseline: retreat, turn, then walk
+        # forward with heading feedback. No reverse delivery or final pivot.
+        result.update(rearward_foundation_transit=False,
+            delivery_motion_mode="LOCOMOTION_STEP",
+            stand_transition_strategy="ZERO_WINDOW_THEN_SD",
+            bounded_final_dock_alignment=False,require_forward_delivery=True,
+            route_goal_scope="RETREAT_THEN_TURN_THEN_FORWARD_STEERING_TO_ACTUAL_PLACEMENT_REGION")
+        result["task_turn_selection"].update(classification="RESTORED_SHARED_0_10_FORWARD_TRANSFER",evidence="reviews/issue-46/shared-defined-approach-all11-transfer-20261113T202351Z/transfer_matrix.json",runtime_validation_required=True)
     return result
 
 

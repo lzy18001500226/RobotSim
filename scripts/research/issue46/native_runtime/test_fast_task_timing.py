@@ -70,15 +70,18 @@ class CarryStopTimingTests(unittest.TestCase):
         default=task_route_profile(cfg);fast=task_route_profile(cfg,fast_task_timing=True)
         self.assertNotIn("release_source_after_zero_window",default)
         self.assertTrue(fast["release_source_after_zero_window"])
-        self.assertEqual(fast["delivery_turn_direction"],"SHORTEST")
-        self.assertEqual(fast["front_opening_apron_xy_bounds"],[-.65,.65,-2.35,-1.9])
-        self.assertEqual((fast["minimum_actual_retreat_m"],fast["retreat_target_m"]),(.60,.75))
+        self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
+        self.assertNotIn("front_opening_apron_xy_bounds",fast)
+        self.assertNotIn("minimum_actual_retreat_m",fast)
+        self.assertNotIn("retreat_target_m",fast)
         self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
-        self.assertEqual(fast["delivery_motion_mode"],"LOCOMOTION_DEFAULT")
-        self.assertTrue(fast["rearward_foundation_transit"])
+        self.assertEqual(fast["delivery_motion_mode"],"LOCOMOTION_STEP")
+        self.assertFalse(fast["rearward_foundation_transit"])
+        self.assertTrue(fast["require_forward_delivery"])
+        self.assertFalse(fast["bounded_final_dock_alignment"])
         self.assertEqual(fast["stand_transition_strategy"],"ZERO_WINDOW_THEN_SD")
         self.assertTrue(fast["conservative_terminal_stop"])
-        self.assertFalse(fast["bounded_terminal_forward_reapproach"])
+        self.assertTrue(fast["bounded_terminal_forward_reapproach"])
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("delivery_motion_mode",cfg)
         self.assertEqual(default["base_goal_world_xy"],[.015,.98])
@@ -88,6 +91,37 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["approach_task_yaw_tolerance_rad"],.30)
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("release_source_after_zero_window",cfg)
+class ForwardDeliveryContractTests(unittest.TestCase):
+    def test_retreat_then_forward_steering_is_allowed(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import validate_delivery_direction
+        profile={"require_forward_delivery":True,"rearward_foundation_transit":False}
+        for phase,forward,angular in [("RETREAT",-.2,0.),("TURN",0.,.075),("DELIVERY",.2,.075),("DELIVERY",0.,0.)]:
+            validate_delivery_direction(profile,phase,forward,angular)
+
+    def test_reverse_delivery_and_conflicting_profile_are_rejected(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import validate_delivery_direction
+        with self.assertRaisesRegex(RuntimeError,"REVERSE_COMMAND_IN_FORWARD_DELIVERY"):
+            validate_delivery_direction({"require_forward_delivery":True},"DELIVERY",-.2,0.)
+        with self.assertRaisesRegex(RuntimeError,"CONFLICTING_DELIVERY_DIRECTION_PROFILE"):
+            validate_delivery_direction({"require_forward_delivery":True,"rearward_foundation_transit":True},"DELIVERY",.2,0.)
+        with self.assertRaisesRegex(RuntimeError,"NONFINITE_CARRY_COMMAND"):
+            validate_delivery_direction({},"DELIVERY",float("nan"),0.)
+        # Historical diagnostic reverse profiles retain their explicitly selected behavior.
+        validate_delivery_direction({"rearward_foundation_transit":True},"DELIVERY",-.2,0.)
+
+    def test_generated_runtime_enforces_direction_before_publishing(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script)
+        helper=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="validate_delivery_direction")
+        env={"math":__import__("math")}
+        exec(compile(ast.Module(body=[helper],type_ignores=[]),"generated_contract","exec"),env)
+        with self.assertRaisesRegex(RuntimeError,"REVERSE_COMMAND_IN_FORWARD_DELIVERY"):
+            env["validate_delivery_direction"]({"require_forward_delivery":True},"DELIVERY",-.2,0.)
+        calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="validate_delivery_direction"]
+        self.assertEqual(len(calls),1)
+
 class FunctionalArrivalTests(unittest.TestCase):
     def test_nominal_yaw_alone_is_not_required_when_actual_placement_will_be_checked(self):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import delivery_heading_acceptance
