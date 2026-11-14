@@ -11,6 +11,30 @@ These conventions apply when runtime code is introduced. They preserve the curre
 - Model work may use Python/PyTorch for research and export to an optimized runtime representation where deployment needs it.
 - C# belongs in Unity rendering, scene integration, external sensor front-end, editor tooling, and synchronization. It does not become the authority for robot dynamics or low-level control.
 
+## Coding standard and production promotion
+
+Use the [ROS 2 Humble C++ style and language conventions](https://github.com/ros2/ros2_documentation/blob/humble/source/The-ROS2-Project/Contributing/Code-Style-Language-Versions.rst)
+for maintained ROS packages: C++17, two-space indentation, .hpp/.cpp source
+names and a 100-character line limit. Prefer the surrounding package's naming;
+avoid unrelated wholesale formatting during functional debugging. Enforce
+chosen style with package-local ament linters and run the package's CMake/
+colcon build and tests at promotion. A written rule alone is not evidence that
+the linter/build has run; report missing target dependencies explicitly.
+
+A Python ROS client may be a useful validated prototype without being the
+production actuator-command implementation. Port the stable state machine,
+SDK adapter, freshness/watchdog and high-rate command scheduling together with
+their accepted behavior. Preserve source model parameters, message types,
+frames, units and raw MC response semantics; language migration is not an
+opportunity to redesign the robot or relax acceptance.
+
+Do not assume changing the calling language makes native physics or neural
+inference faster: MuJoCo's Python bindings expose its native C API through C++
+bindings. Measure end-to-end target-hardware latency/jitter, inference backend,
+copy/transport costs and deadline behavior before claiming an improvement.
+Reuse an optimized native inference backend where supported; retain Python for
+offline analysis, experiment automation and tests.
+
 ## Prototype lifecycle
 
 `scripts/research/` is a temporary research area. It may contain rapid Python or MuJoCo experiments and evidence-generation tools. Production/runtime packages must not depend on this directory, and robot hardware/runtime code must not import or execute its scripts. A successful experiment proves only the behavior measured by that experiment; it does not become maintained production functionality by default.

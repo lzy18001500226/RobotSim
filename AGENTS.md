@@ -12,6 +12,8 @@
 1. Read this file and the repository `README.md`.
 2. Use [`docs/README.md`](docs/README.md) to locate relevant project documents.
 3. Read only the source, workflow, checklist, skill note, or decision record needed for the current task. Do not load the whole documentation tree by default.
+   Use a skill only when its workflow is needed for the current request; a
+   related keyword or narrow follow-up does not justify a broader workflow.
 
 Project plans and workflows provide context or procedures; they are not task queues or authorization to expand the current request.
 
@@ -33,15 +35,35 @@ The [engineering contracts](docs/engineering/README.md) and relevant records in 
 
 ## Mandatory official-source-first troubleshooting
 
-When an integration, SDK, simulator, controller, ROS interface, or robot behavior does not match expectations, **research the authoritative documentation and executable vendor examples for the exact installed version before declaring a vendor/maintainer blocker**. A failed custom probe is not evidence of a vendor defect. Follow this bounded sequence:
+When an SDK, simulator, controller, ROS interface or robot behavior fails,
+consult version-matched official documentation and delivered executable
+examples before declaring a vendor/maintainer blocker. A failed custom probe
+alone does not establish a vendor defect. For X2, use the
+[official source guide](docs/skills/agibot_x2.md).
 
-1. Identify the installed robot/model, MC/simulator/SDK releases, binary or package hashes, startup scripts, active configuration, and the actual failure. Keep the user-delivered release and the source revision distinct from current `latest` docs.
-2. Search and read the smallest relevant **official vendor documentation, delivered README, release notes, SDK API contract, and runnable example**. Use official sources and pinned vendor examples ahead of unverified community tutorials or agent-written test harnesses. If local references are insufficient and network tools are available, proactively consult the official site and public repository without waiting for the user to paste links. Use [X2 official source guide](docs/skills/agibot_x2.md) for AgiBot X2/MC/AimDK/MuJoCo.
-3. Compare the documented sequence against the **actual installed implementation**, including mode/state semantics, required Reset, activation/timeout/arbitration rules, source names, ROS domain/RMW/QoS, and expected readbacks. Do not assume a newer manual applies to an older competition delivery; explicitly record discrepancies and uncertainty.
-4. Prefer the smallest reproducible comparison with the vendor's **unchanged** example, then a safe, instrumented RobotSim variant. Distinguish request acknowledgement, task completion, selected input source, applied state, and measured physical behavior. Preserve commands, versions, logs and evidence; don't infer success from an RPC SUCCESS or a visually plausible animation.
-5. Before escalating, record: sources/URLs and versions checked; what is documented versus inferred; the exact minimal reproduction and observed-versus-expected outputs; alternatives already ruled out; and the **specific missing proprietary fact, permission, safety approval, or manual decision**. Only escalate when this source-first investigation and safe in-scope verification genuinely cannot resolve the question. Do not repeat blind parameter/source-string permutations or identical blocked runs.
+1. Identify the actual failure and installed robot/model, MC/simulator/SDK
+   releases, hashes, startup scripts and active configuration. Keep delivered
+   packages distinct from source revisions and current latest documentation.
+   Reuse an existing audit if those inputs are unchanged; inspect the new
+   difference instead of repeating the inventory.
+2. Read the smallest relevant official README, API contract, release note or
+   runnable example; consult official online sources when local evidence is
+   insufficient. Compare installed startup/Reset, mode/FSM and asynchronous task
+   semantics, arbitration/timeouts/source identity, domain/RMW/QoS and readbacks.
+   Record version mismatches rather than assuming a newer manual applies.
+3. Prefer the smallest authorized comparison with an unchanged vendor example,
+   then an instrumented RobotSim variant. Distinguish acknowledgement, task
+   completion, selected source, applied controller state and physical behavior.
+   Preserve commands, versions, timestamps and logs.
+4. Escalate only with the sources/versions checked, exact reproduction,
+   observed versus expected result, ruled-out alternatives and the specific
+   missing fact, permission or decision. Choose a new evidence-backed
+   hypothesis instead of repeating failed parameter/source-string guesses.
 
-This is an **investigation obligation, not blanket execution permission**. Never bypass the [model-integrity approval gate](docs/engineering/model_integrity.md), physical/nonzero-motion safety gates, user approval boundaries, or runtime restrictions simply because a vendor tutorial uses privileged containers, unrestricted X11 access, or nonzero commands. A documentation discrepancy is not authorization to silently alter vendor code or robot mechanics.
+Investigation grants no execution permission. Keep model-integrity, motion,
+hardware and user approval boundaries; a tutorial or documentation mismatch
+does not authorize privileged containers, unrestricted X11, vendor edits or
+unapproved mechanics.
 
 ## Mandatory robot model integrity
 
@@ -50,7 +72,12 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 ## Workspace and change boundaries
 
 - Inspect the current branch, working-tree status, and relevant diff before editing. Preserve unrelated user changes.
-- Work on a task branch; do not commit task changes directly to `main`.
+- Reuse the assigned task branch, registered worktree and existing PR. Follow-up
+  work is not a reason to create another worktree; resolve paths from Git.
+  Do not commit task changes directly to main.
+- When another agent owns the same active branch, follow
+  [shared-branch ownership](docs/setup/codex.md#shared-branch-ownership-and-diff-only-handoffs)
+  before changing the index or HEAD.
 - Keep edits within the paths needed for the current request. Never use broad staging, reset, clean, or force-push operations to remove or hide unrelated work.
 - Do not rewrite unrelated technical documentation or broaden scope without direction from the current user.
 
@@ -61,6 +88,51 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 - Report which checks ran and their results. Distinguish static checks from environment, simulation, or hardware validation; do not claim checks that were not run.
 - If a required check or Git operation is blocked, preserve the work and report the specific blocker and remaining validation gap.
 
+## Local tools and desktop interaction
+
+- Prefer terminal commands, existing APIs and programmatic reads for local
+  process management, authorized simulation startup/shutdown, logs, state
+  inspection and screenshots.
+- Prefer available renderer, window-capture or screenshot APIs/commands that
+  capture without activating a window or moving the pointer. Taking a screenshot
+  alone is not a reason to take over the user's desktop.
+- Use Computer Use only when necessary GUI interaction lacks a suitable
+  programmatic interface. Scope it to the required application and interaction;
+  avoid stealing focus or moving/clicking the mouse or typing while the user is
+  using the computer.
+- These are workflow preferences, not claims about tool capabilities. Check the
+  tools actually available; do not describe screenshots or GUI operations as
+  unsupported merely to justify a preferred workflow.
+
+## Delivery-first iteration and accepted-review reuse
+
+- Default to completing the requested engineering task with a working,
+  reproducible end-to-end flow. Research, benchmarks and general frameworks
+  serve a concrete delivery need; they are not additional deliverables by default.
+- Read the user's latest correction in context. For noisy wording or minor
+  reversible choices, state a reasonable working assumption and proceed.
+  Clarify only a consequential ambiguity that existing evidence cannot resolve;
+  do not ask again for an already authorized routine action.
+- Keep the plan proportional: name the next measurable outcome and first
+  uncertainty, then act. Use observed failure -> smallest correction -> affected
+  checks -> authorized bounded execution -> measured result. Repeated reading,
+  plans or reports are not progress without a new decision or result.
+- Reuse the existing SDK, controller, route/IK/state-machine entry points and
+  accepted evidence. Add a helper, supervisor, retry layer or new abstraction
+  only for a demonstrated need in the current task, not hypothetical future use.
+- Reuse accepted geometry, contact regions, grasp frames, paths and source pins
+  while their relevant inputs are unchanged. For materially changed geometry
+  or path intent, use the existing lightweight web review; accepted routine
+  fixes need no repeated visual approval.
+- Follow [minimum checks and evidence reuse](docs/engineering/validation.md#minimum-checks-and-evidence-reuse).
+  Each investigation/check must distinguish a named uncertainty. Once the
+  relevant checks pass, take the next authorized action; if a blocker affects
+  only one part, continue independent in-scope work.
+- Lead updates with actual progress, the first failure and the next action.
+  Report implementation, runtime verification and publication separately.
+  Preserve named model, motion/force, freshness, stop and hardware boundaries;
+  task completion requires measured evidence, not success-shaped reports.
+
 ## Documentation responsibilities
 
 - Put durable architecture decisions in `docs/adr/`, setup procedures in `docs/setup/`, repeatable task procedures in `docs/workflows/`, focused technical guidance in `docs/skills/`, and verification lists in `docs/checklists/`.
@@ -68,12 +140,28 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 
 ## Git and PR closeout
 
-- Follow the [Codex closeout workflow](docs/setup/codex.md#durable-task-closeout) for assigned RobotSim implementation, experiment, research, review, and audit tasks. Ordinary questions, explanations, and user-level tool or Skill installation do not trigger repository publication or task-closeout events merely because the chat is open in RobotSim.
-- When the task owns repository changes, review and commit every intended change; preserve unrelated work and leave `git status --porcelain` empty except exact, reason-documented unrelated paths. Push the task branch and run `python3 scripts/agent/closeout_gate.py` to verify the local branch/HEAD and exact remote push-ref SHA. A dirty tree, missing push, SHA mismatch, missing GitHub reference, or failed GitHub update means the final status is `CLOSEOUT BLOCKED`, never `DONE`. Tasks without repository changes retain their required evidence and Issue/PR record; do not create empty commits to satisfy a gate.
-- For assigned project tasks, emit exactly one structured `robotsim.task-closeout.v1` event: Local Codex places its marked envelope in the trusted `Stop` hook's final message; Codex Cloud explicitly calls `scripts/agent/notify_task.py task-closeout` once. The canonical Issue/PR record must include the task result (`completed`=PASS, `failed`=FAIL, `blocked`/`deferred`/`cancelled`=BLOCKED), branch, exact local and remote HEAD SHAs when applicable, PR/Issue URL, reproduction command, validation result, durable evidence/output reference, and limitations/blockers. Existing notifier and publication checks still apply. If the local gate fails, the notifier must not persist `completed`; it attempts an Issue-level BLOCKED record instead.
-- Create one attempt ID at task start, reuse it and the exact payload for retries, and use a new ID for a genuine rerun. GitHub is canonical; AgentMail is secondary and cannot turn a failed GitHub write into success. The notifier may use `GH_TOKEN`/`GITHUB_TOKEN` or an already-authenticated `gh auth token` path; never print or store credentials. Missing GitHub write authentication means `CLOSEOUT BLOCKED`.
-- Routine, low-risk tasks have standing authorization to self-review, commit, open a PR, wait for required checks and any configured independent review, and merge once those gates pass. Do not ask for an additional per-merge confirmation.
-- Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
-- Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
-- For repository changes, review the scoped diff, run relevant checks including `git diff --check`, and stage only task-owned paths.
-- Verify the pushed branch and PR. Do not report closeout as complete if commit, push, or PR creation failed.
+- Follow the [durable task-closeout workflow](docs/setup/codex.md#durable-task-closeout)
+  for assigned RobotSim implementation, experiment, research, review and audit
+  tasks. Ordinary questions/explanations and user-level tool/Skill installation
+  do not trigger repository publication or closeout merely because this chat
+  is open in RobotSim. The owning workflow defines event/schema details.
+- Review the scoped diff, run relevant checks including git diff --check, and
+  stage only task-owned paths. Commit meaningful functional or reproducible
+  checkpoints, not each probe or tool call. Preserve unrelated edits; never
+  reset, clean or broadly stage them to force a clean status.
+- For authorized publication, commit and push, then run
+  scripts/agent/closeout_gate.py to verify the branch, exact local/remote HEAD
+  and GitHub reference. A failed required publication/gate is CLOSEOUT BLOCKED,
+  not DONE. Record exact unrelated-path exceptions and limitations.
+- For an accepted intermediate milestone, use the
+  [explicit milestone notifier](docs/setup/codex.md#milestone-email-notifications)
+  once with a stable stage ID and actual evidence. A turn ending or an API
+  acknowledgement is not a milestone; ordinary chat must not trigger email.
+- Emit the documented structured closeout event once; GitHub is canonical.
+  A requested diff-only collaboration is an intermediate handoff, not authority
+  to commit, push, merge or announce published completion.
+- Routine low-risk tasks have standing authorization for self-review and normal
+  Git/PR closeout. Merge only after required checks/reviews pass. Stop at a
+  reviewable PR for architecture, destructive/high-risk or security/dependency
+  changes, unresolved GUI/hardware validation and explicit review gates.
+  Never bypass branch protection or force merge; current user limits prevail.

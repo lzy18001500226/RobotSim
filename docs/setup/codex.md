@@ -39,11 +39,31 @@ Keep installation versions and machine-specific paths in local configuration or 
 
 ## Project-local Codex hooks
 
-`.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus local `UserPromptSubmit`, `Interrupt`, and `Stop` lifecycle handlers. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
+The default project configuration contains only PreToolUse protection and a
+Stop handler for explicit structured closeout. Ordinary chat Stop returns
+without spawning a notifier, reading credentials or opening the outbox.
+Milestone emails use the explicit CLI below; Stop never guesses task progress.
 
-Codex discovers project hooks from `.codex/hooks.json`; discovery is distinct from project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed and enabled. If a hook is absent or disabled, do not assume it ran. Recheck `/hooks` after changing hook configuration; a changed handler may need renewed trust. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
+Project hook discovery, checkout trust and hook approval are separate. Review
+the config and use /hooks in the intended trusted checkout to verify what is
+actually enabled. An uncommitted task-worktree change does not update the
+canonical main checkout's hooks. Do not claim a configuration is deployed
+until the intended source is installed and its loaded handlers are verified.
 
-The production `task_lifecycle.py` ledger correlates only the Codex-provided `session_id` and `turn_id`. It records event type, prompt/completion presence and length, interruption/resume hints, and whether a structured closeout marker exists; it does not save prompt text, completion text, or `cwd`. The separate optional research probe stores prompt length, a SHA-256 prompt fingerprint, heuristic classification, and `cwd` for manual Hook validation, but never raw prompt text. Its `/tmp/robotsim-codex-hook-probe` directory is mode `0700`; its SQLite and JSONL files are mode `0600`. Turns without structured task-closeout evidence remain `UNCERTAIN`; Stop alone does not classify CHAT versus TASK or prove success. An ordinary Stop creates no task outcome and sends no email. Recursive Stop events are ignored.
+UserPromptSubmit/Interrupt metadata and the research capability probe remain
+available as manual diagnostics; they are not default project hooks. Retain
+their files and historical evidence. Their record of a turn ending never
+establishes task success and does not trigger email.
+
+### Orca user hooks versus RobotSim project hooks
+
+On this workstation, the user-level hooks invoke the Orca-owned
+C:/Users/HP/.orca/agent-hooks/codex-hook.cmd. They report client lifecycle to
+Orca, not robot state or email milestones. The wrapper checks its endpoint
+environment and otherwise exits; its HTTP fallback is bounded. Do not remove
+or duplicate these hooks as if they were RobotSim research probes. Manage
+Orca-owned configuration through its supported settings/CLI when needed;
+do not launch another orchestrator or alter an active robot experiment to test it.
 
 With the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in, a valid structured closeout is validated and durably recorded in the local outbox, then the Stop process starts a detached worker and returns. The worker runs the existing GitHub publication gate and independently attempts AgentMail; the email states whether GitHub publication was verified, blocked, or still pending. A GitHub publication failure does not erase the task outcome or silently suppress AgentMail. A PR rejected because its canonical repository, head, or originating-Issue association cannot be verified is untrusted evidence, so its email is suppressed and the delivery state is marked unavailable. With the opt-in unset, the local Stop path records eligible structured outcomes as `not_attempted` and starts neither publication nor delivery. Normal hook outcomes leave stdout empty; local persistence errors may be diagnosed on stderr. A manual `stop --dry-run` sends no email and writes no GitHub comment. The hook does not run for individual tool calls, tests, commits, or progress updates. `ready_for_review` remains a separate explicit attention command, not a generic Stop event.
 
@@ -131,6 +151,103 @@ python3 scripts/agent/notify_task.py ready_for_review \
 ```
 
 Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain the structured task outcome, worker, branch/issue when available, and publication state. Local state markers and AgentMail's idempotency key reduce duplicate sends for the same event; an ambiguous response is marked `uncertain` for review rather than reported as a confirmed send.
+
+## Milestone email notifications
+
+GitHub Actions CI emails and RobotSim AgentMail messages are separate channels.
+To stop GitHub CI emails, open https://github.com/settings/notifications and,
+under System -> Actions, disable Email (or select Don't notify). Keep CI enabled.
+This changes account notification preferences, not Copilot usage or quotas.
+
+Send a milestone only after its named acceptance criteria have passed, for
+example H220 RGB-D grasp/lift, then H220 second-table release. Use the existing
+notifier explicitly from the WSL checkout; an ordinary chat Stop sends nothing:
+
+    python3 scripts/agent/notify_task.py milestone \
+      --task-id issue-46-bottle-transfer \
+      --milestone-id h220-rgbd-grasp-lift \
+      --summary "H220 RGB-D grasp/lift passed; carry/place remains pending" \
+      --evidence /absolute/canonical/reviews/issue-46/actual-run/result.json \
+      --worker Local02
+
+Replace the evidence placeholder with the actual nonempty governed result file
+(or a public HTTPS evidence reference). The command checks reference validity,
+not the truth of physical acceptance; the caller must inspect the real result.
+Only references are emailed, not the artifact contents. A stage notification
+does not close the overall task, require a clean tree or change branch HEAD.
+
+The task ID + milestone ID deduplicates across turns, retries and worker names
+using the existing delivery claims and AgentMail idempotency key. Local callers
+must share the same WSL notification-state directory. Use a new milestone ID
+only for a distinct accepted stage/configuration, not a new attempt UUID.
+Explicit milestone commands reuse environment credentials or the existing
+Windows DPAPI bridge and do not depend on ROBOTSIM_LOCAL_STOP_HOOK. That switch
+still controls automatic terminal-closeout delivery; it is not enabled globally
+by adding milestone support. Dry-run sends nothing and reads no credentials.
+
+Orca/Herder/other orchestrators can call the same CLI; no desktop automation,
+application-specific hook or second task scheduler is required. One task owner
+emits the accepted stage event. Never trigger from every message, test or commit.
+Call the notifier outside control/stop loops. Report notification failures
+separately; they do not authorize a physics retry or change a robot safety gate.
+A successful test email proves transport only. Production use also needs the
+task owner/orchestrator to invoke this command after a real accepted milestone;
+no hook can infer that integration from a successful test email.
+A successful API request means provider acceptance, not confirmed QQ inbox
+delivery; check the recipient separately before claiming end-to-end delivery.
+
+## Shared-branch ownership and diff-only handoffs
+
+Reuse the assigned worktree and open PR. When agents share one active branch,
+the primary owner controls staging, commits, pushes, checkout and merge. A
+collaborator edits only delegated paths and leaves a reviewable diff unless
+those Git operations were explicitly delegated. Do not change the recorded
+HEAD underneath an active runtime or collect unrelated dirty/untracked files.
+
+A maintainer-requested diff-only contribution is an intermediate handoff.
+Report DIFF_READY, changed paths, checks and uncommitted/unpublished status;
+do not force a commit, create a second PR or emit a published-completion event.
+The owning agent performs normal closeout after integrating the contribution.
+This does not waive any publication gate for an authorized terminal delivery.
+
+### Current X2 and infra ownership
+
+For the current split, Local02 owns the existing
+/home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 checkout
+(codex/x2-autonomy-task-20261031, PR #106): simulation, motion/IK/grasp
+implementations, robot configurations and physical evidence. It owns Git
+operations on that branch and the X2 measured-status/handoff documents.
+
+Local03 owns /home/lzy18001500226/robotsim-infra-workflow-20261111
+(codex/infra-workflow-20261111): AGENTS.md, engineering/setup guidance,
+scripts/agent, notification/guard tests, project hooks and CI workflows.
+It owns Git operations on the infra branch. Common runtime APIs are agreed
+with Local02; Local03 does not port or alter robot behavior under an infra task.
+
+The canonical main checkout retains reference sources, runtime packages and
+reviews. It is not another active experiment checkout. No additional worktree
+is needed for each conversation, milestone or failed run. Review infra changes
+separately, then integrate at an agreed checkpoint; do not move the X2 HEAD or
+merge its unfinished experiments as part of infra cleanup.
+
+## Development phases and task ownership
+
+| Phase | Working mode | Evidence and handoff |
+| --- | --- | --- |
+| Behavior debugging | Reuse one assigned integration worktree and one runtime owner. Keep bounded research code isolated; use the current Issue/PR. | The actual failed interface/physics trace guides the next change. Commit useful checkpoints, not every experiment. |
+| Production hardening | Port stable control/transport/SDK paths into their maintained C++17 package; keep automation/replay tools in Python. Separate worktrees only for explicitly independent file/module ownership. | Preserve message/frame/timing/stop semantics; use focused build/tests and compare against accepted runtime behavior. |
+| Integrated delivery | One pinned integration revision, environment and model/config set; one agent owns the live robot/simulator. | Run the complete user task and capture physical acceptance, cleanup and reproduction. Then publish/merge under the normal review gates. |
+
+An Issue owns a measurable deliverable; named milestones track its partial
+acceptance. A new chat, failed run or agent handoff is not by itself a reason
+for a new Issue, PR, branch or worktree. Parallel agents may research/review
+without separate write checkouts. Shared files have one writer; separate
+module development must converge before claiming integration success.
+
+Orca/Herder can schedule coding agents and consume their results. The robot's
+own task state machine, controller ownership, watchdog and physical acceptance
+remain in RobotSim runtime, not in the coding-agent orchestrator. Reuse the
+existing CLI/result contracts rather than building another project scheduler.
 
 ## Durable task closeout
 

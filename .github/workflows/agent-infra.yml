@@ -12,6 +12,11 @@ on:
 permissions:
   contents: read
 
+# Share the group across push/PR events and supersede older checks on this branch.
+concurrency:
+  group: agent-infra-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   agent-infra:
     name: Agent infrastructure checks

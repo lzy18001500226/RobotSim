@@ -217,6 +217,24 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
     if args.dry_run:
         return _run_notifier(env, input_data, dry_run=True)
 
+    # The hook is not a per-turn task detector. Ordinary chat must not spawn
+    # another Python process, open the outbox or load credentials.
+    try:
+        payload = json.loads(input_data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return 0
+    if (
+        not isinstance(payload, dict)
+        or payload.get("hook_event_name") != "Stop"
+        or payload.get("stop_hook_active") is True
+    ):
+        return 0
+    present, _, _ = notify_task.extract_task_closeout_envelope(
+        payload.get("last_assistant_message")
+    )
+    if not present:
+        return 0
+
     if (
         env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() == "1"
         and _has_valid_terminal_closeout(input_data)
