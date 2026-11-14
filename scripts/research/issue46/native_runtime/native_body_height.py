@@ -56,6 +56,24 @@ def same_episode_registered_body_source(proof, native_row):
                 for x in proof.get('source_responses',[])))
 
 
+def standing_height_upper_limit_reached(row):
+    """Require the MC upper-limit readback, not only a near-zero offset."""
+    import math
+    servo = row.get("raw_common", {}).get("servo_status", {})
+    try:
+        offset = float(servo["squat_offset"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(math.isfinite(offset) and abs(offset) <= .003
+                and servo.get("squat_limit") == 2)
+
+
+def standing_height_reference_ready(row):
+    """After zeroing height velocity, require completed MC squat recovery."""
+    return bool(standing_height_upper_limit_reached(row)
+                and row["raw_common"]["servo_status"].get("squat_enable") is False)
+
+
 def body_pause_zero_required(publisher_running, source_disabled, low_stop_pass):
     """A confirmed released source is read-only; never write its closed pipe."""
     if publisher_running:return True
@@ -84,7 +102,7 @@ def build_script(limits, robot_bodies, drop_m=.03, *, mode="roundtrip", label="n
     anchor='    if MICRO.get("carry"):\n        return run_carry_navigation(n,contract)'
     if code.count(anchor)!=1:raise ValueError("existing observer routing changed")
     code=code.replace(anchor,'    if MICRO.get("body_height_probe"):\n        return run_height_probe(n,contract)\n'+anchor,1)
-    code+="\n"+inspect.getsource(same_episode_registered_body_source)+"\n"+inspect.getsource(body_pause_zero_required)+"\n"+inspect.getsource(run_height_probe)
+    code+="\n"+inspect.getsource(same_episode_registered_body_source)+"\n"+inspect.getsource(body_pause_zero_required)+"\n"+inspect.getsource(standing_height_upper_limit_reached)+"\n"+inspect.getsource(standing_height_reference_ready)+"\n"+inspect.getsource(run_height_probe)
     code+='\nSOURCE="robotsim_body_height"\nMICRO.update('+repr(dict(body_height_probe=dict(drop_m=drop_m,max_runtime_s=60.,held_grip=(label in ("body_restore_carry","body_crouch_delivery") or mode=="observe" and reference_result is not None),height_command_rate=.03,mode=mode,label=label,reference_result=reference_result,task_shortfall_tolerance_m=task_shortfall_tolerance_m),robot_bodies=robot_bodies))+')\nrun_probe()\n'
     compile(code,"existing_observer_native_body_height","exec")
     return code
@@ -237,7 +255,7 @@ def run_height_probe(n, contract):
                 waist_error={name:n.latest_row['joints'][name]['q']-baseline[name] for name in baseline}
                 waist_velocity=max(abs(n.latest_row['joints'][name]['qvel']) for name in baseline)
                 result.update(qualification_scope='FINAL_HELD_NATIVE_STANDING_HEIGHT_AND_WAIST',original_height_m=original_height,actual_height_error_m=height_error,waist_return_error_rad=waist_error,max_waist_velocity_rad_s=waist_velocity)
-                if proof.get('generation')!=initial['native_generation'] or abs(height_error)>.01 or max(abs(v) for v in waist_error.values())>.10 or waist_velocity>.05:raise RuntimeError('FINAL_HELD_STANDING_STATE_NOT_RESTORED')
+                if proof.get('generation')!=initial['native_generation'] or not standing_height_reference_ready(initial) or abs(height_error)>.01 or max(abs(v) for v in waist_error.values())>.10 or waist_velocity>.05:raise RuntimeError('FINAL_HELD_STANDING_STATE_NOT_RESTORED')
             result["pass_result"]=True
             return result
         initial_reference=float(initial["raw_common"]["servo_status"]["squat_offset"]);result["initial_squat_offset"]=initial_reference
@@ -294,13 +312,15 @@ def run_height_probe(n, contract):
         while time.monotonic()<raise_deadline+sum(p["end_monotonic_s"]-p["start_monotonic_s"] for p in result.get("clock_pauses",[])):
             row=sample();z=row["pose"]["z"]
             if z>height+.02:raise RuntimeError("BODY_RETURN_OVERSHOOT")
-            if float(row["raw_common"]["servo_status"]["squat_offset"])>=initial_reference-.003:break
+            result.setdefault("restore_reference_samples", []).append(dict(t=row["sample_monotonic_s"],servo_status=dict(row["raw_common"]["servo_status"]),common_age_s=row["state_age_s"]["common"]))
+            if float(row["raw_common"]["servo_status"]["squat_offset"])>=initial_reference-.003 and standing_height_upper_limit_reached(row):break
             command(rate);time.sleep(.02)
         else:raise RuntimeError("BODY_RETURN_RESPONSE_NOT_OBSERVED")
         command(0.);result["restored_stop"]=settle_native_body(n,row["body_status"],deadline,result,"restored_stop")
         final=sample_after_qualified_stop("restored_stop");result["final_height_m"]=final["pose"]["z"]
         result['original_height_match']=abs(final['pose']['z']-height)<=.01
-        result['native_height_reference_restored']=abs(float(final['raw_common']['servo_status']['squat_offset'])-initial_reference)<=.003
+        result['native_height_reference_restored']=abs(float(final['raw_common']['servo_status']['squat_offset'])-initial_reference)<=.003 and standing_height_reference_ready(final)
+        result['restoration_servo_status']=dict(final['raw_common']['servo_status'])
         if label=='body_restore_carry':
             result['qualification_scope']='INTERMEDIATE_NATIVE_HEIGHT_REFERENCE_WAIST_HANDOFF_STILL_REQUIRED'
             result['pass_result']=bool(result['restored_stop'].get('pass') and result['native_height_reference_restored'] and final['body_status']==1)

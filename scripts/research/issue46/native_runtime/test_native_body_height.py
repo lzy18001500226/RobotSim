@@ -7,7 +7,7 @@ class BodyHeightTests(unittest.TestCase):
         while pending:
             code=pending.pop();names.update(i.argval for i in dis.get_instructions(code) if i.opname=="LOAD_GLOBAL")
             pending.extend(x for x in code.co_consts if isinstance(x,types.CodeType))
-        self.assertFalse(names-set(dir(builtins))-{"MICRO","SOURCE","write_durable_milestone","same_episode_registered_body_source","body_pause_zero_required"})
+        self.assertFalse(names-set(dir(builtins))-{"MICRO","SOURCE","write_durable_milestone","same_episode_registered_body_source","body_pause_zero_required","standing_height_reference_ready","standing_height_upper_limit_reached"})
     def test_generated_observer_cannot_construct_velocity_publisher(self):
         code=body.build_script({},[])
         tree=ast.parse(code);dock=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=="Dock")
@@ -149,3 +149,51 @@ class HeightZeroStopAcquisitionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'BODY_STOP_REACQUIRE_REQUIRES_ZERO_HEIGHT_COMMAND'):
             helper(S(),1,time.monotonic()+5.,{'commands':[{'stand_height':-.03}]},'low_stop')
         self.assertEqual(config,{})
+
+
+class StandingRecoveryHandoffTests(unittest.TestCase):
+    def row(self, offset=0., enabled=False, limit=2):
+        return {"raw_common": {"servo_status": dict(squat_offset=offset,
+                                                    squat_enable=enabled,
+                                                    squat_limit=limit)}}
+
+    def test_recorded_near_zero_but_recovering_state_cannot_handoff(self):
+        self.assertFalse(body.standing_height_reference_ready(
+            self.row(-6.3106417869107645e-9, True, 0)))
+        self.assertFalse(body.standing_height_reference_ready(self.row(0., True, 2)))
+        self.assertTrue(body.standing_height_reference_ready(self.row()))
+
+    def test_missing_or_invalid_state_is_not_recovery_completion(self):
+        for row in [{}, self.row(float("nan")), self.row(float("inf")),
+                    self.row(-.004), self.row(0., False, 0)]:
+            self.assertFalse(body.standing_height_reference_ready(row))
+
+    def test_actual_restore_loop_keeps_source_command_until_mc_clears(self):
+        from types import SimpleNamespace as S
+        tree = ast.parse(inspect.getsource(body.run_height_probe))
+        loop = next(n for n in ast.walk(tree) if isinstance(n, ast.While)
+                    and ast.unparse(n.test).startswith("time.monotonic() < raise_deadline"))
+        calls = []
+        rows = iter([self.row(-.002, True, 0),
+                     self.row(-6.3106417869107645e-9, True, 0), self.row(0., True, 2)])
+        def sample():
+            row = next(rows)
+            row.update(pose={"z": .653}, sample_monotonic_s=1.,
+                       state_age_s={"common": .01})
+            return row
+        scope = dict(time=S(monotonic=lambda: 1., sleep=lambda t: None),
+                     raise_deadline=2., result={}, sample=sample, height=.653,
+                     initial_reference=0., command=calls.append, rate=.03,
+                     standing_height_upper_limit_reached=body.standing_height_upper_limit_reached)
+        exec(compile(ast.Module(body=[loop], type_ignores=[]), "restore_loop", "exec"), scope)
+        self.assertEqual(calls, [.03, .03])
+        self.assertEqual(len(scope["result"]["restore_reference_samples"]), 3)
+        self.assertFalse(body.standing_height_reference_ready(scope["row"]))
+
+    def test_generated_runtime_includes_the_mc_completion_predicate(self):
+        code = body.build_script({}, [], .10, mode="restore",
+                                 reference_result="same_episode.json", label="body_restore_carry")
+        tree = ast.parse(code)
+        self.assertTrue(any(isinstance(n, ast.FunctionDef)
+                            and n.name == "standing_height_reference_ready" for n in tree.body))
+        compile(code, "generated_body_restore", "exec")
