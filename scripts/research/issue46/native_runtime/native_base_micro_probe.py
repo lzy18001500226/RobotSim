@@ -1377,10 +1377,11 @@ def run_carry_navigation(n,contract):
     def stand_transition(source_already_disabled=False):
         strategy=(cfg.get("delivery") or {}).get("stand_transition_strategy","ZERO_WINDOW_THEN_SD")
         result["stand_transition_strategy"]=strategy
-        if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC" and cfg.get("motion_mode")=="LOCOMOTION_STEP":
+        if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC":
             # Request the native transition while continuous zero is active.
-            # Do not first wait for a custom low-leg-speed observation: that
-            # can defer the request until the loaded STEP pose has settled.
+            # Apply this ordering in both native walking modes: saved224537Z
+            # coasted484mm after retreat zero while this request was deferred.
+            # Do not first wait for a custom low-leg-speed observation.
             # Service acceptance is NOT stop confirmation; the caller still
             # requires the unchanged independent composite physical stop.
             n.stand_once();n.observe(1.05,baseline=baseline)
