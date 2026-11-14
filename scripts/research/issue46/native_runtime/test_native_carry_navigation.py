@@ -1613,3 +1613,18 @@ class MeasuredStepStandHandoffTests(unittest.TestCase):
         ns["await_step_stand_handoff"]=not_ready;calls.clear()
         with self.assertRaisesRegex(RuntimeError,"NOT_READY"):ns["stand_transition"]()
         self.assertEqual(calls,["zero"])
+
+
+class FrontOpeningTaskAreaTests(unittest.TestCase):
+    def test_default_box_retained_and_only_bounded_apron_added(self):
+        box=[-1.85,1.85,-1.9,1.85];apron=[-.65,.65,-2.35,-1.9]
+        for x,y in [(0.,0.),(.47,-1.901),(.35,-2.),(-.006,-2.234)]:
+            self.assertTrue(m.carry_workspace_contains(dict(x=x,y=y),box,apron))
+        self.assertFalse(m.carry_workspace_contains(dict(x=.47,y=-1.901),box))
+        for x,y in [(.66,-2.),(-.66,-2.),(0.,-2.36),(1.86,0.),(0.,1.86)]:
+            self.assertFalse(m.carry_workspace_contains(dict(x=x,y=y),box,apron))
+    def test_invalid_and_wider_aprons_fail_closed(self):
+        box=[-1.85,1.85,-1.9,1.85]
+        for a in [[-.9,.65,-2.35,-1.9],[-.65,.65,-3.,-1.9],[-.65,.65,-2.35,-1.8],[float('nan'),.65,-2.35,-1.9]]:
+            with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=0.,y=0.),box,a)
+        with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=float('nan'),y=0.),box)

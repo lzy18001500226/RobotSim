@@ -86,14 +86,16 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
-        # Saved220513Z reached the pickup table after only323mm retreat.
-        # Translating that measured route to700mm retreat clears every enabled
-        # external proxy by at least150mm (query cap); this is not a gait proof.
-        # Require actual600mm retreat before prediction can request braking.
-        result["delivery_turn_direction"]="CLOCKWISE"
+        # Require measured retreat before braking. At varying actual pickup yaw
+        # this can pass through the existing front opening. Keep its bounded
+        # apron distinct from the room and take the shorter collision-screened
+        # turn away from the pickup table; no changed native motion parameters.
+        result["delivery_turn_direction"]="SHORTEST"
         result["turn_translation_strategy"]="PURE_YAW"
         result["retreat_target_m"]=.75
         result["minimum_actual_retreat_m"]=.60
+        result["front_opening_apron_xy_bounds"]=[-.65,.65,-2.35,-1.9]
+        result["front_opening_apron_scope"]="COARSE_TASK_AREA_THROUGH_EXISTING_OPENING_NOT_COLLISION_CLEARANCE_CERTIFICATION; full physical/source/contact gates unchanged"
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
         # handoff only after a new physical stop and actual-pose placement IK.
@@ -125,7 +127,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="MEASURED_RETREAT_CLEARANCE_CW_ROUTE_NOT_GAIT_CERTIFICATION",evidence="reviews/issue-46/measured-carry-egress-clearance-offline-20261113T223857Z/result.json")
+        result["task_turn_selection"].update(classification="FRONT_OPENING_SHORTEST_ROUTE_STATIC_ONLY_NOT_GAIT_CERTIFICATION",evidence="reviews/issue-46/carry-front-opening-static-route-20261114T021331Z/result.json")
     return result
 
 

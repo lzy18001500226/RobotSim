@@ -980,6 +980,27 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def carry_workspace_contains(pose, box, front_opening_apron=None):
+    """Coarse task area, never a substitute for full-model collision gates.
+
+    The RAICOM front wall has an actual opening. The old rectangular task
+    bound rejected measured collision-clear motion through that opening.
+    Only its bounded central apron is eligible; side-wall areas stay excluded.
+    """
+    if len(box)!=4 or not all(math.isfinite(v) for v in box) or not (box[0]<box[1] and box[2]<box[3]):
+        raise ValueError("invalid task workspace")
+    if not all(math.isfinite(pose[k]) for k in ("x","y")):
+        raise ValueError("invalid task position")
+    if front_opening_apron is not None:
+        a=front_opening_apron
+        if (len(a)!=4 or not all(math.isfinite(v) for v in a)
+                or not -.65<=a[0]<a[1]<=.65 or not -2.35<=a[2]<a[3]<=box[2]
+                or a[3]!=box[2]):
+            raise ValueError("unverified front-opening apron")
+    inside=lambda a:a[0]<=pose["x"]<=a[1] and a[2]<=pose["y"]<=a[3]
+    return inside(box) or (front_opening_apron is not None and inside(front_opening_apron))
+
+
 def retreat_heading_command(error, angular_cap):
     """Continuous bounded P steering; retain the original20mrad deadband."""
     if not math.isfinite(error) or not math.isfinite(angular_cap) or not 0.<angular_cap<=.30:
@@ -1025,6 +1046,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
         if delivery.get("delivery_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported delivery motion mode")
         box=delivery.get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75])
         if len(box)!=4 or not all(math.isfinite(v) and -2.<=v<=2. for v in box) or not (box[0]<box[1] and box[2]<box[3]):raise ValueError("bounded task workspace")
+        carry_workspace_contains(dict(x=0.,y=0.),box,delivery.get("front_opening_apron_xy_bounds"))
 
         if delivery.get("transit_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported native transit mode")
         if float(delivery.get("delivery_forward_command_m_s",.20)) not in (.20,.30,.40,5./9.):raise ValueError("delivery forward response profile bound")
@@ -1529,7 +1551,7 @@ def run_carry_navigation(n,contract):
                 continue
             p=row["pose"]
             box=(cfg.get("delivery") or {}).get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75])
-            if not box[0]<=p["x"]<=box[1] or not box[2]<=p["y"]<=box[3]:raise RuntimeError("CARRY_ROOM_WORKSPACE")
+            if not carry_workspace_contains(p,box,(cfg.get("delivery") or {}).get("front_opening_apron_xy_bounds")):raise RuntimeError("CARRY_ROOM_WORKSPACE")
             if mission is not None:
                 if cfg.get("gait_prepare") or cfg.get("delivery"):
                     foot_forces,dominant=native_foot_loads(n.latest_row)
