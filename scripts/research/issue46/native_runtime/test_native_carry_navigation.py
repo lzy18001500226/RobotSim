@@ -1829,3 +1829,15 @@ class LoadedFoundationStartTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
             exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_expired","exec"),ns)
         self.assertIn('rejected_motion_handshake',ns['result'])
+
+
+class RearwardArrivalBrakingTests(unittest.TestCase):
+    def test_reverse_transit_brakes_before_final_forward_facing_turn(self):
+        d=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT")
+        self.assertTrue(m.delivery_braking_due(d,.599,.60,2.30))
+        self.assertFalse(m.delivery_braking_due(d,.601,.60,2.30))
+        self.assertFalse(m.delivery_braking_due({},.599,.60,2.30))
+        self.assertTrue(m.delivery_braking_due({},.599,.60,.10))
+        self.assertTrue(m.delivery_braking_due(dict(delivery_motion_mode="LOCOMOTION_STEP"),.599,.60,2.30))
+        for bad in (float("nan"),float("inf"),-.1):
+            with self.assertRaises(RuntimeError):m.delivery_braking_due(d,bad,.60,2.30)

@@ -125,7 +125,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         #primitive instead; no vendor/controller/model alteration or stop waiver.
         result.update(rearward_foundation_transit=True,
             delivery_motion_mode="LOCOMOTION_DEFAULT",delivery_turn_direction="SHORTEST",
-            loaded_terminal_slowdown=False,conservative_terminal_stop=False,
+            loaded_terminal_slowdown=False,conservative_terminal_stop=True,
             route_goal_scope="Measured-pose rearward FoundationWalk transit, full stop then coarse physical yaw turn; actual-placement IK mandatory",
             forward_response_profile="Existing loaded negative-forward primitive, unchanged source-native model and input bounds",
             measure_step_braking_after_progress_m=0.,

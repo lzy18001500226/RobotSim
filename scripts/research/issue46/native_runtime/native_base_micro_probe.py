@@ -1023,6 +1023,16 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def delivery_braking_due(delivery, distance_m, trigger_m, final_yaw_error):
+    """Reverse transit must stop before its separate forward-facing dock turn."""
+    if not all(math.isfinite(v) for v in (distance_m,trigger_m,final_yaw_error)) or distance_m<0. or trigger_m<0.:
+        raise RuntimeError("INVALID_DELIVERY_BRAKING_GEOMETRY")
+    if distance_m>trigger_m:return False
+    return (bool(delivery.get("rearward_foundation_transit"))
+        or delivery.get("delivery_motion_mode")=="LOCOMOTION_STEP"
+        or abs(final_yaw_error)<=.12)
+
+
 def carry_workspace_contains(pose, box, front_opening_apron=None):
     """Coarse task area, never a substitute for full-model collision gates.
 
@@ -1980,7 +1990,7 @@ def run_carry_navigation(n,contract):
                     # actual-pose placement IK remain independent requirements.
                     if cfg["delivery"].get("conservative_terminal_stop"):
                         trigger=max(trigger,.60)
-                    if distance<=trigger and (cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" or abs(final_yaw_error)<=.12):
+                    if delivery_braking_due(cfg["delivery"],distance,trigger,final_yaw_error):
                         result["goal_triggered_stop"]=True;mission["delivery_stop_trigger_pose"]=p;break
                     calibration=float(cfg["delivery"].get("measure_step_braking_after_progress_m",0.))
                     origin_for_measure=mission["delivery_origin_pose"]
