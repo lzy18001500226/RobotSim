@@ -1424,16 +1424,17 @@ def run_carry_navigation(n,contract):
             n.stand_once();n.observe(1.05,baseline=baseline)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
         else:
-            if cfg.get("motion_mode")=="LOCOMOTION_STEP":
-                result["stand_transition_strategy"]="STEP_ZERO_RELEASE_SD_THEN_PHYSICAL_STOP"
             n.observe(1.05,baseline=baseline)
+            if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+                # Complete real zero-input support readiness before releasing
+                # our input and confirming SD, as in the saved case0/10 PASS.
+                # Early SD in042030Z stayed in STEP/200 and drifted into the
+                # table. Readiness is permission only, never stop acceptance.
+                result["stand_transition_strategy"]="STEP_ZERO_MEASURED_SUPPORT_THEN_SD"
+                handoff_budget_s=stop_wait_s-1.05-2.
+                readiness=await_step_stand_handoff(n,baseline,time.monotonic()+handoff_budget_s)
+                result.setdefault("step_stand_handoffs",[]).append(readiness)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
-            # Saved031553Z: STEP remained in TRANSITION after zero/release and
-            # exceeded physical speed safety before the readiness-first code
-            # ever requested SD. Request the vendor's active stand controller
-            # before asking it to produce the measured stop. Request/ack is
-            # still not acceptance: every caller retains its independent
-            # require_stop=True composite window and cannot rearm on failure.
             n.stand_once()
 
     try:

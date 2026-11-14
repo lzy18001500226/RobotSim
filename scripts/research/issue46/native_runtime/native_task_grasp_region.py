@@ -105,10 +105,10 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
         result["loaded_terminal_slowdown"]=True
         # FoundationWalk received the positive command but moved away from the
-        # goal in saved214119Z. Reuse measured STEP delivery; only change its
-        # SD request ordering, never the independent composite stop contract.
+        # goal in saved214119Z. Retain STEP with the measured support-before-SD
+        # sequence from full START-to-placement case0/10, not early SD042030Z.
         result["delivery_motion_mode"]="LOCOMOTION_STEP"
-        result["stand_transition_strategy"]="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"
+        result["stand_transition_strategy"]="ZERO_WINDOW_THEN_SD"
         result["conservative_terminal_stop"]=True
         result["bounded_terminal_forward_reapproach"]=True
         # Saved actual near-table stop blocked30mm lowering at rightknee.
