@@ -918,6 +918,28 @@ def bounded_start_scale(elapsed_s, duration_s=.5):
     return u*u*(3.-2.*u)
 
 
+def loaded_foundation_start(delivery, phase, elapsed_s, forward, angular):
+    """Ramp task inputs without changing the MC policy or physical limits."""
+    if not (delivery.get("rearward_foundation_transit") and phase in ("RETREAT","DELIVERY")):
+        return forward,angular
+    if delivery.get("delivery_motion_mode")!="LOCOMOTION_DEFAULT":
+        raise RuntimeError("REARWARD_FOUNDATION_START_MODE")
+    if not all(math.isfinite(v) for v in (forward,angular)):
+        raise RuntimeError("NONFINITE_FOUNDATION_START_COMMAND")
+    scale=bounded_start_scale(elapsed_s,2.)
+    return forward*scale,angular*scale
+
+
+def carry_activation_grace_s(cfg, phase, acquired):
+    # The installed policy starts above0.1m/s; a2s ramp reaches that after1s.
+    # This only covers initial mode acquisition. Freshness and physical guards
+    # remain independent, and a previously acquired mode gets no extra grace.
+    d=cfg.get("delivery") or {}
+    return 2.75 if (not acquired and d.get("rearward_foundation_transit")
+        and d.get("delivery_motion_mode")=="LOCOMOTION_DEFAULT"
+        and phase in ("RETREAT","DELIVERY")) else .75
+
+
 def inplace_recovery_command(pose, origin, speed=.12):
     """Position-first correction above the observed forward deadzone."""
     if speed not in (.12,.20):raise ValueError("unreviewed turn recovery command")
@@ -2122,9 +2144,13 @@ def run_carry_navigation(n,contract):
                     scale=bounded_start_scale(max(0.,tick-activation_started),ramp_s)
                     angular*=scale;forward*=scale
                     mission["turn_input_ramp_s"]=ramp_s
+                if mission is not None:
+                    forward,angular=loaded_foundation_start(cfg.get("delivery") or {},mission["phase"],
+                        max(0.,tick-activation_started),forward,angular)
+                activation_grace_s=carry_activation_grace_s(cfg,mission["phase"] if mission else None,acquired)
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["lateral_bounds"]["min_value"]<=lateral<=bounds["lateral_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
-                if row["common_mode_status_value"]==300 and not ((cfg.get("native_action_smoothing") or cfg.get("vendor_transition_table")) and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
+                if row["common_mode_status_value"]==300 and not ((cfg.get("native_action_smoothing") or cfg.get("vendor_transition_table")) and not acquired and 0<=tick-activation_started<=activation_grace_s):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
                 handshake=(row["common_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
                 if handshake and (cfg.get("delivery",{}).get("carry_native_neutral_stow") or {}).get("native_arm_follow_scope")=="FULL_SOURCE" and not Path("/workspace/evidence/carry_unloaded_arm_follow.json").exists():
                     write_durable_milestone("/workspace/evidence/carry_unloaded_arm_follow.json",dict(owner_pid=cfg["pid"],generation=n.latest_row["generation"],created_ns=time.monotonic_ns(),deadline_ns=int((until+15.)*1e9),turn_and_composite_stop_pass=False,standing_and_ld_source_handoff_pass=bool(result["pre_motion_composite"]["pass"] and handshake),arm_scope="FULL_SOURCE"))
@@ -2133,7 +2159,7 @@ def run_carry_navigation(n,contract):
                     mission["turn_source_and_mode_observed"]=True
                 if handshake and mission is not None and mission["phase"]=="DELIVERY":
                     mission["delivery_source_and_mode_observed"]=True
-                if tick-activation_started>.75 and not handshake:
+                if tick-activation_started>activation_grace_s and not handshake:
                     # The rejected sample must survive even though it is never
                     # appended to the accepted route trace below.
                     result["rejected_motion_handshake"]=dict(expected_mode=cfg.get("motion_mode","LOCOMOTION_DEFAULT"),

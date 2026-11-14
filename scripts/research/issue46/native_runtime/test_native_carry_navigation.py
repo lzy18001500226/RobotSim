@@ -1656,7 +1656,7 @@ class RejectedCarryHandshakeEvidenceTests(unittest.TestCase):
             get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
             get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
         ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=True,
-            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row)
+            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=.75)
         with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
             exec(compile(ast.Module(body=[guard],type_ignores=[]),"rejected_handshake","exec"),ns)
         saved=ns["result"]["rejected_motion_handshake"]
@@ -1786,3 +1786,46 @@ class RearwardFoundationDeliveryTests(unittest.TestCase):
         self.assertEqual(s.count('arm_carry_motion(n,baseline,until,'),11)
         with self.assertRaises(ValueError):
             m.build_carry_route_script(None,{},[],carry_pid=19,delivery={"rearward_foundation_transit":True,"delivery_motion_mode":"LOCOMOTION_STEP"})
+
+
+class LoadedFoundationStartTests(unittest.TestCase):
+    def test_translation_and_steering_ramp_without_changing_final_command(self):
+        d=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT")
+        for phase in ("RETREAT","DELIVERY"):
+            for forward,angular in ((-.2,0.),(-.2,.6),(-.2,-.6)):
+                values=[m.loaded_foundation_start(d,phase,t,forward,angular) for t in (0.,.5,1.,1.5,2.,3.)]
+                self.assertEqual(values[0],(0.,0.))
+                self.assertEqual(values[2],(forward*.5,angular*.5))
+                self.assertEqual(values[-1],(forward,angular))
+                self.assertTrue(all(abs(a[0])<=abs(b[0]) for a,b in zip(values,values[1:])))
+        self.assertEqual(m.loaded_foundation_start(d,"TURN",0.,0.,.6),(0.,.6))
+        self.assertEqual(m.loaded_foundation_start({},"RETREAT",0.,-.2,0.),(-.2,0.))
+
+    def test_grace_is_bounded_to_initial_ramped_activation(self):
+        cfg=dict(delivery=dict(rearward_foundation_transit=True,delivery_motion_mode="LOCOMOTION_DEFAULT"))
+        self.assertEqual(m.carry_activation_grace_s(cfg,"RETREAT",False),2.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"DELIVERY",False),2.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"DELIVERY",True),.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"TURN",False),.75)
+        self.assertEqual(m.carry_activation_grace_s({},"RETREAT",False),.75)
+        d=cfg["delivery"]
+        for t in (-.1,float("nan")):
+            with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",t,-.2,0.)
+        with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",0.,float("nan"),0.)
+
+    def test_handshake_still_rejects_nonactivation_after_ramp_deadline(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,
+            release_source_on_stop=True,native_action_smoothing=True)
+        guard=next(node for node in ast.walk(ast.parse(code)) if isinstance(node,ast.If)
+            and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
+        row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="STAND_DEFAULT",
+            get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+        ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=False,
+            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=2.75)
+        exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_pending","exec"),ns)
+        ns['tick']=12.751
+        with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_expired","exec"),ns)
+        self.assertIn('rejected_motion_handshake',ns['result'])
