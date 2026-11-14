@@ -920,15 +920,23 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                 origin=np.asarray(native["bodies"]["pelvis"]["position_m"][:2]);travel=heading+(math.atan2(side_waypoint[1]-origin[1],side_waypoint[0]-origin[0])-heading+math.pi)%(2*math.pi)-math.pi
                 motion_target["navigation_preflight"]={**side_preflight,"outer_bounds":{"x":[float(origin[0]-.16),float(origin[0]+.16)],"y":[float(min(origin[1],side_waypoint[1])-.16),float(max(origin[1],side_waypoint[1])+.16)],"yaw":[float(min(heading,travel)-.35),float(max(heading,travel)+.35)]}}
             elif far_observe:
-                from scripts.research.issue46.native_runtime.far_observe_approach import intermediate_forward_waypoint,sampled_approach_clearance
+                from scripts.research.issue46.native_runtime.far_observe_approach import early_lateral_alignment_waypoint,intermediate_forward_waypoint,sampled_approach_clearance
                 origin=np.asarray(native["bodies"]["pelvis"]["position_m"][:2])
-                transit=intermediate_forward_waypoint(origin,chosen["root_goal_xy_m"])
+                transit=early_lateral_alignment_waypoint(origin,chosen["root_goal_xy_m"],snapshot["estimated_center_world_m"])
+                early_alignment=transit is not None
+                if transit is None:transit=intermediate_forward_waypoint(origin,chosen["root_goal_xy_m"])
                 if transit is not None:
                     study.apply(study.frame(native));anchor=study.foot_anchor().copy()
                     rotation=native["bodies"]["pelvis"]["rotation"]
                     heading=math.atan2(rotation[3],rotation[0])
-                    motion_target={"label":"INTERMEDIATE_FORWARD_TRANSIT_NOT_GRASP_READY",
-                        "root_goal_xy_m":transit.tolist(),"anchor_xy_m":(anchor+transit-origin).tolist(),"yaw_rad":heading}
+                    target_anchor=anchor+transit-origin
+                    if early_alignment:
+                        delta=math.atan2(math.sin(math.atan2(transit[1]-origin[1],transit[0]-origin[0])-heading),math.cos(math.atan2(transit[1]-origin[1],transit[0]-origin[0])-heading))
+                        heading+=delta
+                        c,s=math.cos(delta),math.sin(delta)
+                        target_anchor=transit+np.array([[c,-s],[s,c]])@(anchor-origin)
+                    motion_target={"label":"EARLY_FAR_ALIGNMENT_TRANSIT_NOT_GRASP_READY" if early_alignment else "INTERMEDIATE_FORWARD_TRANSIT_NOT_GRASP_READY",
+                        "root_goal_xy_m":transit.tolist(),"anchor_xy_m":target_anchor.tolist(),"yaw_rad":heading}
                     motion_target["navigation_preflight"]=sampled_approach_clearance(study,native,snapshot["estimated_center_world_m"],motion_target)
                     if not motion_target["navigation_preflight"]["pass"]:raise RuntimeError("INTERMEDIATE_TRANSIT_PATH_COLLISION")
             pg.write_new_text(output/(label+"_plan.json"),json.dumps({"terminal_grasp_witness":f"task_region_{index}.json",

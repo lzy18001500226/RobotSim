@@ -88,6 +88,29 @@ def sampled_approach_clearance(study,native,center,chosen):
 
 
 
+def early_lateral_alignment_waypoint(origin, terminal, observed_center):
+    """Reuse the demonstrated far diagonal before spending near-table space.
+
+    This is a transit target, not a grasp pose. The old 10-end approach used
+    the existing 0.48m object offset to acquire heading while still far away.
+    A nearer camera-qualified grasp reference must not postpone that turn.
+    The actual stopped pose still needs fresh RGB-D, IK and collision checks.
+    """
+    origin,terminal,center=map(lambda v:np.asarray(v,dtype=float),
+                               (origin,terminal,observed_center))
+    if (origin.shape!=(2,) or terminal.shape!=(2,) or center.shape!=(3,)
+            or not np.isfinite(np.r_[origin,terminal,center]).all()):
+        raise ValueError("finite observed alignment route required")
+    dx,dy=terminal-origin
+    if origin[0]>=.75 or dx<=.30 or dy<=.20:
+        return None
+    transit=center[:2]+np.array([-.48,0.])
+    # Do not spend more forward space than the qualified terminal requires.
+    if transit[0]>terminal[0] or np.linalg.norm(transit-origin)>.90:
+        return None
+    return transit
+
+
 def intermediate_forward_waypoint(origin, terminal):
     """A transit waypoint is not a grasp witness; reobserve after the real stop.
 

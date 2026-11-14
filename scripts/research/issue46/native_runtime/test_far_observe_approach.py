@@ -94,6 +94,20 @@ class FarApproachTests(unittest.TestCase):
         self.assertGreater(old[0,1]+transient,source[0,1])
         self.assertLess(new[0,1]+transient,source[0,1])
         np.testing.assert_array_equal(source,[[-2.,.061]])
+    def test_far_alignment_reuses_observed_diagonal_before_near_table_turn(self):
+        import numpy as np
+        from scripts.research.issue46.native_runtime.far_observe_approach import early_lateral_alignment_waypoint
+        np.testing.assert_allclose(early_lateral_alignment_waypoint(
+            [.393104571,-1.551040113],[.991499495,-1.218644121],
+            [1.427824781,-.995911340,.657]),[.947824781,-.995911340])
+
+    def test_far_alignment_does_not_override_centre_right_or_near_table(self):
+        from scripts.research.issue46.native_runtime.far_observe_approach import early_lateral_alignment_waypoint as waypoint
+        self.assertIsNone(waypoint([.39,-1.55],[.99,-1.50],[1.42,-1.4,.65]))
+        self.assertIsNone(waypoint([.39,-1.55],[.99,-1.8],[1.42,-1.8,.65]))
+        self.assertIsNone(waypoint([.93,-1.36],[.99,-1.22],[1.42,-1.,.65]))
+        with self.assertRaises(ValueError):waypoint([float("nan"),0.],[0.,0.],[0.,0.,0.])
+
     def test_intermediate_transit_does_not_require_full_grasp_at_waypoint(self):
         from scripts.research.issue46.native_runtime.far_observe_approach import intermediate_forward_waypoint
         import numpy as np
