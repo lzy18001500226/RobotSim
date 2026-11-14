@@ -110,6 +110,16 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.
         result["delivery_align_reentry_rad"]=.75
+        # The old predicted0.50m stop fired after only0.127m of actual
+        # retreat (233536Z). Its stopped turn then displaced the body0.455m
+        # toward the pickup table; the first forward step hit the right hip.
+        # Reserve real aisle travel before turning. Recorded full-model turn
+        # and startup states shifted0.15m away had >=50mm sampled clearance.
+        # This is a bounded task trajectory change, not a source/physics gate.
+        result["retreat_target_m"]=.70
+        result["minimum_actual_retreat_m"]=.30
+        result["retreat_clearance_evidence"]=(
+            "reviews/issue-46/case0-exit-corridor-forensics-20261114T235330Z/result.json")
 
     result["task_turn_selection"] = {
         "classification": "TASK_COLLISION_CHECKED_FORWARD_ARC_NOT_MC_RETUNING",

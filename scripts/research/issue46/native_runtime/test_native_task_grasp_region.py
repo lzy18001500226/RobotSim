@@ -99,6 +99,25 @@ class ClockRecoveryTests(unittest.TestCase):
         self.assertIs(result["stop_inside_functional_arrival_region"], False)
         self.assertEqual(result["delivery_turn_direction"], "SHORTEST")
 
+    def test_common_transfer_requires_measured_retreat_before_turn(self):
+        from pathlib import Path
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        profile = json.loads((Path(task.__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        original = json.dumps(profile, sort_keys=True)
+        cfg = task.task_route_profile(profile, fast_task_timing=True)
+        # Saved case0 reached the old predicted stop with insufficient aisle
+        # travel. Prediction alone must not start the turn.
+        self.assertFalse(micro.retreat_braking_gate(.1268413116,.5001359844,True,cfg)["request_stop"])
+        self.assertFalse(micro.retreat_braking_gate(.29,.8,True,cfg)["request_stop"])
+        self.assertFalse(micro.retreat_braking_gate(.31,.69,True,cfg)["request_stop"])
+        self.assertTrue(micro.retreat_braking_gate(.31,.71,True,cfg)["request_stop"])
+        self.assertTrue(micro.retreat_braking_gate(.70,.70,True,cfg)["request_stop"])
+        self.assertEqual(cfg["minimum_actual_retreat_m"],.30)
+        self.assertEqual(cfg["retreat_target_m"],.70)
+        self.assertEqual(original,json.dumps(profile,sort_keys=True))
+        for key in ("transit_root_cap_m_s","turn_braking_footprint_m","retreat_cross_track_limit_m"):
+            self.assertEqual(cfg[key],profile[key])
+
     def test_selected_posture_reaches_the_actual_consumer_before_any_motion(self):
         from pathlib import Path
         from unittest.mock import patch
