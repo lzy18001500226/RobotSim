@@ -810,7 +810,7 @@ def run_probe(smoke_only=False):
         n.await_graph();n.observe(.12);n.graph()
         baseline=n.sample()["body_status"]
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
-        start=n.sample()["pose"];result["start_pose"]=start
+        start=stationary_carry_sample(n,baseline,time.monotonic()+1.,result["pre_motion_composite"])["pose"];result["start_pose"]=start
         n.await_graph()
         v=MICRO["command_speed"]
         velocity={"forward":(v,0.),"backward":(-v,0.),"left":(0.,v),"right":(0.,-v)}[MICRO["direction"]]
@@ -1481,6 +1481,26 @@ def await_carry_initial_state(n):
     raise RuntimeError("CARRY_INITIAL_FRESH_EPOCH_NOT_READY")
 
 
+def stationary_carry_sample(n, baseline, deadline, qualified_stop):
+    """Read the current epoch while zero after an independently qualified stop."""
+    if qualified_stop.get("pass") is not True or n.moving:
+        raise RuntimeError("CARRY_STATIONARY_SAMPLE_REQUIRES_QUALIFIED_STOP")
+    end=min(deadline,time.monotonic()+1.)
+    while time.monotonic()<end:
+        n.publish();n.pump()
+        with n.telemetry_lock:
+            if n.moving or n.feedback_fault:
+                raise RuntimeError("CARRY_STATIONARY_SAMPLE_PHYSICAL_OR_MOTION_FAULT:"+str(n.feedback_fault))
+            try:row=n.sample()
+            except RuntimeError as exc:
+                if str(exc)!="CLOCK_GENERATION_PENDING":raise
+            else:
+                if n.pumped_epoch==n.source_epoch==row["source_clock_generation"] and row["body_status"]==baseline:
+                    return row
+        time.sleep(.01)
+    raise RuntimeError("CARRY_STATIONARY_FRESH_EPOCH_NOT_READY")
+
+
 def arm_carry_motion(n, baseline, deadline, qualified_stop):
     """Acquire feedback while zero after a qualified stop; atomically arm.
 
@@ -1583,12 +1603,12 @@ def run_carry_navigation(n,contract):
         if transit_permit is not None:closed_permits.append(transit_permit)
         transit_permit=None;cfg["previous_permit_filename"]=cfg["permit_filename"]
         cfg["clock_stop_pass"]=True;result["post_stop_composite"]=stopped
-        n.await_graph();n.pump();return n.sample()["pose"]
+        n.await_graph();return stationary_carry_sample(n,baseline,until,result["post_stop_composite"])["pose"]
     try:
         n.start_feedback();baseline=await_carry_initial_state(n)["body_status"]
         if baseline!=1:raise RuntimeError("CARRY_NAVIGATION_REQUIRES_RESTORED_STAND_BODY")
         result["pre_motion_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
-        start=n.sample()["pose"];result["start_pose"]=start
+        start=stationary_carry_sample(n,baseline,time.monotonic()+1.,result["pre_motion_composite"])["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"]
         if cfg.get("away_1m"):
             away=(start["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
@@ -1768,7 +1788,7 @@ def run_carry_navigation(n,contract):
                         n.source_enabled(False) if cfg.get("release_source_on_stop") and not (cfg.get("delivery") or {}).get("release_source_after_zero_window") else None
                         stand_transition()
                         result["retreat_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
-                        n.await_graph();n.pump();stopped=n.sample()
+                        n.await_graph();stopped=stationary_carry_sample(n,baseline,until,result["retreat_stop_composite"])
                         mission["retreat_end_pose"]=stopped["pose"]
                         transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                         closed_permits.append(transit_permit);transit_permit=None
@@ -1891,7 +1911,7 @@ def run_carry_navigation(n,contract):
                             mission["turn_center_final_drift_m"]=math.hypot(review_end["x"]-mission["turn_origin_pose"]["x"],review_end["y"]-mission["turn_origin_pose"]["y"])
                             mission["turn_stop_heading_error_rad"]=(bearing-review_end["yaw"]+math.pi)%(2*math.pi)-math.pi
                             return result
-                        n.await_graph();n.pump();stopped=n.sample()
+                        n.await_graph();stopped=stationary_carry_sample(n,baseline,until,result["turn_stop_composite"])
                         heading_error=(bearing-stopped["pose"]["yaw"]+math.pi)%(2*math.pi)-math.pi
                         mission["turn_stop_heading_error_rad"]=heading_error
                         mission["turn_end_pose"]=stopped["pose"]
@@ -2253,7 +2273,7 @@ def run_carry_navigation(n,contract):
         n.source_enabled(False) if cfg.get("release_source_on_stop") and not (cfg.get("delivery") or {}).get("release_source_after_zero_window") else None
         stand_transition()
         result["post_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
-        end=n.sample()["pose"];result["end_pose"]=end
+        end=stationary_carry_sample(n,baseline,until,result["post_stop_composite"])["pose"];result["end_pose"]=end
         if mission is not None and mission.get('phase')=='DELIVERY' and cfg['delivery'].get('bounded_terminal_forward_reapproach'):
             # A safely stopped shortfall is legitimate, not a task failure.
             # At most two existing STEP activation pulses, each followed by the
@@ -2342,7 +2362,7 @@ def run_carry_navigation(n,contract):
                 n.source_enabled(False) if cfg.get('release_source_on_stop') and not (cfg.get('delivery') or {}).get('release_source_after_zero_window') else None
                 stand_transition();result['post_stop_composite']=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
                 if not result['post_stop_composite'].get('pass'):raise RuntimeError('FINAL_DOCK_ALIGNMENT_STOP_NOT_QUALIFIED')
-                n.pump();end=n.sample()['pose'];delta=(end['yaw']-trigger_yaw+math.pi)%(2*math.pi)-math.pi;rebounds[direction]=delta
+                end=stationary_carry_sample(n,baseline,until,result['post_stop_composite'])['pose'];delta=(end['yaw']-trigger_yaw+math.pi)%(2*math.pi)-math.pi;rebounds[direction]=delta
                 result.setdefault('final_dock_alignments',[]).append(dict(index=alignment_index,starting_error_rad=error,predicted_stop_delta_rad=rebound,observed_stop_delta_rad=delta,actual_stopped_pose=end,physical_stop=result['post_stop_composite']))
                 transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row);closed_permits.append(transit_permit);transit_permit=None
             cfg['motion_mode']=saved_mode;result['end_pose']=end
@@ -2410,7 +2430,7 @@ def run_carry_navigation(n,contract):
             n.deadline_zero();n.stop_started=True;watchdog.cancel()
             transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row) if transit_permit is not None else None
             stand_transition();result["post_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
-            end=n.sample()["pose"];result["end_pose"]=end
+            end=stationary_carry_sample(n,baseline,until,result["post_stop_composite"])["pose"];result["end_pose"]=end
             result["measured_forward_dock"].update(zero_requested_in_reserve=dock_zero,source_and_mode_observed=dock_acquired,
                 actual_stopped_pose=end,physical_stop=result["post_stop_composite"])
             if not dock_zero or not result["post_stop_composite"].get("pass"):raise RuntimeError("MEASURED_FORWARD_DOCK_NOT_COMPLETED_AND_STOPPED")
@@ -2448,7 +2468,8 @@ def run_carry_navigation(n,contract):
                     and abs(mission["final_forward_cross_track_m"])<=.05 and abs(mission["final_heading_error_rad"])<=.12)
         result["failure"]=None if result["pass_result"] else "CARRY_GOAL_OR_STOP_NOT_QUALIFIED"
     except Exception as exc:
-        n.deadline_zero();result["failure"]=str(exc);result["abort_native_sample"]=n.latest_row
+        import traceback
+        n.deadline_zero();result["failure"]=str(exc);result["failure_traceback"]=traceback.format_exc();result["abort_native_sample"]=n.latest_row
     finally:
         n.deadline_zero()
         try:transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)

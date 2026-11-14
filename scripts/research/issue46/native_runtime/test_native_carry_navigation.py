@@ -1928,3 +1928,36 @@ class FinalDockAngularCommandTests(unittest.TestCase):
         self.assertLess(max(abs(a-b) for a,b in zip(values,values[1:])),.003)
         for args in [(float('nan'),.6,1.),(1.,0.,1.),(1.,.6,float('inf'))]:
             with self.assertRaises(ValueError):m.final_dock_angular_command(*args)
+
+
+class StationaryCarrySampleTests(unittest.TestCase):
+    def node(self):
+        from types import SimpleNamespace
+        from threading import RLock
+        rows=[RuntimeError('CLOCK_GENERATION_PENDING'),dict(source_clock_generation=2,body_status=1)]
+        events=[]
+        def sample():
+            row=rows.pop(0)
+            if isinstance(row,Exception):raise row
+            return row
+        n=SimpleNamespace(moving=False,feedback_fault=None,telemetry_lock=RLock(),source_epoch=2,pumped_epoch=2,
+            publish=lambda:events.append('zero'),pump=lambda:None,sample=sample)
+        return n,events
+    def test_stationary_epoch_pending_waits_for_complete_state_without_arming(self):
+        import time
+        n,events=self.node()
+        self.assertEqual(m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':True})['source_clock_generation'],2)
+        self.assertFalse(n.moving);self.assertEqual(events,['zero','zero'])
+    def test_no_physical_fault_is_cleared_and_no_unqualified_stop_is_used(self):
+        import time
+        for passed,moving,fault in [(False,False,None),(True,True,None),(True,False,{'gate':'SOURCE_JOINT_SPEED'})]:
+            n,events=self.node();n.moving=moving;n.feedback_fault=fault
+            with self.assertRaises(RuntimeError):m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':passed})
+            self.assertEqual(n.moving,moving);self.assertEqual(n.feedback_fault,fault)
+    def test_critical_missing_telemetry_is_not_masked(self):
+        import time
+        n,_=self.node()
+        def missing():raise RuntimeError('CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING')
+        n.sample=missing
+        with self.assertRaisesRegex(RuntimeError,'CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING'):
+            m.stationary_carry_sample(n,1,time.monotonic()+2.,{'pass':True})
