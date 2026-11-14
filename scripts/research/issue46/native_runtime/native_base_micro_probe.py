@@ -1419,6 +1419,12 @@ def run_carry_navigation(n,contract):
             if cfg.get("motion_mode")=="LOCOMOTION_STEP":
                 result["stand_transition_strategy"]="STEP_ZERO_MEASURED_HANDOFF_THEN_SD"
             n.observe(1.05,baseline=baseline)
+            # Release our source at the configured zero-window boundary, not
+            # after physical readiness. Saved021716Z completed the disabled-
+            # source clock stop, but its later calibration kept the source
+            # enabled throughout STEP/TRANSITION and failed planar safety.
+            # This orders an existing action; it does not qualify the stop.
+            if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
             if cfg.get("motion_mode")=="LOCOMOTION_STEP":
                 # Share the existing stop observation budget: reserve the initial
                 # 1.05s zero period and >=2s independent composite stop window.
@@ -1427,7 +1433,6 @@ def run_carry_navigation(n,contract):
                 handoff_budget_s=stop_wait_s-1.05-2.
                 readiness=await_step_stand_handoff(n,baseline,time.monotonic()+handoff_budget_s)
                 result.setdefault("step_stand_handoffs",[]).append(readiness)
-            if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
             n.stand_once()
 
     try:
