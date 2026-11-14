@@ -1334,7 +1334,7 @@ class ContinuousZeroStandStrategyTests(unittest.TestCase):
         for strategy,expected in (("ZERO_WINDOW_THEN_SD",["zero_window","sd"]),("EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC",["sd","zero_window"])):
             calls=[]
             n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertGreaterEqual(seconds,1.05),calls.append("zero_window")))
-            ns=dict(cfg={"motion_mode":"LOCOMOTION_STEP" if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC" else "LOCOMOTION_DEFAULT","delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
+            ns=dict(cfg={"motion_mode":"LOCOMOTION_DEFAULT","delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
             exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_stop_strategy","exec"),ns)
             ns["stand_transition"]();self.assertEqual(calls,expected)
             self.assertNotIn("pass_result",ns["result"])
@@ -1347,10 +1347,12 @@ class ContinuousZeroStandStrategyTests(unittest.TestCase):
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
         helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
-        for mode,expected in (("LOCOMOTION_STEP",["sd","zero_window","disable"]),("LOCOMOTION_DEFAULT",["sd","zero_window","disable"])):
+        for mode,expected in (("LOCOMOTION_STEP",["zero_window","measured_ready","disable","sd"]),("LOCOMOTION_DEFAULT",["sd","zero_window","disable"])):
             calls=[]
             n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertEqual(seconds,1.05),calls.append("zero_window")),source_enabled=lambda enabled:(self.assertFalse(enabled),calls.append("disable")))
             ns=dict(cfg={"motion_mode":mode,"release_source_on_stop":True,"delivery":{"stand_transition_strategy":"EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC","release_source_after_zero_window":True}},n=n,baseline={},result={})
+            ns.update(time=__import__("time"),stop_wait_s=12.,
+                await_step_stand_handoff=lambda *args:(calls.append("measured_ready") or {"ready":True}))
             exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_early_stop","exec"),ns)
             ns["stand_transition"]();self.assertEqual(calls,expected)
             self.assertNotIn("pass_result",ns["result"])
