@@ -2072,7 +2072,14 @@ def run_carry_navigation(n,contract):
                     mission["turn_source_and_mode_observed"]=True
                 if handshake and mission is not None and mission["phase"]=="DELIVERY":
                     mission["delivery_source_and_mode_observed"]=True
-                if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
+                if tick-activation_started>.75 and not handshake:
+                    # The rejected sample must survive even though it is never
+                    # appended to the accepted route trace below.
+                    result["rejected_motion_handshake"]=dict(expected_mode=cfg.get("motion_mode","LOCOMOTION_DEFAULT"),
+                        previously_acquired=acquired,activation_elapsed_s=tick-activation_started,
+                        observation={k:row[k] for k in ("sample_monotonic_s","sim_time_s","common_mode_desc","get_mode_desc",
+                            "common_mode_status_value","get_mode_status_value","get_mode_header_code","common_source","state_age_s")})
+                    raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
                 n.publish(forward,lateral,angular)
             elif output.state==NavState.SETTLING:n.publish()
             elif output.state==NavState.ARRIVED:

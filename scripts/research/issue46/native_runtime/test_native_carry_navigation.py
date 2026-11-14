@@ -1631,3 +1631,24 @@ class FrontOpeningTaskAreaTests(unittest.TestCase):
         for a in [[-.9,.65,-2.35,-1.9],[-.65,.65,-3.,-1.9],[-.65,.65,-2.35,-1.8],[float('nan'),.65,-2.35,-1.9]]:
             with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=0.,y=0.),box,a)
         with self.assertRaises(ValueError):m.carry_workspace_contains(dict(x=float('nan'),y=0.),box)
+
+
+class RejectedCarryHandshakeEvidenceTests(unittest.TestCase):
+    def test_rejected_live_readback_is_preserved_without_relaxing_gate(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,
+            release_source_on_stop=True,native_action_smoothing=True)
+        guard=next(node for node in ast.walk(ast.parse(code)) if isinstance(node,ast.If)
+            and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
+        row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="LOCOMOTION_DEFAULT",
+            get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+        ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=True,
+            cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row)
+        with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"rejected_handshake","exec"),ns)
+        saved=ns["result"]["rejected_motion_handshake"]
+        self.assertTrue(saved["previously_acquired"])
+        self.assertEqual(saved["observation"],row)
+        self.assertEqual(saved["expected_mode"],"LOCOMOTION_DEFAULT")
+        self.assertNotIn("pass_result",ns["result"])
