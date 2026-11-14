@@ -119,23 +119,20 @@ class PreToolGuardTests(unittest.TestCase):
 
         self.assertEqual(covered, tool_names)
 
-        stop_probes = [
-            handler
-            for group in config["hooks"]["Stop"]
-            for handler in group["hooks"]
-            if "scripts/research/codex_hook_capability_probe.py" in handler.get("command", "")
-        ]
-        self.assertEqual(len(stop_probes), 1)
-        self.assertIn(
-            "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env ROBOTSIM_HOOK_PROBE_DIR=",
-            stop_probes[0].get("commandWindows", ""),
-        )
-        prompt_probe = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
-        self.assertIn("wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env", prompt_probe.get("commandWindows", ""))
-        lifecycle_handlers = config["hooks"]["UserPromptSubmit"][0]["hooks"][1:]
-        self.assertEqual(len(lifecycle_handlers), 1)
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("command", ""))
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("commandWindows", ""))
+        for event_name, groups in config["hooks"].items():
+            handlers = [handler for group in groups for handler in group["hooks"]]
+            with self.subTest(event_name=event_name):
+                self.assertEqual(len(handlers), 1)
+                for handler in handlers:
+                    for platform_command in ("command", "commandWindows"):
+                        self.assertNotIn(
+                            "codex_hook_capability_probe.py",
+                            handler.get(platform_command, ""),
+                        )
+
+        lifecycle_handler = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handler.get("command", ""))
+        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handler.get("commandWindows", ""))
         interrupt_handler = config["hooks"]["Interrupt"][0]["hooks"][0]
         self.assertIn("scripts/agent/task_lifecycle.py", interrupt_handler.get("commandWindows", ""))
 
