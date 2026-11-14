@@ -2048,3 +2048,35 @@ class PlannedStepDecelerationTests(unittest.TestCase):
         self.assertIn("n.deadline_zero()",ast.unparse(fault_stop))
         helper=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=="planned_step_deceleration")
         self.assertTrue(any(isinstance(x,ast.Try) and x.finalbody for x in ast.walk(helper)))
+
+class RequestedStepStandTransitionTests(unittest.TestCase):
+    def test_explicit_step_stop_requests_sd_before_physical_composite(self):
+        import inspect
+        from types import SimpleNamespace
+        source=inspect.getsource(m.run_carry_navigation)
+        tree=ast.parse(source)
+        fn=next(x for x in ast.walk(tree) if isinstance(x,ast.FunctionDef) and x.name=="stand_transition")
+        standalone=ast.Module(body=[fn],type_ignores=[])
+        code=compile(ast.fix_missing_locations(standalone),"step_requested_stand","exec")
+        for mode in ("LOCOMOTION_STEP","LOCOMOTION_DEFAULT"):
+            calls=[]
+            def forbidden(*args):raise AssertionError("already-stationary prerequisite must not block vendor stop request")
+            n=SimpleNamespace(observe=lambda t,**kw:calls.append(("zero_window",t)),
+                source_enabled=lambda enabled:calls.append(("source",enabled)),
+                stand_once=lambda:calls.append(("request_sd",)))
+            ns=dict(cfg=dict(motion_mode=mode,release_source_on_stop=True,
+                            delivery=dict(stand_transition_strategy="STEP_ZERO_WINDOW_THEN_SD_REQUEST",
+                                          release_source_after_zero_window=True)),
+                    result={},baseline=1,n=n,stop_wait_s=12.,await_step_stand_handoff=forbidden)
+            exec(code,ns);ns["stand_transition"]()
+            self.assertEqual(calls,[("zero_window",1.05),("source",False),("request_sd",)])
+        # Acceptance remains in the outer workflow and requires the independent
+        # measured stop; an RPC or chosen strategy alone is not PASS.
+        assignments=[x for x in ast.walk(tree) if isinstance(x,ast.Assign)
+            and any(isinstance(t,ast.Subscript) and isinstance(t.value,ast.Name)
+                    and t.value.id=="result" and isinstance(t.slice,ast.Constant)
+                    and t.slice.value=="post_stop_composite" for t in x.targets)]
+        self.assertTrue(any(isinstance(x.value,ast.Call) and isinstance(x.value.func,ast.Attribute)
+            and x.value.func.attr=="observe"
+            and any(k.arg=="require_stop" and isinstance(k.value,ast.Constant)
+                    and k.value.value is True for k in x.value.keywords) for x in assignments))

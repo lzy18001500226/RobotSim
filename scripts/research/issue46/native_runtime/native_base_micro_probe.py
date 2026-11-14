@@ -1640,7 +1640,8 @@ def run_carry_navigation(n,contract):
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
         else:
             n.observe(1.05,baseline=baseline)
-            if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+            if (cfg.get("motion_mode")=="LOCOMOTION_STEP"
+                    and strategy!="STEP_ZERO_WINDOW_THEN_SD_REQUEST"):
                 # Complete real zero-input support readiness before releasing
                 # our input and confirming SD, as in the saved case0/10 PASS.
                 # Early SD in042030Z stayed in STEP/200 and drifted into the
@@ -1650,6 +1651,11 @@ def run_carry_navigation(n,contract):
                 readiness=await_step_stand_handoff(n,baseline,time.monotonic()+handoff_budget_s)
                 result.setdefault("step_stand_handoffs",[]).append(readiness)
             if cfg.get('release_source_on_stop') and (cfg.get('delivery') or {}).get('release_source_after_zero_window') and not source_already_disabled:n.source_enabled(False)
+            # The explicit diagnostic asks the installed vendor SD transition
+            # after the unchanged zero window. Do not require already-stationary
+            # legs before asking the controller to stop them. Request acceptance
+            # is never stop qualification: the caller still requires fresh SD
+            # readbacks and the full independent physical composite stop.
             n.stand_once()
 
     def terminal_clock_stop(error,phase):
