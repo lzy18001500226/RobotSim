@@ -403,11 +403,24 @@ def position_mode_tracking_bounds(source, bias, kp, margin=.01):
     return result
 
 def carry_tracking_bounds(bounds,names,phase):
-    """Keep a locally planned shoulder reserve during loaded gait only."""
+    """Keep loaded-gait shoulder and near-limit wrist planning reserves."""
     result=np.asarray(bounds,dtype=float).copy()
     if phase is not None and phase.get('phase')=='CARRY_HOLD' and not phase.get('placement_active'):
         index=names.index('right_shoulder_roll_joint');result[index,1]-=.08
         if result[index,0]>=result[index,1]:raise ValueError('empty carry shoulder planning interval')
+        # Loaded point10 crossed the source lower limit by2.9mrad with a
+        #21mrad wrist target reserve. Move only this near-boundary IK search inward; keep
+        # the same tool-position/axis task and original physical safety gate.
+        # Interior carry postures (recorded points0/5) retain exact old bounds.
+        nominal=phase.get('carry_nominal_right_arm_rad',{})
+        name='right_wrist_roll_joint'
+        if name in nominal:
+            value=float(nominal[name])
+            if not np.isfinite(value):raise ValueError('nonfinite carry wrist reference')
+            index=names.index(name)
+            if value-result[index,0]<.06:result[index,0]+=.03
+            if result[index,1]-value<.06:result[index,1]-=.03
+            if result[index,1]<=result[index,0]+.002:raise ValueError('empty carry wrist planning interval')
     return result
 
 

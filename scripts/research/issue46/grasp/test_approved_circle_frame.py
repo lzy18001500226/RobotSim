@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','tracking_task_converged','planar_approach_direction')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','carry_tracking_bounds','tracking_task_converged','planar_approach_direction')]
         from scipy.optimize import least_squares
         cls.ns={'np':np,'least_squares':least_squares};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
@@ -22,6 +22,35 @@ class FrameTests(unittest.TestCase):
         np.testing.assert_allclose(direction,(target-initial)[:2]/np.linalg.norm((target-initial)[:2]))
         for bad in (initial,initial+[1e-8,0.,0.],np.array([np.nan,0.,0.])):
             with self.assertRaises(RuntimeError):fn(initial,bad)
+
+    def test_loaded_near_limit_wrist_gets_inward_reserve_without_changing_source(self):
+        fn=self.ns['carry_tracking_bounds']
+        names=['right_shoulder_roll_joint','right_wrist_roll_joint']
+        bounds=np.array([[-2.,2.],[-.704,1.48971]])
+        phase={'phase':'CARRY_HOLD','carry_nominal_right_arm_rad':{'right_wrist_roll_joint':-.7029696306}}
+        result=fn(bounds,names,phase)
+        np.testing.assert_allclose(result,[[-2.,1.92],[-.674,1.48971]])
+        np.testing.assert_array_equal(bounds,[[-2.,2.],[-.704,1.48971]])
+        # The old measured peak-.726921 is still outside the physical range;
+        # this is a target-planning change, not a changed physical guard.
+        self.assertLess(-.7269214625,-.724-.001)
+
+    def test_existing_case0_and5_carry_bounds_are_bitwise_unchanged(self):
+        fn=self.ns['carry_tracking_bounds'];names=['right_shoulder_roll_joint','right_wrist_roll_joint']
+        bounds=np.array([[-2.,2.],[-.704,1.48971]])
+        for nominal in (-.3614745338609206,-.16516591947791728):
+            actual=fn(bounds,names,{'phase':'CARRY_HOLD','carry_nominal_right_arm_rad':{'right_wrist_roll_joint':nominal}})
+            np.testing.assert_array_equal(actual,np.array([[-2.,1.92],[-.704,1.48971]]))
+
+    def test_wrist_reserve_is_carry_only_and_symmetric_at_upper_bound(self):
+        fn=self.ns['carry_tracking_bounds'];names=['right_shoulder_roll_joint','right_wrist_roll_joint']
+        bounds=np.array([[-2.,2.],[-.704,1.48971]])
+        near={'right_wrist_roll_joint':1.48}
+        np.testing.assert_allclose(fn(bounds,names,{'phase':'CARRY_HOLD','carry_nominal_right_arm_rad':near}),[[-2.,1.92],[-.704,1.45971]])
+        for phase in (None,{'phase':'CLOSE'}, {'phase':'CARRY_HOLD','placement_active':True,'carry_nominal_right_arm_rad':near}):
+            np.testing.assert_array_equal(fn(bounds,names,phase),bounds)
+        with self.assertRaises(ValueError):
+            fn(bounds,names,{'phase':'CARRY_HOLD','carry_nominal_right_arm_rad':{'right_wrist_roll_joint':float('nan')}})
 
     def test_placement_continuation_rejects_half_radian_wrist_branch_jump(self):
         bounds=np.array([[-2.,2.],[-1.,.061]])
