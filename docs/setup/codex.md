@@ -37,9 +37,26 @@ Skills are discovered by the Codex host; `AGENTS.md` does not need an inventory 
 
 Keep installation versions and machine-specific paths in local configuration or installation records, not in repository instructions. See the [official Skills guide](https://learn.chatgpt.com/docs/build-skills) for discovery and invocation controls.
 
+### Focused RobotSim Skills and upstream adaptation
+
+Use [X2 runtime diagnostics](../../.agents/skills/robotsim-x2-runtime-diagnostics/SKILL.md) for installed-version, Reset, MC/input-source and ROS interface failures. Use [MuJoCo model diagnostics](../../.agents/skills/robotsim-mujoco-model-diagnostics/SKILL.md) for source/compiled mesh frames, joint/actuator mapping, constraints and contact discrepancies. Both reuse existing contracts and [validation planning](../../.agents/skills/robotsim-validation-planning/SKILL.md); neither authorizes a model change or a new physics episode. These files are native Skills, while `docs/skills/` holds technical reference notes.
+
+The upstream review below is source inspection, not installation or runtime qualification:
+
+| Source reviewed | Status and useful material | RobotSim adaptation boundary |
+| --- | --- | --- |
+| [DeepMind MuJoCo Python Skill](https://github.com/google-deepmind/mujoco/blob/bcc80d5b09277c0e5728544f127204b9f499e1fb/doc/skills/python/SKILL.md) | Official MuJoCo repository; Python model/data lifecycle, access patterns and diagnostics. | Its current API examples are newer than the project's pinned 3.3.6. Verify each API against the installed version before reuse; do not import its whole workflow or treat example stepping as authorization. |
+| [ROS 2 engineering Skill](https://github.com/dbwls99706/ros2-engineering-skills/blob/d569707db4880ca7eaf4dab5afeeacf04449daa8/SKILL.md) | Community package, **not an official ROS release**; progressive QoS, TF, URDF and sensor references. | Use applicable Humble guidance, checked against [official QoS](https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html) and [tf2 documentation](https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html). Static validators do not prove a live graph. Do not copy its client-specific hooks or install dependencies automatically. |
+
+For future import, review only the needed reference/checker, pin its revision and license, and validate a small project-specific case first. The ROS search has not established an official ROS-maintained Skill; do not describe the community package as one.
+
 ## Project-local Codex hooks
 
-`.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus local `UserPromptSubmit`, `Interrupt`, and `Stop` lifecycle handlers. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
+`.codex/hooks.json` contains four event types: `PreToolUse`, `UserPromptSubmit`, `Interrupt`, and `Stop`. The existing `PreToolUse` guard checks plainly destructive Git commands, obvious credential staging/writes, and visible shell deletion/disk commands. The other handlers record lifecycle and structured closeout. The repository remains usable when hooks are disabled.
+
+The [filesystem checker](../../scripts/agent/filesystem_guard.py) rejects recognized deletion commands unless every target is a literal, resolved path strictly inside the running checkout and outside `.git/`, `reference/`, legacy `third_party/` and `reviews/`. Unknown working directories, globs/variables, system/drive/UNC paths and symlink escapes fail that check. Common shell/WSL wrappers and command separators are inspected; recognized formatting, partitioning and raw-device `dd` output are denied. A permitted path is **not** cleanup authorization: the user scope and recovery checks still apply.
+
+This is a conservative command checker, **not a sandbox or a complete shell interpreter**. It does not constrain arbitrary Python, scripts, aliases, encoded commands, interactive stdin or unrecognized tools. It cannot eliminate path races or enforce OS isolation; use host permissions/sandboxing for that boundary. A trusted, enabled hook checks supported calls automatically, without depending on the model reading a Skill. Do not route a blocked operation through an uninspected tool to bypass the guard.
 
 Codex discovers project hooks from `.codex/hooks.json`; discovery is distinct from project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed and enabled. If a hook is absent or disabled, do not assume it ran. Recheck `/hooks` after changing hook configuration; a changed handler may need renewed trust. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
 

@@ -6,8 +6,12 @@ from __future__ import annotations
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.agent.filesystem_guard import command_reason
 
 DESTRUCTIVE_PATTERNS = (
     re.compile(r"(?:^|[\s;&|])git(?:\s+-C\s+\S+)?\s+push\b[^;&|\n]*(?:--force(?:-with-lease)?\b|(?:^|\s)-f(?:\s|$))", re.I),
@@ -35,9 +39,9 @@ SENSITIVE_BASENAME = re.compile(
 SAFE_ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 
 
-def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
+def _tool_input(payload: dict[str, Any]) -> Any:
     value = payload.get("tool_input")
-    return value if isinstance(value, dict) else {}
+    return value if isinstance(value, (dict, str)) else {}
 
 
 def _input_strings(value: Any) -> list[str]:
@@ -75,9 +79,14 @@ def _reason(payload: dict[str, Any]) -> str | None:
     tool_name = str(payload.get("tool_name", ""))
     tool_input = _tool_input(payload)
     if tool_name in {"Bash", "exec_command"}:
+        if not isinstance(tool_input, dict):
+            return "blocked malformed shell tool input"
         command = str(tool_input.get("command", tool_input.get("cmd", ""))).replace("\\\n", " ")
         if any(pattern.search(command) for pattern in DESTRUCTIVE_PATTERNS):
             return "blocked a destructive Git command; inspect the target and use the normal review flow"
+        reason = command_reason(command, tool_input.get("workdir", payload.get("cwd")))
+        if reason:
+            return reason
         if TOKEN_LITERAL.search(command):
             return "blocked a command containing a credential-shaped literal; keep credentials out of commands and files"
         if SECRET_VARIABLE.search(command) and WRITE_SINK.search(command):
@@ -103,12 +112,16 @@ def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if isinstance(payload, dict) and payload.get("hook_event_name") != "PreToolUse":
         return 0
-    if not isinstance(payload, dict) or payload.get("hook_event_name") != "PreToolUse":
-        return 0
-    reason = _reason(payload)
+    reason = _reason(payload) if isinstance(payload, dict) else "blocked malformed PreToolUse event"
     if reason:
-        json.dump({"decision": "block", "reason": reason}, sys.stdout)
+        json.dump({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}, sys.stdout)
         sys.stdout.write("\n")
     return 0
 
