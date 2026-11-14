@@ -1023,6 +1023,14 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def measured_dock_step(driver, pose_type, row, goal):
+    # Sampling may receive a frame newer than the loop's scheduling timestamp.
+    # Evaluate freshness after sampling; preserve the controller's age checks.
+    pose=row["pose"]
+    measured=pose_type(pose["x"],pose["y"],pose["yaw"],"native_scene_world",row["sample_monotonic_s"])
+    return driver.step(measured,goal,now_steady_s=time.monotonic())
+
+
 def measured_forward_dock_needed(delivery, pose, goal):
     """One measured forward approach after the rearward route's coarse turn."""
     if not delivery.get("rearward_foundation_transit"):return False
@@ -2380,8 +2388,11 @@ def run_carry_navigation(n,contract):
                 if tick-dock_begin>2.75 and not handshake:raise RuntimeError("MEASURED_DOCK_SOURCE_MODE_NOT_CONFIRMED")
                 distance=math.hypot(goal[0]-pose["x"],goal[1]-pose["y"])
                 if distance<=.60 and dock_acquired:dock_zero=True;break
-                command=driver.step(Pose2D(pose["x"],pose["y"],pose["yaw"],"native_scene_world",row["sample_monotonic_s"]),dock_goal,now_steady_s=tick)
-                if command.state!=NavState.DRIVE:raise RuntimeError("MEASURED_DOCK_CONTROLLER_"+command.state.value)
+                command=measured_dock_step(driver,Pose2D,row,dock_goal)
+                if command.state!=NavState.DRIVE:
+                    result["measured_dock_controller_rejection"]=dict(state=command.state.value,reason=command.reason,
+                        source_monotonic_s=row["sample_monotonic_s"],loop_started_monotonic_s=tick,checked_monotonic_s=time.monotonic())
+                    raise RuntimeError("MEASURED_DOCK_CONTROLLER_"+command.state.value)
                 forward,angular=loaded_foundation_start(cfg["delivery"],"DELIVERY",max(0.,tick-dock_begin),.20,command.angular_z)
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:

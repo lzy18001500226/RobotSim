@@ -1891,3 +1891,26 @@ class QualifiedCarryClockStopTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'CLOCK_GENERATION_PENDING'):
             m.qualified_carry_clock_stop(n,{},1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),4,lambda **kw:None,8.)
         self.assertFalse(events)
+
+
+class MeasuredDockClockTests(unittest.TestCase):
+    def controller(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation/robotsim_navigation"))
+        from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
+        return PointGoalController(ControllerConfig()),Pose2D,Goal2D(1.,0.,0.,"native_scene_world"),NavState
+    def test_frame_received_during_pump_uses_post_sample_control_time(self):
+        from unittest.mock import patch
+        driver,pose,goal,state=self.controller()
+        row=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=100.01)
+        with patch.object(m.time,'monotonic',return_value=100.02):
+            self.assertEqual(m.measured_dock_step(driver,pose,row,goal).state,state.DRIVE)
+        old,pose,goal,state=self.controller()
+        self.assertEqual(old.step(pose(0.,0.,0.,"native_scene_world",100.01),goal,now_steady_s=100.).state,state.STALE_STATE)
+    def test_genuinely_old_or_future_frame_remains_rejected(self):
+        from unittest.mock import patch
+        for stamp in (99.,100.03):
+            driver,pose,goal,state=self.controller()
+            row=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=stamp)
+            with patch.object(m.time,'monotonic',return_value=100.02):
+                self.assertEqual(m.measured_dock_step(driver,pose,row,goal).state,state.STALE_STATE)
