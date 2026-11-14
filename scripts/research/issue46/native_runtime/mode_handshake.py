@@ -29,6 +29,7 @@ def call_service(node, client, request, *, timeout_s=5.0):
     else:
         raise ModeHandshakeError("ROS_SHUTDOWN")
     future = client.call_async(request)
+    temporary_owner = None
     try:
         while rclpy.ok() and not future.done():
             remaining = deadline - infra_elapsed()
@@ -39,7 +40,12 @@ def call_service(node, client, request, *, timeout_s=5.0):
                 owner = getattr(node, "executor", None)
                 if owner is None:
                     owner = rclpy.get_global_executor()
-                    owner.add_node(node)
+                # Humble remove_node() leaves Node.executor pointing at that
+                # executor. rclpy.spin_once() temporarily adds/removes nodes,
+                # so the property alone does not prove callback membership.
+                # add_node is idempotent; undo only membership acquired here.
+                if owner.add_node(node):
+                    temporary_owner = owner
                 owner.spin_once(timeout_sec=min(.01, remaining))
             else:
                 error = getattr(node, "feedback_executor_error", None)
@@ -56,6 +62,8 @@ def call_service(node, client, request, *, timeout_s=5.0):
         client.remove_pending_request(future)
         if not future.done():
             future.cancel()
+        if temporary_owner is not None:
+            temporary_owner.remove_node(node)
 
 
 def wait_initial_mode(read_mode, *, timeout_s=4.0):

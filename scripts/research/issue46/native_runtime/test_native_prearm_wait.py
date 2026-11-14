@@ -15,7 +15,7 @@ class SinglePrearmRequestWaitTests(unittest.TestCase):
         client=NS(srv_name='/SetMcAction',wait_for_service=Mock(return_value=True),
                   call_async=Mock(return_value=future),remove_pending_request=Mock())
         def spin_once(timeout_sec):state['time']+=timeout_sec
-        node=NS(executor=NS(spin_once=spin_once))
+        node=NS(executor=NS(spin_once=spin_once,add_node=Mock(return_value=False),remove_node=Mock()))
         ns=dict(infra_elapsed=lambda:state['time'],ModeHandshakeError=RuntimeError)
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'generated_prearm','exec'),ns)
         def invoke():

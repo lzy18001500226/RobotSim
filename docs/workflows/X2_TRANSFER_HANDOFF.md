@@ -15,6 +15,16 @@ Ubuntu集成，关闭Ubuntu重复的systemd-timesyncd。Windows QPC独立对照�
 瞬时超时，未发行走指令。共享ensure_mode也仅在原5秒期限内重查只读Get，
 不重发Set；持续失败照常停止。21项聚焦回归通过；重新冻结源版本再实测，旧失败不升级。
 
+195848Z再次停在模式查询，未发行走指令。随后隔离ROS图（无MC、无MuJoCo）用
+真实Humble/aimdk消息重现：Get服务已返回，但Humble `remove_node()`保留旧的
+`Node.executor`引用；普通`rclpy.spin_once()`移除节点后，新增helper错误地把旧引用
+当成已注册，导致回调超时。旧`spin_until_future_complete`同图通过。
+修正为幂等`add_node`并仅撤销本调用新增的成员关系，原期限、单次Set和物理门不变。
+`test_ros_mode_transport`真实生成消息/连续四次模式检查通过；原21项回归通过。
+证据`reviews/issue-46/common-mode-readback-case5-20261114T195657Z/`中的
+`generated_ros_current_result.json`、`generated_ros_legacy_result.json`及`real_ros_fixed.log`。
+这证明本地ROS回调缺陷已修正，不代表MC实际行走或5号完整搬运已通过。
+
 2026-11-15接续：先5号完整放置，再同版0/10，再其余八点；不新增点位专用搬运程序。
 截图sim254.901的轨迹复核见
 `reviews/issue-46/case5-route-heading-forensic-20261114T162907Z/REPORT.md`：
