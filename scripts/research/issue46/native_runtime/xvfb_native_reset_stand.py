@@ -1215,13 +1215,29 @@ def qualify_static_carry_hold(output, ready, *, minimum_sim_s=8.):
 
 
 def geometric_delivery_handoff_eligible(nav, recorded, profile):
-    """Nominal XY miss can request actual-pose planning, never waive physics."""
+    """Nominal route misses may request planning only after a physical stop.
+
+    This returns permission to run the unchanged full-model lowering/placement
+    screen, never permission to move an arm or to disregard a physical fault.
+    """
     if profile.get("delivery_pose_acceptance")!="ACTUAL_PLACEMENT_IK" or not profile.get("require_restored_route_preflight"):return False
-    if nav.get("pass_result") or nav.get("failure")!="CARRY_GOAL_OR_STOP_NOT_QUALIFIED" or recorded.get("pass") is not True:return False
-    return bool(nav.get("goal_triggered_stop") and nav.get("source_and_motion_mode_observed")
-                and nav.get("retreat_turn_prefix_pass") and nav.get("away_mission",{}).get("bilateral_support_alternation_observed")
-                and nav.get("measured_distance_m",0.)>.005
-                and all(nav.get(k,{}).get("pass") is True for k in ("post_stop_composite","retreat_stop_composite","turn_stop_composite")))
+    failure=nav.get("failure")
+    if nav.get("pass_result") or failure not in ("CARRY_GOAL_OR_STOP_NOT_QUALIFIED","FINAL_DOCK_TURN_FOOTPRINT") or recorded.get("pass") is not True:return False
+    mission=nav.get("away_mission",{})
+    support=mission.get("bilateral_support_alternation_observed") is True
+    changes=mission.get("observed_support_changes",[])
+    if not support:
+        sides=[v.get("side") for v in changes]
+        support=any(a!=b and a in ("left","right") and b in ("left","right") for a,b in zip(sides,sides[1:]))
+    if not (nav.get("goal_triggered_stop") and nav.get("source_and_motion_mode_observed") and nav.get("retreat_turn_prefix_pass") and support):return False
+    required=("post_stop_composite","retreat_stop_composite","turn_stop_composite")
+    if failure=="FINAL_DOCK_TURN_FOOTPRINT":
+        # The earlier terminal stop predates this turn. Require a NEW stopped
+        # window after the abort's zero/stand sequence, not the old window.
+        required+=("abort_post_stop_composite",)
+        if mission.get("phase")!="DELIVERY" or not mission.get("delivery_source_and_mode_observed"):return False
+    elif nav.get("measured_distance_m",0.)<=.005:return False
+    return all(nav.get(k,{}).get("pass") is True for k in required)
 
 
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
@@ -1335,8 +1351,11 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             # placement IK, tilt and collision checks precede any arm motion.
             proof=screen_measured_route(args,output,replan_record,"functional_arrival_geometry_snapshot")
             result["functional_delivery_arrival"]={"classification":"ACTUAL_POSE_PLACEMENT_GEOMETRY_QUALIFIED_NOT_PLACED_YET","nominal_navigation_result":dict(result["carry_navigation"]),"measured_full_model_placement_screen":proof,"physical_gates_changed":False}
-            nav["pass_result"]=True;nav["failure"]=None
-            result["carry_navigation"].update(pass_result=True,failure=None,arrival_acceptance="ACTUAL_FULL_MODEL_PLACEMENT_PREFLIGHT_NOT_NOMINAL_XY",legacy_nominal_xy_pass=False)
+            actual=json.loads(Path(proof["source_snapshot"]).read_text())["bodies"]["pelvis"]
+            actual_distance=math.dist(actual["position_m"][:2],profile["base_goal_world_xy"])
+            nav.update(pass_result=True,failure=None,final_distance_m=actual_distance,
+                       functional_stop_composite=nav.get("abort_post_stop_composite",nav.get("post_stop_composite")))
+            result["carry_navigation"].update(pass_result=True,failure=None,final_distance_m=actual_distance,arrival_acceptance="ACTUAL_FULL_MODEL_PLACEMENT_PREFLIGHT_NOT_NOMINAL_XY",legacy_nominal_xy_pass=actual_distance<=.15)
     mission_gate="SECOND_TABLE_BASE_ARRIVAL_AND_STOP" if getattr(args,"carry_delivery_config",None) is not None else "RETREAT_AND_INPLACE_TURN_PREFIX" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
     result["gates"][mission_gate]="PASS" if nav.get("pass_result") else "FAIL"
     if review_prefix:

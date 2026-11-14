@@ -159,6 +159,23 @@ class GeometricTableArrivalTests(unittest.TestCase):
         self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":False},cfg))
         nav["failure"]="JOINT_LIMIT";self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
         nav["failure"]="CARRY_GOAL_OR_STOP_NOT_QUALIFIED";nav["post_stop_composite"]={"pass":False};self.assertFalse(geometric_delivery_handoff_eligible(nav,{"pass":True},cfg))
+class FunctionalStoppedTurnTests(unittest.TestCase):
+    def sample(self):
+        nav={"pass_result":False,"failure":"FINAL_DOCK_TURN_FOOTPRINT","goal_triggered_stop":True,"source_and_motion_mode_observed":True,"retreat_turn_prefix_pass":True,"away_mission":{"phase":"DELIVERY","delivery_source_and_mode_observed":True,"observed_support_changes":[{"side":"left"},{"side":"right"}]}}
+        for key in ("post_stop_composite","retreat_stop_composite","turn_stop_composite","abort_post_stop_composite"):nav[key]={"pass":True}
+        return nav
+    def test_stopped_nominal_turn_miss_only_requests_original_static_screen(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import geometric_delivery_handoff_eligible as eligible
+        cfg={"delivery_pose_acceptance":"ACTUAL_PLACEMENT_IK","require_restored_route_preflight":True}
+        self.assertTrue(eligible(self.sample(),{"pass":True},cfg))
+        for key in ("post_stop_composite","retreat_stop_composite","turn_stop_composite","abort_post_stop_composite"):
+            n=self.sample();n[key]={"pass":False};self.assertFalse(eligible(n,{"pass":True},cfg))
+        for error in ("JOINT_LIMIT","CLOCK_GENERATION_PENDING","NATIVE_LINEAR_SPEED","SOURCE_MODE_LOST"):
+            n=self.sample();n["failure"]=error;self.assertFalse(eligible(n,{"pass":True},cfg))
+        self.assertFalse(eligible(self.sample(),{"pass":False},cfg))
+        n=self.sample();n["away_mission"]["observed_support_changes"]=[];self.assertFalse(eligible(n,{"pass":True},cfg))
+        n=self.sample();n["away_mission"]["delivery_source_and_mode_observed"]=False;self.assertFalse(eligible(n,{"pass":True},cfg))
+
 class EpochModeRestoreTests(unittest.TestCase):
     def test_clock_recovery_reselects_existing_default_mode_without_faking_readback(self):
         import ast
