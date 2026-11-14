@@ -1232,6 +1232,42 @@ def geometric_delivery_handoff_eligible(nav, recorded, profile):
     return all(nav.get(k,{}).get("pass") is True for k in required)
 
 
+def abort_unstopped_carry(container, output, nav, result):
+    """Stop this episode before slow evidence work when braking was unqualified.
+
+    A qualified terminal stop may still request the existing geometric arrival
+    screen. A clock/safety abort instead needs a NEW abort-stop measurement;
+    an earlier retreat/turn stop cannot qualify a later failure.
+    """
+    if nav.get("pass_result") is True:
+        return
+    nominal_miss = nav.get("failure") == "CARRY_GOAL_OR_STOP_NOT_QUALIFIED"
+    stop = nav.get("post_stop_composite", {}) if nominal_miss else nav.get("abort_post_stop_composite", {})
+    if stop.get("pass") is True:
+        return
+    failure = {"gate": "CARRY_NAVIGATION_UNQUALIFIED_STOP",
+               "route_failure": nav.get("failure", "CARRY_ROUTE_NO_RESULT"),
+               "physical_stop_qualified": False,
+               "action": "STOP_OWNED_EPISODE_BEFORE_AUDIT_OR_OWNER_WAIT"}
+    result["failure"] = failure
+    result["gates"]["SECOND_TABLE_BASE_ARRIVAL_AND_STOP"] = "FAIL"
+    result["gates"]["PHYSICAL_TABLE_PLACEMENT"] = "NOT_RUN"
+    result["gates"]["TWO_TABLE_TRANSFER_EXECUTION"] = "FAIL"
+    # This marker reports failure immediately; it never claims a physical stop.
+    pg.write_new_text(output / "native_carry_abort.json", json.dumps(failure) + "\n")
+    command = ["docker", "stop", "--time", "1", container]
+    shutdown = {"command": command, "physical_stop_qualified": False}
+    result["carry_failure_shutdown"] = shutdown
+    try:
+        completed = run(command, timeout_s=7., check=False)
+        shutdown.update(returncode=completed.returncode, stdout=completed.stdout[-1200:])
+    except Exception as exc:
+        shutdown["error"] = str(exc)
+    # The enclosing finally still removes and verifies this owned container.
+    # Do not proceed to trace draining, placement, or an eight-second owner wait.
+    raise RuntimeError("CARRY_NAVIGATION_UNQUALIFIED_STOP:" + str(nav.get("failure")))
+
+
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
     """Run the existing grip owner and navigation adapter with a measured handoff."""
     import subprocess
@@ -1313,6 +1349,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav_path=output/"native_carry_route_result.json"
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
+    abort_unstopped_carry(container, output, nav, result)
     audit_end_ns=time.monotonic_ns()
     try:
         result["carry_trace_persistence"]=native_grasp_audit.wait_for_native_trace(output/"native_physics.jsonl",audit_end_ns)

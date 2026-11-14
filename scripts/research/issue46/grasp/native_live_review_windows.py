@@ -6,6 +6,13 @@ sys.path.insert(0,str(PACKAGES))
 import numpy as np,mujoco,glfw
 ROOT=Path(sys.argv[1]);CACHE=Path(sys.argv[2]);REPO=Path(sys.argv[3]);sys.path.insert(1,str(REPO))
 from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame,digest
+def review_status(ended, fresh, abort):
+    if abort:
+        mode = "RUN FAILED - LAST ACTUAL FRAME" if ended else "RUN FAILED - TEARDOWN REQUESTED"
+        return mode, "CARRY_ABORT: " + str(abort.get("route_failure", abort.get("gate", "UNKNOWN")))
+    return ("RUN ENDED - LAST ACTUAL FRAME" if ended else "LIVE WSL NATIVE PHYSICS" if fresh else "WAITING FOR FRESH NATIVE FRAME"), None
+
+
 def host(value):
     value=str(value)
     return "\\\\wsl.localhost\\Ubuntu-22.04"+value.replace("/",chr(92)) if value.startswith("/home/") else value
@@ -59,7 +66,9 @@ try:
         if row is None:scene.ngeom=0
         width,height=glfw.get_framebuffer_size(window);viewport=mujoco.MjrRect(0,0,width,height)
         mujoco.mjr_render(viewport,scene,context)
-        mode="RUN ENDED - LAST ACTUAL FRAME" if ended else "LIVE WSL NATIVE PHYSICS" if row is not None and time.monotonic()-receipt<=.2 else "WAITING FOR FRESH NATIVE FRAME"
+        try:abort=json.loads((ROOT/"native_carry_abort.json").read_text())
+        except (OSError,ValueError):abort=None
+        mode,abort_phase=review_status(ended,row is not None and time.monotonic()-receipt<=.2,abort)
         detail="5 Body | 6 Gripper | mouse rotate / right-pan / wheel-zoom | ESC closes review and requests stop"
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,mujoco.mjtGridPos.mjGRID_TOPLEFT,viewport,mode,detail,context)
         if row:
@@ -68,7 +77,7 @@ try:
                 try:state["phase"]=json.loads((ROOT/"native_tracking_phase.json").read_text()).get("phase","")
                 except (OSError,ValueError):pass
                 state["phase_read_at"]=began
-            phase=state["phase"]
+            phase=abort_phase or state["phase"]
             mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,viewport,f"sim={row['sim_time_s']:.3f}s | pelvis=({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) | {phase}","Actual WSL MuJoCo+MC states. This window has no physics or command publisher.",context)
         glfw.swap_buffers(window)
         if row and not ready_written:
