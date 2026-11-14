@@ -203,3 +203,28 @@ class ScaledAxisAngleUnitsTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(e[3:]),.2*math.sin(theta/2.))
         self.assertAlmostEqual(2.*math.asin(np.linalg.norm(e[3:])/.2),theta)
         self.assertGreater(2.*math.asin(.017453292519943295/.2),math.radians(10.))
+
+
+class MeasuredPlacementApproachTests(unittest.TestCase):
+    def run_observation(self, errors, *, stale=False, generation=1):
+        from types import SimpleNamespace
+        state=SimpleNamespace(now=10.,index=0)
+        def tick(*args):state.now+=.02;state.index+=1
+        def observation():
+            return dict(source_host_ns=round((state.now-(1. if stale else 0.))*1e9),
+                actual_position_error_m=errors[min(state.index-1,len(errors)-1)],generation=generation)
+        return p.observe_placement_approach(tick,[0.,0.,0.],[0.,0.,1.],0.,observation,
+            generation=1,deadline_s=11.,clock=lambda:state.now)
+
+    def test_lag_can_settle_without_relaxing_five_mm(self):
+        result=self.run_observation([.00562]*10+[.004]*40)
+        self.assertTrue(result['pass_result'])
+        self.assertGreaterEqual(result['measured_window_s'],.20)
+        self.assertLessEqual(result['maximum_position_error_m'],.005)
+
+    def test_peaks_reset_window_and_unreached_or_stale_data_fail(self):
+        result=self.run_observation([.004]*5+[.006]+[.003]*40)
+        self.assertEqual(result['maximum_position_error_m'],.003)
+        for errors,options in [([.00562],{}),([.0],{'stale':True}),([.0],{'generation':2}),([float('nan')],{})]:
+            with self.assertRaisesRegex(RuntimeError,'PLACEMENT_APPROACH_NOT_REACHED'):
+                self.run_observation(errors,**options)

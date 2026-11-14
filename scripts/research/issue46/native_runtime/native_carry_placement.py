@@ -65,6 +65,28 @@ def observe_released_support(tick,point,request,rows,*,deadline_s,clock=time.mon
         if result["pass_result"]:return result
     return result or dict(pass_result=False,classification="RELEASED_SUPPORT_OBSERVATION_INCOMPLETE",measured_hold_sim_s=0.,unique_samples=0)
 
+def observe_placement_approach(tick,point,axis,hand_command,observation,*,generation,deadline_s,clock=time.monotonic):
+    """Wait for fresh measured5mm convergence, without changing the target."""
+    stable=[];last_source=None;last=None
+    while clock()<deadline_s:
+        tick(point,axis,hand_command)
+        last=dict(observation());stamp=last.get("source_host_ns",0)
+        error=last.get("actual_position_error_m",float("inf"))
+        valid=(last.get("generation")==generation and math.isfinite(error) and 0.<=error<=.005
+               and 0.<stamp and 0<=round(clock()*1e9)-stamp<=200000000)
+        if last_source is not None and stamp<last_source:valid=False
+        if last_source is not None and stamp-last_source>200000000:stable=[]
+        if not valid:stable=[]
+        elif stamp!=last_source:
+            stable.append((stamp,error))
+            if len(stable)>=3 and (stamp-stable[0][0])*1e-9>=.20:
+                return dict(pass_result=True,classification="FRESH_MEASURED_PLACEMENT_APPROACH_NOT_TABLE_SUPPORT",
+                            measured_window_s=(stamp-stable[0][0])*1e-9,unique_samples=len(stable),
+                            maximum_position_error_m=max(x[1] for x in stable),last=last)
+        last_source=stamp
+    raise RuntimeError("PLACEMENT_APPROACH_NOT_REACHED:"+json.dumps(dict(last=last,stable_samples=len(stable))))
+
+
 def perform_native_placement(n, request):
     # This function is injected into the existing owner process. It uses that
     # process's original send/tracker/force/feedback path, never a second owner.
@@ -112,7 +134,10 @@ def perform_native_placement(n, request):
         u=(index+1)/200.;v=u*u*(3.-2.*u)
         tick([a+v*(b-a) for a,b in zip(high,clearance)],goal_axis,HAND_RIGHT)
     for _ in range(25):tick(clearance,goal_axis,HAND_RIGHT)
-    if n.tracking_metrics.get("actual_position_error_m",1.)>.005:raise RuntimeError("PLACEMENT_APPROACH_NOT_REACHED")
+    approach=observe_placement_approach(tick,clearance,goal_axis,HAND_RIGHT,
+        lambda:dict(n.tracking_metrics,generation=n.native_generation),generation=request["generation"],
+        deadline_s=min(began+35.,time.monotonic()+2.5))
+    write_durable_milestone("/workspace/evidence/native_placement_approach_result.json",approach)
     # Approach the support surface slowly. A positive actual vertical table
     # reaction gates release; a planned geometric height alone never suffices.
     point=clearance.copy();contact=None
@@ -157,7 +182,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_contact_state,evaluate_placed_hold,observe_released_support,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]
