@@ -37,7 +37,7 @@ VR_DATA_MC_GENERATOR_SHA256 = "c9d31ff619d47bb7f5d49e022579a4d5ae7b3fe5324e90616
 sys.path.insert(0, str(REPO))
 
 from scripts.agent import path_governance as pg  # noqa: E402
-from scripts.research.issue46.native_runtime import stl_hand_startup  # noqa: E402
+from scripts.research.issue46.native_runtime import stl_hand_startup, infrastructure_preflight  # noqa: E402
 
 
 def sha256(path: Path) -> str:
@@ -103,53 +103,45 @@ def wrapped_angle_error(actual: float, expected: float) -> float:
 
 
 def prearm_script(single_request_wait_s=.25) -> str:
+    from scripts.research.issue46.native_runtime import mode_handshake
     script = """#!/usr/bin/env python3
 import json
-import time
 import rclpy
 from rclpy.node import Node
 from aimdk_msgs.msg import CommonRequest, McActionCommand, RequestHeader
 from aimdk_msgs.srv import GetMcAction, SetMcAction
-
-def call(node, client, request, attempts=8):
-    if not client.wait_for_service(timeout_sec=5.0): raise RuntimeError('service unavailable')
-    # The delivered MC endpoint can advertise before its executor completes
-    # post-start initialization.  Use bounded short retries, matching the
-    # existing stand client instead of treating a first missed readback as a
-    # robot-control failure.
-    for _ in range(attempts):
-        future=client.call_async(request); rclpy.spin_until_future_complete(node,future,timeout_sec=2.0 if attempts==1 else .25)
-        if future.done() and future.result() is not None: return future.result()
-        time.sleep(.05)
-    raise RuntimeError('service call timed out after '+str(attempts)+' request(s)')
+__MODE_HANDSHAKE_SOURCE__
 rclpy.init(); node=Node('robotsim_xvfb_native_prearm')
 try:
-    # A registered RPC endpoint preceded the installed ActionManager's initial
-    # PASSIVE_DEFAULT transition in the 175044Z trace. Observe initialized mode
-    # before sending the one SD request; never retry a rejected action.
     get_client=node.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')
-    readiness=[]
-    for _ in range(10):
-        r=GetMcAction.Request();r.request=CommonRequest();r.request.header.stamp=node.get_clock().now().to_msg()
-        info=call(node,get_client,r).info
-        readiness.append({'mode_name':info.action_desc,'mode_status':int(info.status.value)})
-        if info.action_desc in ('PASSIVE_DEFAULT','STAND_DEFAULT') and int(info.status.value)!=0:break
-        time.sleep(.3)
-    else:raise RuntimeError('MC action manager not initialized; no SD request sent:'+json.dumps(readiness))
     set_client=node.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
-    request=SetMcAction.Request(); request.header=RequestHeader(); request.header.stamp=node.get_clock().now().to_msg(); request.source='node'; request.command=McActionCommand(); request.command.action_desc='STAND_DEFAULT'
-    set_started=time.monotonic();set_result=call(node,set_client,request,attempts=1);set_elapsed=time.monotonic()-set_started
-    get_client=node.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction'); samples=[]
+    readiness=[]
+    set_timing={'elapsed_s':None}
+    def read_mode(remaining_s):
+        req=GetMcAction.Request();req.request=CommonRequest();req.request.header.stamp=node.get_clock().now().to_msg()
+        reply=call_service(node,get_client,req,timeout_s=min(1.,remaining_s))
+        row={'name':reply.info.action_desc,'status':int(reply.info.status.value),'header_code':int(reply.header.code)}
+        readiness.append(row)
+        return row
+    def send_once(remaining_s):
+        req=SetMcAction.Request();req.header=RequestHeader();req.header.stamp=node.get_clock().now().to_msg();req.source='node';req.command=McActionCommand();req.command.action_desc='STAND_DEFAULT'
+        started=infra_elapsed()
+        try:reply=call_service(node,set_client,req,timeout_s=min(__SET_WAIT__,remaining_s))
+        finally:set_timing['elapsed_s']=infra_elapsed()-started
+        return {'status':int(reply.response.status.value),'header_code':int(reply.response.header.code),'message':reply.response.message}
+    # Wait for the installed ActionManager to initialize; this sends reads only.
     for _ in range(10):
-        get_request=GetMcAction.Request(); get_request.request=CommonRequest(); get_request.request.header.stamp=node.get_clock().now().to_msg(); get_result=call(node,get_client,get_request)
-        sample={'mode_name':get_result.info.action_desc,'mode_status':int(get_result.info.status.value)}; samples.append(sample)
-        if sample['mode_name']=='STAND_DEFAULT': break
-        time.sleep(0.3)
-    print(json.dumps({'initialization_readbacks':readiness,'set_call_elapsed_s':set_elapsed,'set_header_code':int(set_result.response.header.code),'set_status':int(set_result.response.status.value),'set_message':set_result.response.message,'mode_name':samples[-1]['mode_name'],'mode_status':samples[-1]['mode_status'],'mode_samples':samples}))
+        observed=read_mode(1.)
+        if observed['header_code']==0 and observed['name'] in ('PASSIVE_DEFAULT','STAND_DEFAULT') and observed['status']!=0:break
+        _infra_time.sleep(.3)
+    else:raise ModeHandshakeError('MC_NOT_INITIALIZED_NO_SET:'+json.dumps(readiness))
+    verified=ensure_mode('STAND_DEFAULT',read_mode,send_once,timeout_s=5.)
+    ack=verified['acknowledgement'];applied=verified['applied']
+    print(json.dumps({'initialization_readbacks':readiness,'set_sent':verified['set_sent'],'set_call_elapsed_s':set_timing['elapsed_s'],'set_header_code':ack['header_code'] if ack else None,'set_status':ack['status'] if ack else None,'set_message':ack['message'] if ack else None,'mode_name':applied['name'],'mode_status':applied['status'],'mode_handshake':verified}))
 finally:
-    node.destroy_node(); rclpy.shutdown()
+    node.destroy_node();rclpy.shutdown()
 """
-    return script.replace("timeout_sec=2.0 if attempts==1 else .25", "timeout_sec=.25" if single_request_wait_s==.25 else "timeout_sec=2.0 if attempts==1 else .25")
+    return script.replace("__MODE_HANDSHAKE_SOURCE__",mode_handshake.generated_source()).replace("__SET_WAIT__",repr(float(single_request_wait_s)))
 
 
 def preset_motion_probe_script(motion_id: int, area_id: int) -> str:
@@ -272,6 +264,7 @@ def locomotion_dock_script(
     and ends with a sustained stream of zero commands before unregistering.
     It never addresses MuJoCo qpos/qvel or a simulator-only control topic.
     """
+    from scripts.research.issue46.native_runtime import mode_handshake
     payload = json.dumps(
         {
             "world_start_xy": world_start_xy,
@@ -339,19 +332,10 @@ def tilt(q):
  p=math.asin(max(-1.0,min(1.0,2.0*(q.w*q.y-q.z*q.x))))
  r=math.atan2(2.0*(q.w*q.x+q.y*q.z),1.0-2.0*(q.x*q.x+q.y*q.y))
  return max(abs(p),abs(r))
-def call(n,c,req):
- if not c.wait_for_service(timeout_sec=5.0): raise RuntimeError('service unavailable')
- f=c.call_async(req)
- # Match the pinned delivery example's executor helper, preserving one request
- # and the existing five-second bound rather than retrying mode commands.
- if getattr(n,'feedback_executor',None) is None:
-  rclpy.spin_until_future_complete(n,f,timeout_sec=5.0)
- else:
-  # Micro already has one callback owner; do not attach a second executor.
-  end=time.monotonic()+5.0
-  while rclpy.ok() and not f.done() and time.monotonic()<end:time.sleep(.005)
- if not f.done() or f.result() is None:raise RuntimeError('service timeout')
- return f.result()
+__MODE_HANDSHAKE_SOURCE__
+
+def call(n,c,req,timeout_s=5.0):
+ return call_service(n,c,req,timeout_s=timeout_s)
 
 __SAFETY_SOURCE__
 
@@ -361,9 +345,9 @@ class Dock(Node):
   self.pub=self.create_publisher(Twist,'/cmd_vel',10) if PLAN['use_cmd_vel_bridge'] else self.create_publisher(McLocomotionVelocity,'/aima/mc/locomotion/velocity',QOS)
   self.src=self.create_client(SetMcInputSource,'/aimdk_5Fmsgs/srv/SetMcInputSource')
   self.mode=self.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
+  self.get_mode=self.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')
   self.mode_requests=[];self.get_mode_future=None;self.mode_observation=None;self.common_observation=None;self.next_mode_query=0.
   if PLAN.get('pickup_navigation'):
-   self.get_mode=self.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')
    self.mode_subscription=self.create_subscription(McCommonState,'/aima/mc/common/state',lambda m:setattr(self,'common_observation',(time.monotonic(),message_to_ordereddict(m))),QOS)
   self.current=self.create_client(GetCurrentInputSource,'/aimdk_5Fmsgs/srv/GetCurrentInputSource')
   self.pose=None;self.quat=None;self.max_tilt=0.;self.samples=[];self.seq=0;self.arm={};self.leg={};self.waist={}
@@ -422,8 +406,16 @@ class Dock(Node):
    r=SetMcInputSource.Request();r.action=McInputAction();r.action.value=1003;r.input_source.name=SOURCE;r.input_source.priority=40;r.input_source.timeout=1000;call(self,self.src,r)
   except Exception:pass
  def stand(self,name="STAND_DEFAULT"):
-  r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc=name;z=call(self,self.mode,r);self.mode_requests.append({'name':name,'t':time.monotonic(),'raw':message_to_ordereddict(z)})
-  if int(z.response.status.value)!=1 or int(z.response.header.code)!=0:raise RuntimeError('MODE_REQUEST_REJECTED:'+json.dumps(self.mode_requests[-1]))
+  def read_mode(remaining_s):
+   q=GetMcAction.Request();q.request.header.stamp=self.get_clock().now().to_msg()
+   z=call(self,self.get_mode,q,timeout_s=min(1.,remaining_s))
+   return {'name':z.info.action_desc,'status':int(z.info.status.value),'header_code':int(z.header.code)}
+  def send_once(remaining_s):
+   r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc=name
+   z=call(self,self.mode,r,timeout_s=min(2.,remaining_s))
+   return {'status':int(z.response.status.value),'header_code':int(z.response.header.code),'message':z.response.message}
+  checked=ensure_mode(name,read_mode,send_once,timeout_s=5.)
+  self.mode_requests.append({'name':name,'t':time.monotonic(),'verification':checked})
  def refresh_native_pose(self):
   if not PLAN.get('native_pose_feedback'):return
   with open('/workspace/evidence/native_latest.json','rb') as f:
@@ -591,7 +583,7 @@ finally:
  n.zero_hold(.5)
  if registered:n.disable()
  n.destroy_node();rclpy.shutdown()
-""".replace("__PLAN__", payload).replace("__SAFETY_SOURCE__",safety_source)
+""".replace("__PLAN__", payload).replace("__SAFETY_SOURCE__",safety_source).replace("__MODE_HANDSHAKE_SOURCE__", mode_handshake.generated_source())
 
 
 def lateral_probe_script(lateral_mps: float, duration_s: float) -> str:
@@ -1777,6 +1769,7 @@ def main() -> None:
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-xvfb-native-reset-stand").native_path
     import uuid
     pg.write_new_text(output/"invocation.json",json.dumps({"attempt_id":str(uuid.uuid4()),"worktree":str(REPO.resolve()),"head":run(["git","rev-parse","HEAD"],timeout_s=3.).stdout.strip(),"argv":sys.argv,"task_owned_worktree_may_include_reviewed_uncommitted_changes":True},indent=2)+"\n")
+    infrastructure_preflight.require_healthy_runtime(output)
     # Native arrival and gravity feedforward both require live exact-engine data.
     # Build before container creation; every arm-candidate entry point owns this
     # dependency, including direct human-review invocations.
