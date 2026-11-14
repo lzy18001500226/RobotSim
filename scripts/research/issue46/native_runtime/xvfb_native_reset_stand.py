@@ -121,7 +121,7 @@ def call(node, client, request, attempts=8):
         future=client.call_async(request); rclpy.spin_until_future_complete(node,future,timeout_sec=2.0 if attempts==1 else .25)
         if future.done() and future.result() is not None: return future.result()
         time.sleep(.05)
-    raise RuntimeError('service call timed out after 8 bounded retries')
+    raise RuntimeError('service call timed out after '+str(attempts)+' request(s)')
 rclpy.init(); node=Node('robotsim_xvfb_native_prearm')
 try:
     # A registered RPC endpoint preceded the installed ActionManager's initial
@@ -138,14 +138,14 @@ try:
     else:raise RuntimeError('MC action manager not initialized; no SD request sent:'+json.dumps(readiness))
     set_client=node.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
     request=SetMcAction.Request(); request.header=RequestHeader(); request.header.stamp=node.get_clock().now().to_msg(); request.source='node'; request.command=McActionCommand(); request.command.action_desc='STAND_DEFAULT'
-    set_result=call(node,set_client,request,attempts=1)
+    set_started=time.monotonic();set_result=call(node,set_client,request,attempts=1);set_elapsed=time.monotonic()-set_started
     get_client=node.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction'); samples=[]
     for _ in range(10):
         get_request=GetMcAction.Request(); get_request.request=CommonRequest(); get_request.request.header.stamp=node.get_clock().now().to_msg(); get_result=call(node,get_client,get_request)
         sample={'mode_name':get_result.info.action_desc,'mode_status':int(get_result.info.status.value)}; samples.append(sample)
         if sample['mode_name']=='STAND_DEFAULT': break
         time.sleep(0.3)
-    print(json.dumps({'initialization_readbacks':readiness,'set_header_code':int(set_result.response.header.code),'set_status':int(set_result.response.status.value),'set_message':set_result.response.message,'mode_name':samples[-1]['mode_name'],'mode_status':samples[-1]['mode_status'],'mode_samples':samples}))
+    print(json.dumps({'initialization_readbacks':readiness,'set_call_elapsed_s':set_elapsed,'set_header_code':int(set_result.response.header.code),'set_status':int(set_result.response.status.value),'set_message':set_result.response.message,'mode_name':samples[-1]['mode_name'],'mode_status':samples[-1]['mode_status'],'mode_samples':samples}))
 finally:
     node.destroy_node(); rclpy.shutdown()
 """
@@ -1851,7 +1851,7 @@ def main() -> None:
             result['carry_native_action_smoothing']={'classification':'SIMULATION_ONLY_NATIVE_ACTIONSELECTOR_RULE_DIAGNOSTIC_NOT_VENDOR_DEFAULT','source':str(action_source),'source_sha256':sha256(action_source),'action_library_sha256':sha256(action_library),'derived':str(derived_setting),'derived_sha256':sha256(derived_setting),'sim_seed_sha256':sha256(seed_path),'added_rules':seed_cfg['smooth_transitions'][-2:],'unchanged':['runners','gains','ONNX','model','joint limits','source files'],'runtime_rule_count_verified':False}
 
         pg.write_new_bytes(output / "native_mujoco_reset.py", reset_helper.read_bytes())
-        pg.write_new_text(output / "native_prearm.py", prearm_script(single_request_wait_s=2.0 if motion_calibration else .25))
+        pg.write_new_text(output / "native_prearm.py", prearm_script(single_request_wait_s=2.0 if motion_calibration or getattr(args,"carry_delivery_config",None) is not None else .25))
         pg.write_new_text(output / "native_stand_sample.py", stl_hand_startup.build_stand_client_script())
         pg.write_new_text(output / "native_postdock_stand_observer.py", stl_hand_startup.build_stand_client_script(observe_only=True))
         pg.write_new_text(output / "native_arm_state_capture.py", stl_hand_startup.build_arm_state_capture_script())
