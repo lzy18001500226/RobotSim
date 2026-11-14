@@ -91,6 +91,39 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["approach_task_yaw_tolerance_rad"],.30)
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("release_source_after_zero_window",cfg)
+class ClockFaultBrakingSourceTests(unittest.TestCase):
+    def test_clock_stop_keeps_zero_source_until_existing_handoff(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import qualified_carry_clock_stop
+        events=[]
+        class Node:
+            feedback_fault={"gate":"CLOCK_STEP_DURING_MOTION"}
+            moving=True
+            stop_started=False
+            def deadline_zero(self):
+                events.append("zero");self.moving=False
+            def source_enabled(self,value):
+                raise AssertionError("clock recovery must not release zero source early")
+            def observe(self,*args,**kwargs):
+                events.append("physical_stop_check");return {"pass":True}
+        def existing_stop_transition(source_already_disabled=False):
+            self.assertFalse(source_already_disabled)
+            events.extend(["existing_zero_window","measured_step_support","source_release_then_SD"])
+        import time
+        result=qualified_carry_clock_stop(Node(),{"release_source_on_stop":True},1,time.monotonic()+30,RuntimeError("NATIVE_FEEDBACK_INVALID:CLOCK_STEP_DURING_MOTION"),0,existing_stop_transition,8.)
+        self.assertTrue(result["pass"])
+        self.assertEqual(events,["zero","existing_zero_window","measured_step_support","source_release_then_SD","physical_stop_check"])
+
+    def test_generated_motion_clock_handler_does_not_cancel_source_first(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script)
+        loop=min((n for n in ast.walk(tree) if isinstance(n,ast.ExceptHandler) and any(isinstance(c,ast.Call) and isinstance(c.func,ast.Name) and c.func.id=="recoverable_carry_clock_fault" for c in ast.walk(n))),key=lambda n:len(list(ast.walk(n))))
+        calls=[n for n in ast.walk(loop) if isinstance(n,ast.Call)]
+        self.assertFalse(any(isinstance(n.func,ast.Attribute) and n.func.attr=="source_enabled" and n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value is False for n in calls))
+        transition=next(n for n in calls if isinstance(n.func,ast.Name) and n.func.id=="stand_transition")
+        self.assertFalse(next(k.value.value for k in transition.keywords if k.arg=="source_already_disabled"))
+
 class ForwardDeliveryContractTests(unittest.TestCase):
     def test_retreat_then_forward_steering_is_allowed(self):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import validate_delivery_direction

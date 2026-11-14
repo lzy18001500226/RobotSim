@@ -1556,8 +1556,9 @@ def qualified_carry_clock_stop(n,cfg,baseline,until,error,recovery_count,stop_tr
     n.deadline_zero();n.stop_started=True
     if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
     n.feedback_fault=None
-    if cfg.get("release_source_on_stop"):n.source_enabled(False)
-    stop_transition(source_already_disabled=True)
+    # Keep the zero-command source selected through the existing physical
+    # STEP support/SD handoff. Releasing it first discards our braking zeros.
+    stop_transition(source_already_disabled=False)
     stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
     if stopped.get("pass") is not True:raise RuntimeError("CLOCK_RECOVERY_PHYSICAL_STOP_FAILED")
     if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
@@ -1674,8 +1675,9 @@ def run_carry_navigation(n,contract):
                 if cfg.get("compact_turn"):transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
                 n.feedback_fault=None
-                n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                stand_transition(source_already_disabled=True)
+                # Clock recovery uses the same source-retaining stop as the
+                # successful normal handoff, not an early source cancellation.
+                stand_transition(source_already_disabled=False)
                 stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
                 result["clock_recoveries"].append(dict(fault=fault,stop=stopped,t=time.monotonic()))
                 controller.reset();n.await_graph();n.pump()

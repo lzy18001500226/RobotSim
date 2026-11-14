@@ -1195,7 +1195,7 @@ class SourceReleaseProtocolTests(unittest.TestCase):
         self.assertEqual([q.action.value for q in requests],[2002,2001])
         self.assertEqual([q.input_source.name for q in requests],['robotsim_official_cmd_vel']*2)
         self.assertEqual(node.events[0]['meaning'],'SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT')
-        self.assertIn('n.source_enabled(False) if cfg.get("release_source_on_stop") else None',code)
+        self.assertIn('stand_transition(source_already_disabled=False)',code)
         transition=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=='stand_transition')
         calls=[]
         node=NS(observe=lambda *a,**k:calls.append('zero_window'),source_enabled=lambda x:calls.append('disable'),stand_once=lambda:calls.append('stand'))
@@ -1870,12 +1870,12 @@ class QualifiedCarryClockStopTests(unittest.TestCase):
         n.deadline_zero=Mock(side_effect=zero);n.source_enabled=Mock(side_effect=lambda x:events.append(('source',x)))
         n.observe=Mock(side_effect=lambda *a,**k:(events.append('independent_stop') or dict(pass_result=passed,**{'pass':passed})))
         return n,events
-    def test_clock_fault_stops_disables_source_and_requires_new_full_stop(self):
+    def test_clock_fault_stops_then_uses_source_retaining_handoff_and_new_full_stop(self):
         import time
         n,events=self.node();transition=lambda **kw:events.append(('stand',kw))
         stopped=m.qualified_carry_clock_stop(n,dict(release_source_on_stop=True),1,time.monotonic()+20.,RuntimeError('CLOCK_GENERATION_PENDING'),0,transition,8.)
         self.assertTrue(stopped['pass']);self.assertFalse(n.moving);self.assertIsNone(n.feedback_fault)
-        self.assertEqual(events,['zero',('source',False),('stand',{'source_already_disabled':True}),'independent_stop'])
+        self.assertEqual(events,['zero',('stand',{'source_already_disabled':False}),'independent_stop'])
     def test_physical_fault_never_cleared_or_rearmed(self):
         import time
         n,events=self.node(fault='SOURCE_JOINT_SPEED:knee')
