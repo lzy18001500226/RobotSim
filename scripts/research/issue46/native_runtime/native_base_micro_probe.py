@@ -966,11 +966,18 @@ def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius,
 
 
 
-def table_turn_target(pose, goal_xy, clockwise=False):
+def table_turn_target(pose, goal_xy, clockwise=False, *, rearward=False):
     bearing=math.atan2(goal_xy[1]-pose["y"],goal_xy[0]-pose["x"])
+    if rearward:bearing=(bearing+2.*math.pi)%(2.*math.pi)-math.pi
     delta=(bearing-pose["yaw"]+math.pi)%(2*math.pi)-math.pi
     if clockwise and delta>0.:delta-=2.*math.pi
     return bearing,pose["yaw"]+delta
+
+
+def delivery_control_yaw(delivery, actual_yaw):
+    """Virtual forward heading for rearward tracking; physical pose is unchanged."""
+    if not math.isfinite(actual_yaw):raise ValueError("finite delivery yaw")
+    return (actual_yaw+2.*math.pi)%(2.*math.pi)-math.pi if delivery.get("rearward_foundation_transit") else actual_yaw
 
 
 def pure_forward_activation_output(output):
@@ -1058,6 +1065,11 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if vendor_transition_table and (native_action_smoothing or native_step and not step_all or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
         if delivery.get("delivery_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported delivery motion mode")
+        if delivery.get("rearward_foundation_transit"):
+            if delivery.get("delivery_motion_mode")!="LOCOMOTION_DEFAULT" or not delivery.get("bounded_final_dock_alignment"):raise ValueError("rearward transit needs source-native FoundationWalk and final turn")
+            import hashlib
+            proof=Path(delivery["rearward_static_preflight_path"])
+            if hashlib.sha256(proof.read_bytes()).hexdigest()!=delivery["rearward_static_preflight_sha256"] or json.loads(proof.read_text()).get("pass_sampled_environment_clearance") is not True:raise ValueError("rearward static route evidence")
         box=delivery.get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75])
         if len(box)!=4 or not all(math.isfinite(v) and -2.<=v<=2. for v in box) or not (box[0]<box[1] and box[2]<box[3]):raise ValueError("bounded task workspace")
         carry_workspace_contains(dict(x=0.,y=0.),box,delivery.get("front_opening_apron_xy_bounds"))
@@ -1692,7 +1704,7 @@ def run_carry_navigation(n,contract):
                         mission["turn_start_source_s"]=state["sample_monotonic_s"]
                         mission["away_heading_rad"]=(state["pose"]["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
                         if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
-                            bearing,mission["target_unwrapped_yaw"]=table_turn_target(state["pose"],cfg["delivery"]["base_goal_world_xy"],cfg["delivery"].get("delivery_turn_direction")=="CLOCKWISE")
+                            bearing,mission["target_unwrapped_yaw"]=table_turn_target(state["pose"],cfg["delivery"]["base_goal_world_xy"],cfg["delivery"].get("delivery_turn_direction")=="CLOCKWISE",rearward=bool(cfg["delivery"].get("rearward_foundation_transit")))
                             mission["away_heading_rad"]=bearing;mission["turn_goal"]="ACTUAL_SECOND_TABLE_BEARING"
                         bearing=mission["away_heading_rad"]
                         origin=mission.get("retreat_origin_pose",start)
@@ -1719,7 +1731,7 @@ def run_carry_navigation(n,contract):
                         history.append([source,mission["unwrapped_yaw"]])
                         history[:]=[x for x in history if source-x[0]<=1.5]
                     if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
-                        bearing,_=table_turn_target(p,cfg["delivery"]["base_goal_world_xy"])
+                        bearing,_=table_turn_target(p,cfg["delivery"]["base_goal_world_xy"],rearward=bool(cfg["delivery"].get("rearward_foundation_transit")))
                         previous_target=mission["target_unwrapped_yaw"]
                         mission["target_unwrapped_yaw"]=previous_target+(bearing-previous_target+math.pi)%(2*math.pi)-math.pi
                         mission["away_heading_rad"]=bearing
@@ -1996,7 +2008,7 @@ def run_carry_navigation(n,contract):
                     origin=mission["delivery_origin_pose"];dx=goal[0]-origin["x"];dy=goal[1]-origin["y"];length=math.hypot(dx,dy)
                     along=((p["x"]-origin["x"])*dx+(p["y"]-origin["y"])*dy)/length
                     if along>length+.15:raise RuntimeError("DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL")
-                    output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
+                    output=controller.step(Pose2D(p["x"],p["y"],delivery_control_yaw(cfg["delivery"],p["yaw"]),"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
                     if cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" and output.state in (NavState.ALIGN,NavState.FINAL_ALIGN):
                         terminal_stop=delivery_step_heading_stop(distance,trigger,p) if cfg["delivery"].get("conservative_terminal_stop") else None
                         if terminal_stop is not None:
@@ -2103,6 +2115,7 @@ def run_carry_navigation(n,contract):
                 if mission is not None and mission["phase"]=="DELIVERY":
                     forward,angular=loaded_delivery_terminal_command(cfg["delivery"],p,goal,forward,angular)
                     angular=loaded_delivery_angular_start(cfg["delivery"],max(0.,tick-activation_started),angular)
+                    if cfg["delivery"].get("rearward_foundation_transit"):forward=-forward
                 if mission is not None and mission["phase"]=="TURN" and cfg.get("compact_turn"):
                     # Reuse the existing half-second smooth start at mode handoff.
                     ramp_s=float((cfg.get("delivery") or {}).get("turn_input_ramp_s",.5))
@@ -2189,7 +2202,7 @@ def run_carry_navigation(n,contract):
             rebounds={-1.:old_turn_delta}
             for alignment_index in range(2):
                 error=(cfg['delivery']['base_goal_world_yaw_rad']-end['yaw']+math.pi)%(2*math.pi)-math.pi
-                if abs(error)<=.12:break
+                if abs(error)<=(.30 if cfg['delivery'].get('rearward_foundation_transit') else .12):break
                 if not result['post_stop_composite'].get('pass') or time.monotonic()>=until-7.:raise RuntimeError('FINAL_DOCK_ALIGNMENT_NOT_QUALIFIED_OR_NO_TIME')
                 direction=math.copysign(1.,error);rebound=rebounds.get(direction,-direction*abs(old_turn_delta))
                 transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row)
@@ -2212,8 +2225,11 @@ def run_carry_navigation(n,contract):
                     demand=raw_error-rebound
                     handshake=(row['common_mode_desc']=='LOCOMOTION_DEFAULT' and row['get_mode_desc']=='LOCOMOTION_DEFAULT' and row['get_mode_header_code']==0 and row['common_mode_status_value']==100 and row['get_mode_status_value']==100 and row['state_age_s']['get_mode']<=.20 and row['common_source']['name']=='robotsim_official_cmd_vel')
                     align_acquired=align_acquired or handshake
-                    if abs(demand)<=.04 and align_acquired:break
-                    angular=math.copysign(min(.30,cfg['angular_command_cap']),demand)*bounded_start_scale(max(0.,tick-align_started),2.)
+                    tolerance=.15 if cfg['delivery'].get('rearward_foundation_transit') else .04
+                    if abs(demand)<=tolerance and align_acquired:break
+                    if cfg['delivery'].get('rearward_foundation_transit') and math.hypot(pose['x']-end['x'],pose['y']-end['y'])>float(cfg['delivery'].get('turn_braking_footprint_m',.35)):raise RuntimeError('FINAL_DOCK_TURN_FOOTPRINT')
+                    cap=cfg['angular_command_cap'] if cfg['delivery'].get('rearward_foundation_transit') else min(.30,cfg['angular_command_cap'])
+                    angular=math.copysign(cap,demand)*bounded_start_scale(max(0.,tick-align_started),2.)
                     bounds=row['raw_common']['speed_status']['angular_bounds']
                     if not bounds['min_value']<=angular<=bounds['max_value']:raise RuntimeError('MC_REPORTED_INPUT_BOUNDS')
                     if tick-align_started>.75 and not handshake:raise RuntimeError('FINAL_ALIGNMENT_SOURCE_MODE_NOT_CONFIRMED')

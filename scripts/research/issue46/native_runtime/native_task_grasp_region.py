@@ -120,6 +120,18 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.
         result["delivery_align_reentry_rad"]=.75
+        # Zero entered the installed CPG policy yet STEP drifted for >8s in
+        #055506Z. Use the already measured loaded negative-forward FoundationWalk
+        #primitive instead; no vendor/controller/model alteration or stop waiver.
+        result.update(rearward_foundation_transit=True,
+            delivery_motion_mode="LOCOMOTION_DEFAULT",delivery_turn_direction="SHORTEST",
+            loaded_terminal_slowdown=False,conservative_terminal_stop=False,
+            route_goal_scope="Measured-pose rearward FoundationWalk transit, full stop then coarse physical yaw turn; actual-placement IK mandatory",
+            forward_response_profile="Existing loaded negative-forward primitive, unchanged source-native model and input bounds",
+            measure_step_braking_after_progress_m=0.,
+            bounded_terminal_forward_reapproach=False,bounded_final_dock_alignment=True,
+            rearward_static_preflight_path="/home/lzy18001500226/projects/RobotSim/reviews/issue-46/rearward-foundation-carry-feasibility-20261114T061812Z/static_route_result.json",
+            rearward_static_preflight_sha256="3d21a43bd6e5c63dc948756f90fe32010da77eff9cfc8c0a85b309b4ba068867")
 
     result["task_turn_selection"] = {
         "classification": "TASK_COLLISION_CHECKED_FORWARD_ARC_NOT_MC_RETUNING",
@@ -127,7 +139,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         "live_measured_route_screen_still_required": True,
         "model_gains_limits_friction_unchanged": True}
     if fast_task_timing:
-        result["task_turn_selection"].update(classification="RESTORED_MEASURED_CLOCKWISE_TRANSFER_ROUTE_NOT_PIVOT_QUALIFICATION",evidence="reviews/issue-46/carry-turn-direction-measured-failure-audit-20261114T041706Z/result.json; shared-defined-approach-all11-transfer-20261113T202351Z/transfer_matrix.json")
+        result["task_turn_selection"].update(classification="EXISTING_LOADED_REARWARD_AND_YAW_PRIMITIVES_NEW_ROUTE_STATIC_ONLY",evidence=result["rearward_static_preflight_path"],runtime_validation_required=True)
     return result
 
 

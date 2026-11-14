@@ -1760,3 +1760,29 @@ class LoadedDeliveryAngularStartTests(unittest.TestCase):
         s=inspect.getsource(m.run_carry_navigation)
         self.assertIn('angular=loaded_delivery_angular_start(cfg["delivery"],max(0.,tick-activation_started),angular)',s)
         compile(m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.),"loaded_angular_runtime","exec")
+
+
+class RearwardFoundationDeliveryTests(unittest.TestCase):
+    def test_body_faces_away_while_negative_forward_tracks_toward_table(self):
+        for actual in (-math.pi,-1.5,0.,1.5,math.pi):
+            virtual=m.delivery_control_yaw({"rearward_foundation_transit":True},actual)
+            self.assertAlmostEqual(-math.cos(actual),math.cos(virtual),places=12)
+            self.assertAlmostEqual(-math.sin(actual),math.sin(virtual),places=12)
+            self.assertEqual(m.delivery_control_yaw({},actual),actual)
+        pose=dict(x=-.14,y=-1.59,yaw=-.20);goal=[.015,.9]
+        back,unwrapped=m.table_turn_target(pose,goal,rearward=True)
+        vx,vy=-math.cos(back),-math.sin(back)
+        self.assertGreater(vx*(goal[0]-pose['x'])+vy*(goal[1]-pose['y']),2.)
+        self.assertLess(abs(unwrapped-pose['yaw']),math.pi)
+        self.assertLess(unwrapped-pose['yaw'],0.)
+
+    def test_rearward_has_no_implicit_model_or_stop_gate_changes(self):
+        import inspect
+        s=inspect.getsource(m.run_carry_navigation)
+        self.assertIn('delivery_control_yaw(cfg["delivery"],p["yaw"])',s)
+        self.assertIn('if cfg["delivery"].get("rearward_foundation_transit"):forward=-forward',s)
+        self.assertIn("FINAL_DOCK_TURN_FOOTPRINT",s)
+        self.assertIn("result['post_stop_composite'].get('pass')",s)
+        self.assertEqual(s.count('arm_carry_motion(n,baseline,until,'),11)
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,delivery={"rearward_foundation_transit":True,"delivery_motion_mode":"LOCOMOTION_STEP"})
