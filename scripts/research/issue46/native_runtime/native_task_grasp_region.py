@@ -548,6 +548,19 @@ def forearm_clearance_recovery_needed(rows):
     return False
 
 
+def prioritize_stance_reference(candidates, profile):
+    """Apply configured order after adding the measured standing reference.
+
+    The actual stopped stance is inserted first by the caller. A preferred
+    reference is only an ordering hint; all IK, preparation, view and path
+    gates still have to pass.
+    """
+    preferred = profile.get("preferred_approach_label")
+    if not preferred:
+        return list(candidates)
+    return sorted(candidates, key=lambda candidate: candidate[1] != preferred)
+
+
 def region_candidates(study, native_row, estimated_center, visibility_check=None,
                       reference_heading=.2449960245840995,far_observe=False,pre_raise_target_rad=-2.15):
     """Co-plan torso viewing direction; current base before bounded relocation."""
@@ -611,17 +624,15 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         # A reference is a posture seed, not a mandatory millimetric station.
         # Always test the actual stopped base before requesting another motion.
         # Only the complete IK/path/reach/visibility gates may accept it.
-        preferred=profile.get('preferred_approach_label')
-        if preferred:
-            candidates.sort(key=lambda candidate:0 if candidate[1]==preferred else 1)
         from scripts.research.issue46.native_runtime.grasp_profiles import standing_stance_from_profile
         standing_label=label+"_STANDING_REFERENCE"
         profile_by_label[standing_label]=profile
         standing_anchor,standing_yaw=standing_stance_from_profile(profile,center,root_xy,anchor,yaw)
-        # Retain the historical commanded approach targets ahead of the
-        # measured-stop fallback. A stopped grasp witness is not a navigation
-        # lookahead: using it first understeered the saved left-end approach.
+        # A measured stopped reference differs from an old commanded target.
+        # Default order is retained unless this profile explicitly prefers its
+        # standing reference; all arrival/preparation/path gates still apply.
         candidates.append((standing_anchor,standing_label,standing_yaw,profile['waist_pitch_rad']))
+        candidates=prioritize_stance_reference(candidates,profile)
         candidates.insert(0,(anchor.copy(),actual_label,yaw,profile['waist_pitch_rad']))
         # Keep the demonstrated forward/turn navigation targets below. A saved
         # *achieved* stopped grasp pose is not the old commanded motion goal:
@@ -696,6 +707,15 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
                     row["stage"]="ACTUAL_PREPARATION_COLLISION"
                     continue
             if visibility_check is not None:
+                if row["base_motion_required"]:
+                    # The next action after a base move is a fresh standing
+                    # observation, before crouch/waist preparation. Checking
+                    # only the later prepared pose accepted an unseen arrival.
+                    arrival = study.relocate(current, candidate_anchor, yaw)
+                    row["predicted_arrival_visibility"] = visibility_check(arrival)
+                    if not row["predicted_arrival_visibility"]["pass"]:
+                        row["stage"] = "ARRIVAL_CAMERA_NOT_QUALIFIED"
+                        continue
                 final_preparation = next(p["qpos"] for p in reversed(witness["path"]) if p["phase"] == "PREPARATION")
                 row["predicted_visibility"] = visibility_check(np.asarray(final_preparation))
                 if not row["predicted_visibility"]["pass"]:

@@ -336,3 +336,22 @@ class RegisteredProfileHandoffTests(unittest.TestCase):
             selected["grasp_profile"]["waist_pitch_rad"]+=.1;path.write_text(json.dumps(selected))
             with self.assertRaisesRegex(ValueError,"unchanged registered grasp profile"):
                 task.stage_runtime_posture(output,path)
+
+
+class StandingArrivalReferenceTests(unittest.TestCase):
+    def test_late_added_standing_reference_gets_configured_priority(self):
+        candidates = [(None, "FAR_DIAGONAL_1", 0., None),
+                      (None, "OTHER", 0., None),
+                      (None, "GRASP_REFERENCE_10_STANDING_REFERENCE", 0., None)]
+        selected = task.prioritize_stance_reference(candidates, {
+            "preferred_approach_label": "GRASP_REFERENCE_10_STANDING_REFERENCE"})
+        self.assertEqual(selected[0][1], "GRASP_REFERENCE_10_STANDING_REFERENCE")
+        self.assertEqual([x[1] for x in candidates], [
+            "FAR_DIAGONAL_1", "OTHER", "GRASP_REFERENCE_10_STANDING_REFERENCE"])
+
+    def test_other_profiles_keep_existing_order(self):
+        candidates = [(None, "CURRENT_STANCE", 0., None),
+                      (None, "FAR_DIAGONAL_1", 0., None)]
+        self.assertEqual(task.prioritize_stance_reference(candidates, {}), candidates)
+        self.assertEqual(task.prioritize_stance_reference(candidates, {
+            "preferred_approach_label": "FAR_DIAGONAL_1"})[0][1], "FAR_DIAGONAL_1")

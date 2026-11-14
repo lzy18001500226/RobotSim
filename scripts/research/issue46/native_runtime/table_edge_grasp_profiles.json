@@ -438,7 +438,7 @@
           "qualification": "HISTORICAL_ACTUAL_STOP_NOT_NAVIGATION_TRACKING_GUARANTEE"
         }
       },
-      "preferred_approach_label": "FAR_DIAGONAL_1",
+      "preferred_approach_label": "GRASP_REFERENCE_10_STANDING_REFERENCE",
       "standing_root_offset_from_object_xy_m": [
         -0.43632528540747306,
         -0.22273278145077913
