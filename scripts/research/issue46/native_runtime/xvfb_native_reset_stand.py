@@ -129,15 +129,11 @@ try:
         try:reply=call_service(node,set_client,req,timeout_s=min(__SET_WAIT__,remaining_s))
         finally:set_timing['elapsed_s']=infra_elapsed()-started
         return {'status':int(reply.response.status.value),'header_code':int(reply.response.header.code),'message':reply.response.message}
-    # Wait for the installed ActionManager to initialize; this sends reads only.
-    for _ in range(10):
-        observed=read_mode(1.)
-        if observed['header_code']==0 and observed['name'] in ('PASSIVE_DEFAULT','STAND_DEFAULT') and observed['status']!=0:break
-        _infra_time.sleep(.3)
-    else:raise ModeHandshakeError('MC_NOT_INITIALIZED_NO_SET:'+json.dumps(readiness))
+    # Discovery is not response readiness. Retry reads only, never a Set.
+    initialization=wait_initial_mode(read_mode,timeout_s=4.)
     verified=ensure_mode('STAND_DEFAULT',read_mode,send_once,timeout_s=5.)
     ack=verified['acknowledgement'];applied=verified['applied']
-    print(json.dumps({'initialization_readbacks':readiness,'set_sent':verified['set_sent'],'set_call_elapsed_s':set_timing['elapsed_s'],'set_header_code':ack['header_code'] if ack else None,'set_status':ack['status'] if ack else None,'set_message':ack['message'] if ack else None,'mode_name':applied['name'],'mode_status':applied['status'],'mode_handshake':verified}))
+    print(json.dumps({'initialization_attempts':initialization,'initialization_readbacks':readiness,'set_sent':verified['set_sent'],'set_call_elapsed_s':set_timing['elapsed_s'],'set_header_code':ack['header_code'] if ack else None,'set_status':ack['status'] if ack else None,'set_message':ack['message'] if ack else None,'mode_name':applied['name'],'mode_status':applied['status'],'mode_handshake':verified}))
 finally:
     node.destroy_node();rclpy.shutdown()
 """

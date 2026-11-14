@@ -58,6 +58,33 @@ def call_service(node, client, request, *, timeout_s=5.0):
             future.cancel()
 
 
+def wait_initial_mode(read_mode, *, timeout_s=4.0):
+    """Retry only read-only startup queries within one elapsed-time deadline.
+
+    Discovery may precede a usable ROS service response. No Set request is
+    allowed until a fresh, running initialization mode has been observed.
+    """
+    deadline = infra_elapsed() + timeout_s
+    observations = []
+    while True:
+        remaining = deadline - infra_elapsed()
+        if remaining <= 0:
+            raise ModeHandshakeError("MC_NOT_INITIALIZED_NO_SET:" + repr(observations))
+        try:
+            row = read_mode(min(1.0, remaining))
+        except ModeHandshakeError as exc:
+            if not str(exc).startswith(("service timeout:", "service unavailable:")):
+                raise
+            observations.append({"transport_error": str(exc)})
+        else:
+            observations.append(row)
+            if row.get("header_code") != 0:
+                raise ModeHandshakeError("MODE_READBACK_INVALID:" + repr(row))
+            if row.get("name") in ("PASSIVE_DEFAULT", "STAND_DEFAULT") and row.get("status") == 100:
+                return observations
+        _infra_time.sleep(min(.05, max(0.0, deadline - infra_elapsed())))
+
+
 def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0):
     """Fresh RPC readback; no cached mode and no retry of SetMcAction.
 

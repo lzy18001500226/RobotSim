@@ -4,6 +4,15 @@
 
 ## 当前Goal：提高验证效率并完成统一11点，再接LiDAR（2026-11-14）
 
+2026-11-15运行恢复：经用户授权修复Docker/Ubuntu集成，Desktop升级4.99并恢复
+Ubuntu集成，关闭Ubuntu重复的systemd-timesyncd。Windows QPC独立对照误差约7ppm；
+35秒原启动门通过，无时钟步变，未放宽门限。证据
+`reviews/issue-46/clock-recovery-docker499-20261114T182204Z/`，长期稳定性仍须运行监测。
+随后真实5号启动在首次GetMcAction超时退出（193330Z）；未进入PREGRASP。
+修正只读初始化轮询的一次超时直接退出缺陷：4秒总预算重取新鲜RUNNING状态，
+非法响应/执行器故障立即失败，Set仍只发一次；外部10秒预算和物理门不变。
+19项聚焦回归通过；必须重新冻结源版本后实测，旧批次失败不升级。
+
 2026-11-15接续：先5号完整放置，再同版0/10，再其余八点；不新增点位专用搬运程序。
 截图sim254.901的轨迹复核见
 `reviews/issue-46/case5-route-heading-forensic-20261114T162907Z/REPORT.md`：
