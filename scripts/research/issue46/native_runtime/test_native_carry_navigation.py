@@ -1914,3 +1914,17 @@ class MeasuredDockClockTests(unittest.TestCase):
             row=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=stamp)
             with patch.object(m.time,'monotonic',return_value=100.02):
                 self.assertEqual(m.measured_dock_step(driver,pose,row,goal).state,state.STALE_STATE)
+
+
+class FinalDockAngularCommandTests(unittest.TestCase):
+    def test_near_table_reverse_arrival_cannot_use_full_transit_pivot_input(self):
+        self.assertEqual(m.final_dock_angular_command(-2.,.60,3.),-.30)
+        self.assertEqual(m.final_dock_angular_command(2.,.20,3.),.20)
+        self.assertEqual(m.final_dock_angular_command(-2.,.60,0.),0.)
+        self.assertAlmostEqual(m.final_dock_angular_command(-2.,.60,1.),-.15)
+    def test_two_second_ramp_is_continuous_and_invalid_inputs_rejected(self):
+        values=[m.final_dock_angular_command(2.,.6,i/100.) for i in range(201)]
+        self.assertTrue(all(0.<=v<=.3 for v in values))
+        self.assertLess(max(abs(a-b) for a,b in zip(values,values[1:])),.003)
+        for args in [(float('nan'),.6,1.),(1.,0.,1.),(1.,.6,float('inf'))]:
+            with self.assertRaises(ValueError):m.final_dock_angular_command(*args)

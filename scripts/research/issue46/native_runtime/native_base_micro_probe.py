@@ -1023,6 +1023,14 @@ def delivery_direction_probe(probe, pose, now):
     return probe
 
 
+def final_dock_angular_command(demand, command_cap, elapsed_s):
+    # The near-table alignment uses the existing conservative .30 input cap.
+    # A loaded reverse-transit arrival is not permission for a .60 pivot here.
+    if not all(math.isfinite(x) for x in (demand,command_cap,elapsed_s)) or command_cap<=0.:
+        raise ValueError("finite positive final docking command cap")
+    return math.copysign(min(.30,command_cap),demand)*bounded_start_scale(max(0.,elapsed_s),2.)
+
+
 def measured_dock_step(driver, pose_type, row, goal):
     # Sampling may receive a frame newer than the loop's scheduling timestamp.
     # Evaluate freshness after sampling; preserve the controller's age checks.
@@ -2321,8 +2329,7 @@ def run_carry_navigation(n,contract):
                     tolerance=.15 if cfg['delivery'].get('rearward_foundation_transit') else .04
                     if abs(demand)<=tolerance and align_acquired:break
                     if cfg['delivery'].get('rearward_foundation_transit') and math.hypot(pose['x']-end['x'],pose['y']-end['y'])>float(cfg['delivery'].get('turn_braking_footprint_m',.35)):raise RuntimeError('FINAL_DOCK_TURN_FOOTPRINT')
-                    cap=cfg['angular_command_cap'] if cfg['delivery'].get('rearward_foundation_transit') else min(.30,cfg['angular_command_cap'])
-                    angular=math.copysign(cap,demand)*bounded_start_scale(max(0.,tick-align_started),2.)
+                    angular=final_dock_angular_command(demand,cfg['angular_command_cap'],tick-align_started)
                     bounds=row['raw_common']['speed_status']['angular_bounds']
                     if not bounds['min_value']<=angular<=bounds['max_value']:raise RuntimeError('MC_REPORTED_INPUT_BOUNDS')
                     if tick-align_started>.75 and not handshake:raise RuntimeError('FINAL_ALIGNMENT_SOURCE_MODE_NOT_CONFIRMED')
