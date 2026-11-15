@@ -146,5 +146,61 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
                     self.check(health)
 
 
+class CarryOwnerSnapshotRereadTests(unittest.TestCase):
+    def run_reread(self, update_at=None, *, healthy=True, generation=1, native_age_s=.037):
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as m
+        clock=NS(now=1.)
+        def now_ns():return round(clock.now*1e9)
+        old=dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",healthy=healthy,
+                 pid=19,generation=generation,host_monotonic_ns=789835470)
+        def read():
+            if update_at is not None and clock.now>=1.+update_at:
+                return json.dumps(dict(old,host_monotonic_ns=now_ns()))
+            return json.dumps(old)
+        events=[]
+        health_path=NS(read_text=read)
+        native_path=NS(read_text=lambda:json.dumps(dict(
+            generation=1,host_monotonic_ns=now_ns()-round(native_age_s*1e9))))
+        def sleep(duration):clock.now+=duration
+        with mock.patch.object(m,"time",NS(monotonic=lambda:clock.now,
+                monotonic_ns=now_ns,sleep=sleep)):
+            result=m.await_recent_carry_owner(health_path,native_path,19,1,events,1.)
+        return result,events,clock.now-1.
+
+    def test_recorded_210ms_snapshot_waits_for_next_publication(self):
+        # 080004Z: at failure the next observed owner sample was 28.5ms away.
+        result,events,elapsed=self.run_reread(.029)
+        self.assertGreater(result["host_monotonic_ns"],1_000_000_000)
+        self.assertGreaterEqual(elapsed,.029)
+        self.assertLessEqual(elapsed,.05)
+        self.assertLessEqual(events[0]["final_age_s"],.2)
+
+    def test_missing_owner_update_never_refreshes_or_accepts_old_stamp(self):
+        result,events,elapsed=self.run_reread()
+        self.assertEqual(result["host_monotonic_ns"],789835470)
+        self.assertAlmostEqual(elapsed,.05)
+        self.assertGreater(events[0]["final_age_s"],.2)
+        health=CarryHeartbeatMeasurementTests().publish()
+        health.update(result,native_source_host_ns=780000000)
+        with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED"):
+            CarryHeartbeatMeasurementTests().check(health)
+
+    def test_failed_owner_does_not_wait(self):
+        result,events,elapsed=self.run_reread(.01,healthy=False)
+        self.assertEqual(elapsed,0.)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(events,[])
+
+    def test_wrong_generation_does_not_wait(self):
+        result,events,elapsed=self.run_reread(.01,generation=2)
+        self.assertEqual(elapsed,0.)
+        self.assertEqual(result["generation"],2)
+
+    def test_stale_physics_is_not_masked_by_snapshot_wait(self):
+        result,events,elapsed=self.run_reread(.01,native_age_s=.200000001)
+        self.assertEqual(elapsed,0.)
+        self.assertEqual(result["host_monotonic_ns"],789835470)
+
+
 if __name__ == "__main__":
     unittest.main()
