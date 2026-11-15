@@ -1021,9 +1021,16 @@ def carry_activation_grace_s(cfg, phase, acquired):
     # This only covers initial mode acquisition. Freshness and physical guards
     # remain independent, and a previously acquired mode gets no extra grace.
     d=cfg.get("delivery") or {}
-    return 2.75 if (not acquired and d.get("rearward_foundation_transit")
+    rearward_ramp=(d.get("rearward_foundation_transit")
         and d.get("delivery_motion_mode")=="LOCOMOTION_DEFAULT"
-        and phase in ("RETREAT","DELIVERY")) else .75
+        and phase in ("RETREAT","DELIVERY"))
+    direct_retreat_ramp=(phase=="RETREAT"
+        and cfg.get("transit_command_speed",.12)==.20
+        and not d.get("rearward_foundation_transit"))
+    # Both generated two-second ramp branches need the same acquisition budget.
+    #224908Z already had fresh LD CommonState while the polled RPC was still
+    # STAND/status200 at0.773s. Never extend an acquired mode or stale telemetry.
+    return 2.75 if not acquired and (rearward_ramp or direct_retreat_ramp) else .75
 
 
 def inplace_recovery_command(pose, origin, speed=.12):

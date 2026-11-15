@@ -1865,6 +1865,16 @@ class LoadedFoundationStartTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",t,-.2,0.)
         with self.assertRaises(RuntimeError):m.loaded_foundation_start(d,"RETREAT",0.,float("nan"),0.)
 
+    def test_direct_two_second_retreat_ramp_gets_matching_initial_grace(self):
+        cfg=dict(transit_command_speed=.20,
+                 delivery=dict(rearward_foundation_transit=False))
+        self.assertEqual(m.carry_activation_grace_s(cfg,"RETREAT",False),2.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"RETREAT",True),.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"TURN",False),.75)
+        self.assertEqual(m.carry_activation_grace_s(cfg,"DELIVERY",False),.75)
+        cfg["transit_command_speed"]=.12
+        self.assertEqual(m.carry_activation_grace_s(cfg,"RETREAT",False),.75)
+
     def test_handshake_still_rejects_nonactivation_after_ramp_deadline(self):
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
             straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,
