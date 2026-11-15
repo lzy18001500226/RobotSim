@@ -570,7 +570,8 @@ def build_motion_script(goal, limits, bodies, caps, label, *, path_start_xy=None
         code += "\n"+inspect.getsource(function)+"\n"
     code += "MICRO.update("+repr({"task_region": {
         "goal": list(goal), "effort_caps": caps, "label": label, "maximum_excursion_m": .90, "path_start_xy_m": path_start_xy, "outer_bounds":outer_bounds,"point_goal":point_goal,"locomotion_action":locomotion_action,"side_corridor_bounds":side_corridor_bounds},
-        "graph_startup_timeout_s": 5.0})+")\nrun_probe()\n"
+        "graph_startup_timeout_s": 5.0,
+        "planar_speed_warning_only": True})+")\nrun_probe()\n"
     compile(code, "task_region_navigation", "exec")
     return code
 

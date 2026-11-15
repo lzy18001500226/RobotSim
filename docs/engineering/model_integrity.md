@@ -229,10 +229,12 @@ object pose writes, force-cap changes or fabricated success.
 For the15Nov maintainer-requested common eleven-position simulation profile,
 the planar_speed_warning_only option records excursions above the historical
 0.60m/s instantaneous pelvis threshold instead of aborting solely on that
-heuristic. This opt-in applies only inside valid ROOT060 carry transit/braking
-permits. Navigation, the sole hand owner and independent full-trace audit must
-use the same policy and report whether the legacy speed gate passed.
-Default/legacy profiles and expired permits retain their original limits.
+heuristic. This opt-in covers explicitly selected simulation pickup navigation
+and task-region relocation at ROOT060, plus valid ROOT060 carry transit/braking
+permits. Pickup telemetry records every excursion; carry navigation, the sole
+hand owner and independent full-trace audit use the same policy and report
+whether the legacy speed gate passed. Default/legacy profiles and expired
+carry permits retain their original limits.
 Source-joint velocity/range, posture, actual collision, fresh feedback, command
 bounds and independent stopped/released-support acceptance remain unchanged.
 This is a simulation diagnostic policy, not a hardware speed qualification.

@@ -67,4 +67,41 @@ class SpeedPolicyTests(unittest.TestCase):
             result=eval(compile(ast.Expression(kw),"actual-owner-policy","eval"),dict(limit=limit,LIFT_CONTRACT=dict(retract_preflight=dict(planar_speed_warning_only=flag))))
             self.assertEqual(result,expected)
 
+
+    def test_task_region_root060_warning_does_not_apply_to_legacy_micro(self):
+        tree = ast.parse(Path(m.__file__).read_text())
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name) and n.func.id == "physical_fault"
+                    and any(k.arg == "planar_speed_warning_only" for k in n.keywords))
+        expr = next(k.value for k in call.keywords if k.arg == "planar_speed_warning_only")
+        for limit, flag, expected in ((.6, True, True), (.2, True, False),
+                                      (.5, True, False), (.6, False, False)):
+            enabled = eval(compile(ast.Expression(expr), "<actual-task-speed>", "eval"),
+                           {"limit": limit, "MICRO": {"planar_speed_warning_only": flag}})
+            self.assertEqual(enabled, expected)
+
+    def test_generated_pickup_docking_has_an_explicit_optin_and_records_warnings(self):
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as launch
+        common = dict(world_start_xy=[0., 0.], world_start_yaw_rad=0.,
+            dock_world_xy=[1., -1.5], dock_world_yaw_rad=0.,
+            dock_position_only=True, refine_world_xy=None, refine_world_yaw_rad=None,
+            refine_position_only=True, dock_position_tolerance_m=.1,
+            refine_position_tolerance_m=.1, timeout_s=90., pickup_navigation=True)
+        code = launch.locomotion_dock_script(**common, planar_speed_warning_only=True)
+        compile(code, "<actual-pickup-client>", "exec")
+        self.assertIn('"planar_speed_warning_only": true', code)
+        self.assertIn("self.planar_speed_warnings.append", code)
+        tree = ast.parse(code)
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name) and n.func.id == "physical_fault")
+        expr = next(k.value for k in call.keywords if k.arg == "planar_speed_warning_only")
+        for pickup, flag, expected in ((True, True, True), (False, True, False),
+                                       (True, False, False)):
+            self.assertEqual(eval(compile(ast.Expression(expr), "<dock-policy>", "eval"),
+                {"PLAN": {"pickup_navigation": pickup, "planar_speed_warning_only": flag}}),
+                expected)
+        with self.assertRaisesRegex(ValueError, "simulation pickup"):
+            launch.locomotion_dock_script(**{**common, "pickup_navigation": False},
+                                           planar_speed_warning_only=True)
+
 if __name__=="__main__":unittest.main()

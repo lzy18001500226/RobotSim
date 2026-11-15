@@ -252,6 +252,7 @@ def locomotion_dock_script(
     angular_speed_cap: float | None = None,
     native_arm_relay: bool = False,
     pickup_navigation: bool = False,
+    planar_speed_warning_only: bool = False,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -261,6 +262,8 @@ def locomotion_dock_script(
     It never addresses MuJoCo qpos/qvel or a simulator-only control topic.
     """
     from scripts.research.issue46.native_runtime import mode_handshake
+    if planar_speed_warning_only and not pickup_navigation:
+        raise ValueError("warning-only docking speed requires simulation pickup navigation")
     payload = json.dumps(
         {
             "world_start_xy": world_start_xy,
@@ -282,6 +285,7 @@ def locomotion_dock_script(
             "angular_speed_cap":angular_speed_cap,
             "native_arm_relay":native_arm_relay,
             "pickup_navigation":pickup_navigation,
+            "planar_speed_warning_only":planar_speed_warning_only,
         }
     )
     import inspect
@@ -446,7 +450,11 @@ class Dock(Node):
   if hasattr(self,'native_generation') and row['generation']!=self.native_generation:self.feedback_fault={'gate':'NATIVE_DOCK_RESET_GENERATION_CHANGED'};return
   p=row['bodies']['pelvis'];q=p['quaternion_wxyz'];R=p['rotation'];x,y,z=p['position_m']
   if PLAN.get('native_leg_limits'):
-   fault=physical_fault(row,native_pose(row),PLAN['native_leg_limits'],planar_speed_limit=.60 if PLAN.get('pickup_navigation') else .20)
+   pose=native_pose(row)
+   fault=physical_fault(row,pose,PLAN['native_leg_limits'],planar_speed_limit=.60 if PLAN.get('pickup_navigation') else .20,planar_speed_warning_only=bool(PLAN.get('pickup_navigation') and PLAN.get('planar_speed_warning_only')))
+   if pose.get('planar_speed_warning'):
+    if not hasattr(self,'planar_speed_warnings'):self.planar_speed_warnings=[]
+    self.planar_speed_warnings.append({'source_host_ns':stamp,**pose['planar_speed_warning']})
    if fault:self.feedback_fault=self.feedback_fault or {'gate':fault,'native_row_source_ns':stamp};return
   if not all(math.isfinite(v) for v in [x,y,z,*q]):self.feedback_fault={'gate':'NONFINITE_NATIVE_DOCK_POSE'};return
   self.native_generation=row['generation'];self.odom_stamp=stamp;self.odom_last_unique_receipt=stamp*1e-9
@@ -587,7 +595,7 @@ try:
  x,y,z,heading,_=n.pose;dist=math.hypot(gx-x,gy-y);yerr=wrap(gyaw-heading)
  if failure is None and not (stable_since is not None and time.monotonic()-stable_since>=1.5):failure={'gate':'TABLE_DOCK_ARRIVAL','distance_m':dist,'yaw_error_rad':yerr}
  frame_count=sum(1 for row in n.samples if 'joint_state' in row)
- print(json.dumps({'mode_requests':n.mode_requests,'source_mode_confirmed':source_mode_confirmed,'source':source,'active_source_before_stop':n.current_source(),'initial_odom_xyz_m':[sx,sy,sz],'initial_yaw_rad':syaw,'goals_odom':[{'name':name,'xy_m':[x,y],'yaw_rad':yaw,'position_only':position_only} for name,x,y,yaw,position_only in goals],'milestones':milestones,'final_odom_xyz_m':[x,y,z],'final_yaw_rad':heading,'final_distance_m':dist,'final_yaw_error_rad':yerr,'max_tilt_rad':n.max_tilt,'joint_state_frame_count':frame_count,'trace':n.samples,'failure':failure,'pass':(not PLAN.get('pickup_navigation') or source_mode_confirmed) and failure is None and len(milestones)==len(goals) and frame_count>=2 and dist<= (PLAN['refine_position_tolerance_m'] if position_only else PLAN['dock_position_tolerance_m']) and (position_only or abs(yerr)<=.12) and n.max_tilt<=math.radians(15)}))
+ print(json.dumps({'mode_requests':n.mode_requests,'source_mode_confirmed':source_mode_confirmed,'source':source,'active_source_before_stop':n.current_source(),'initial_odom_xyz_m':[sx,sy,sz],'initial_yaw_rad':syaw,'goals_odom':[{'name':name,'xy_m':[x,y],'yaw_rad':yaw,'position_only':position_only} for name,x,y,yaw,position_only in goals],'milestones':milestones,'final_odom_xyz_m':[x,y,z],'final_yaw_rad':heading,'final_distance_m':dist,'final_yaw_error_rad':yerr,'max_tilt_rad':n.max_tilt,'joint_state_frame_count':frame_count,'trace':n.samples,'planar_speed_warnings':getattr(n,'planar_speed_warnings',[]),'failure':failure,'pass':(not PLAN.get('pickup_navigation') or source_mode_confirmed) and failure is None and len(milestones)==len(goals) and frame_count>=2 and dist<= (PLAN['refine_position_tolerance_m'] if position_only else PLAN['dock_position_tolerance_m']) and (position_only or abs(yerr)<=.12) and n.max_tilt<=math.radians(15)}))
 finally:
  n.zero_hold(.5)
  if registered:n.disable()
@@ -2008,6 +2016,7 @@ def main() -> None:
                     angular_speed_cap=args.dock_angular_speed_cap,
                     native_arm_relay=args.native_arm_policy_relay,
                     pickup_navigation=bool(args.execute_pickup_navigation),
+                    planar_speed_warning_only=bool(args.execute_pickup_navigation and args.task_grasp_region and args.fast_task_timing),
                 ),
             )
         if args.capture_mc_rl_debug:
