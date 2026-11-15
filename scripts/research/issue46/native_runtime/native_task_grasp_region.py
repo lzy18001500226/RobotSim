@@ -116,6 +116,10 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Reuse the existing0.6s healthy-stop taper for the loaded retreat.
         # Actual source, joint and fault-stop gates remain unchanged.
         result["planned_retreat_deceleration_s"]=.6
+        # The recorded loaded retreat lost height before the stop taper while
+        # the fast transit override commanded-.20 instead of the primitive-.12.
+        # Keep the primitive's original backward input; forward transit stays.
+        result["retreat_forward_command_m_s"]=.12
         # Three recorded full transfers measured maximum calibration coast
         # of0.4233--0.4484m. The existing600mm terminal reserve already exceeds
         # that plus one150ms sample at the unchanged600mm/s safety cap.

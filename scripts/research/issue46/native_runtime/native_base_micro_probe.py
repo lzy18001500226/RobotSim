@@ -1148,6 +1148,20 @@ def carry_workspace_contains(pose, box, front_opening_apron=None):
     return inside(box) or (front_opening_apron is not None and inside(front_opening_apron))
 
 
+def retreat_translation_command(cfg):
+    """Keep loaded backward entry separate from the faster forward transit.
+
+    The original retreat primitive requests120mm/s. A common transit speed of
+    200mm/s must not silently override an explicit loaded-retreat command.
+    This is task input selection, never an MC gain or a physical speed limit.
+    """
+    speed=float((cfg.get("delivery") or {}).get("retreat_forward_command_m_s",
+                                               cfg.get("transit_command_speed",.12)))
+    if not math.isfinite(speed) or not 0.<speed<=.20:
+        raise ValueError("LOADED_RETREAT_COMMAND_SCOPE")
+    return -speed
+
+
 def retreat_heading_command(error, angular_cap):
     """Continuous bounded P steering; retain the original20mrad deadband."""
     if not math.isfinite(error) or not math.isfinite(angular_cap) or not 0.<angular_cap<=.30:
@@ -2355,6 +2369,7 @@ def run_carry_navigation(n,contract):
                     cfg["active_mission_phase"]=mission["phase"]
                     cfg["active_centre_recovery"]=mission["phase"]=="TURN" and bool(mission.get("turn_centre_recovery"))
                 forward=(output.linear_x if (cfg.get("inplace_centre_hold") or cfg.get("compact_centre_feedback")) and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -cfg.get("transit_command_speed",.12) if mission["phase"] in ("RETREAT","TURN") else cfg.get("transit_command_speed",.12)) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                if mission is not None and mission["phase"]=="RETREAT":forward=retreat_translation_command(cfg)
                 if cfg.get("inplace_centre_hold") and not cfg.get("gait_prepare") and mission is not None and mission["phase"]=="RETREAT" and cfg.get("transit_command_speed",.12)==.12:
                     forward*=bounded_start_scale(max(0.,tick-activation_started))
                     mission["retreat_input_ramp_s"]=.5

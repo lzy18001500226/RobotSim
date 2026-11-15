@@ -6,6 +6,16 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_explicit_loaded_retreat_is_not_overridden_by_forward_transit_speed(self):
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        profile=task_route_profile({"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,"turn_translation_strategy":"PURE_YAW","base_goal_world_xy":[.015,.98]},fast_task_timing=True)
+        self.assertEqual(m.retreat_translation_command({"transit_command_speed":.20,"delivery":profile}),-.12)
+        self.assertEqual(m.retreat_translation_command({"transit_command_speed":.20,"delivery":{}}),-.20)
+        for bad in (0.,-.12,.21,float("nan")):
+            with self.assertRaises(ValueError):
+                m.retreat_translation_command({"delivery":{"retreat_forward_command_m_s":bad}})
+
+
     def test_retreat_heading_is_continuous_and_cannot_full_scale_tiny_error(self):
         self.assertEqual(m.retreat_heading_command(.02,.30),0.)
         self.assertEqual(m.retreat_heading_command(-.01,.30),0.)
