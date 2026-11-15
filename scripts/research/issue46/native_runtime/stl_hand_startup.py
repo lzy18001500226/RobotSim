@@ -1016,13 +1016,25 @@ class Plan(Node):
  def spin(self,s):
   end=time.monotonic()+s
   while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)
- def tracking_target(self):
-  with open('/workspace/evidence/native_tracking_target.json') as f:r=json.load(f)
-  if not r.get('pass'):raise RuntimeError('NATIVE_CIRCLE_TRACKER_FAILED:'+str(r))
-  age=(time.monotonic_ns()-int(r['source_host_ns']))*1e-9
-  if not 0<=age<=.20 or r['generation']!=self.native_generation:raise RuntimeError('STALE_NATIVE_CIRCLE_TRACKING_TARGET:'+json.dumps({'source_age_s':age,'target_created_age_s':(time.monotonic_ns()-int(r['created_host_ns']))*1e-9,'target_generation':r['generation'],'native_generation':self.native_generation,'native_sample_age_s':(time.monotonic_ns()-self.native_receipt_ns)*1e-9}))
+ def tracking_target(self,retry_s=0.):
+  # Rereading never permits an expired target or a new motion command.
+  # The preceding setpoint stays held while fresh physical checks continue.
+  begin=time.monotonic_ns();deadline=begin+int(retry_s*1e9);first_age=None
+  while True:
+   with open('/workspace/evidence/native_tracking_target.json') as f:r=json.load(f)
+   if not r.get('pass'):raise RuntimeError('NATIVE_CIRCLE_TRACKER_FAILED:'+str(r))
+   checked=time.monotonic_ns();age=(checked-int(r['source_host_ns']))*1e-9
+   if first_age is None:first_age=age
+   valid_generation=r['generation']==self.native_generation
+   if 0<=age<=.20 and valid_generation and (first_age<=.20 or checked<=deadline):break
+   if age<0 or not valid_generation or checked>=deadline:
+    raise RuntimeError('STALE_NATIVE_CIRCLE_TRACKING_TARGET:'+json.dumps({'source_age_s':age,'target_created_age_s':(checked-int(r['created_host_ns']))*1e-9,'target_generation':r['generation'],'native_generation':self.native_generation,'native_sample_age_s':(checked-self.native_receipt_ns)*1e-9,'reread_wait_s':(checked-begin)*1e-9,'reread_budget_s':retry_s}))
+   if os.path.exists('/workspace/evidence/human_review_stop'):raise RuntimeError('HUMAN_REVIEW_STOP')
+   self.refresh_native()
+   rclpy.spin_once(self,timeout_sec=.002)
   goal={n:float(r['right_target_rad'][n]) for n in RIGHT}
   if any(not math.isfinite(goal[n]) for n in RIGHT):raise RuntimeError('NONFINITE_NATIVE_CIRCLE_TARGET')
+  if first_age>.20:print(json.dumps({'fresh_tracking_target_recovered':True,'initial_source_age_s':first_age,'accepted_source_age_s':age,'wait_s':(checked-begin)*1e-9,'source_host_ns':r['source_host_ns']}),flush=True)
   self.endpoint=goal
   self.tracking_metrics=r.get('metrics',{})
   return goal
@@ -1071,7 +1083,7 @@ class Plan(Node):
     if fault:raise RuntimeError("CLEARANCE_PHYSICAL:"+fault)
     if math.dist(self.native_row["bodies"]["pelvis"]["position_m"],staged["root_reference_world_m"])>.05:raise RuntimeError("CLEARANCE_ROOT_DRIFT")
    if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE'):
-    endpoint=self.tracking_target();target=dict(target)
+    endpoint=self.tracking_target(retry_s=.05 if stage=='APPROACH' else 0.);target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      for name in RIGHT:
       correction=float(self.tracking_metrics['cartesian_correction_rad'][name])
