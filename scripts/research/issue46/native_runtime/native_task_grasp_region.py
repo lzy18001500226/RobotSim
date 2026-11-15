@@ -193,18 +193,19 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # actual-pose placement IK; no extra loaded STEP calibration transition.
         result["measure_step_braking_after_progress_m"]=0.
         result["braking_reserve_scope"]=(
-            "COMPILED_TABLE_FRONT_900MM_PLANE_NO_TERMINAL_PULSES; "
+            "COMPILED_TABLE_FRONT_700MM_PLANE_NO_TERMINAL_PULSES; "
             "actual physical speed, collision and stop limits unchanged")
-        # One continuous arrival, then actual-pose IK; a short STEP reactivation
-        # displaced the stopped body into the table in004357Z. The114247Z
-        # physical run coasted525mm after the750mm trigger and contacted the
-        # table at the hip/knee. Trigger150mm earlier; the resulting measured
-        # stop must still pass original full-model placement and collision gates.
+        # The loaded forward-arc run222727Z stopped at y=.6955 with the900mm
+        # plane: the actual tool could not reach the tabletop. The same saved
+        # whole-body posture shifted200/250mm closer passed lowering and all29
+        # placement path samples. This common route change targets that region;
+        # actual stopping, source limits, collisions and fresh placement IK
+        # remain mandatory. It does not certify the predicted stopping distance.
         result["bounded_terminal_forward_reapproach"]=False
         result["table_front_braking"]={
             "frame":"native_scene_world","approach_normal_world_xy":[0.,1.],
-            "reserve_m":.90,
-            "evidence":"reviews/issue-46/common-table-plane-braking-preflight-20261115T010845Z/result.json",
+            "reserve_m":.70,
+            "evidence":"reviews/issue-46/case5-table-docking-closer-static-20261115T224420Z/result.json",
             "scope":"TASK_ROUTE_ONLY_REQUIRES_DYNAMIC_VALIDATION"}
         # Saved actual near-table stop blocked30mm lowering at rightknee.
         # The smallest checked backoff80mm passed original lowering/placement.

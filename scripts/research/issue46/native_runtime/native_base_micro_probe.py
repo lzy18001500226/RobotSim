@@ -1607,7 +1607,7 @@ def table_front_braking_observation(delivery, pose):
     if spec is None:return None
     if (spec.get("frame")!="native_scene_world"
             or spec.get("approach_normal_world_xy")!=[0.,1.]
-            or spec.get("reserve_m") not in (.75,.90)
+            or spec.get("reserve_m") not in (.70,.75,.90)
             or not delivery.get("conservative_terminal_stop")):
         raise ValueError("unqualified table-front braking policy")
     front=float(delivery["table_bounds_min_world_m"][1]);y=float(pose["y"])
