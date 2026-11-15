@@ -1010,6 +1010,26 @@ def validate_delivery_direction(delivery, phase, forward, angular):
             raise RuntimeError("REVERSE_COMMAND_IN_FORWARD_DELIVERY")
 
 
+def carry_motion_handshake(row, expected_mode, *, acquired=False):
+    """Acquire with fresh RPC + live MC state; monitor with live MC state.
+
+    GetMcAction is a polled service, not a continuous control heartbeat.
+    A fresh contradictory response still rejects motion. After acquisition,
+    fresh CommonState must continuously confirm both mode and input source;
+    delayed RPC refresh alone is not evidence that MC lost that mode.
+    """
+    common_age=row["state_age_s"].get("common",float("inf"))
+    common_ok=(0.<=common_age<=.20 and row["common_mode_desc"]==expected_mode
+        and row["common_mode_status_value"] in (100,200)
+        and row["common_source"]["name"]=="robotsim_official_cmd_vel")
+    rpc_age=row["state_age_s"].get("get_mode",float("inf"))
+    rpc_fresh=0.<=rpc_age<=.20
+    rpc_ok=(row["get_mode_desc"]==expected_mode
+        and row["get_mode_header_code"]==0 and row["get_mode_status_value"]==100)
+    if not common_ok or rpc_age<0.:return False
+    return rpc_ok if rpc_fresh else bool(acquired)
+
+
 def carry_activation_grace_s(cfg, phase, acquired):
     # The installed policy starts above0.1m/s; a2s ramp reaches that after1s.
     # This only covers initial mode acquisition. Freshness and physical guards
@@ -2421,7 +2441,7 @@ def run_carry_navigation(n,contract):
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["lateral_bounds"]["min_value"]<=lateral<=bounds["lateral_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
                 if row["common_mode_status_value"]==300 and not ((cfg.get("native_action_smoothing") or cfg.get("vendor_transition_table")) and not acquired and 0<=tick-activation_started<=activation_grace_s):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
-                handshake=(row["common_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
+                handshake=carry_motion_handshake(row,cfg.get("motion_mode","LOCOMOTION_DEFAULT"),acquired=acquired)
                 if handshake and (cfg.get("delivery",{}).get("carry_native_neutral_stow") or {}).get("native_arm_follow_scope")=="FULL_SOURCE" and not Path("/workspace/evidence/carry_unloaded_arm_follow.json").exists():
                     write_durable_milestone("/workspace/evidence/carry_unloaded_arm_follow.json",dict(owner_pid=cfg["pid"],generation=n.latest_row["generation"],created_ns=time.monotonic_ns(),deadline_ns=int((until+15.)*1e9),turn_and_composite_stop_pass=False,standing_and_ld_source_handoff_pass=bool(result["pre_motion_composite"]["pass"] and handshake),arm_scope="FULL_SOURCE"))
                 acquired=acquired or handshake

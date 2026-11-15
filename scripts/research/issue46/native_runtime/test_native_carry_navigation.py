@@ -250,7 +250,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.,"common":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
@@ -842,7 +842,7 @@ class AwayOneMetreControlFlowTests(unittest.TestCase):
                     pose=dict(x=self.x,y=self.y,yaw=self.yaw,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.),
                     get_mode_header_code=0,get_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
                     common_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
-                    common_mode_status_value=100,state_age_s={"get_mode":0.},
+                    common_mode_status_value=100,state_age_s={"get_mode":0.,"common":0.},
                     common_source={"name":"robotsim_official_cmd_vel"},
                     raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
             def observe(self,seconds,**kw):
@@ -1077,6 +1077,48 @@ class PlacementSettlingWindowTests(unittest.TestCase):
         with patch.object(p,"HAND_OPEN",1.,create=True):
             with self.assertRaisesRegex(RuntimeError,"SAFE_TABLE_SUPPORT"):
                 p.observe_released_support(lambda *x:dict(inside_table=False,bottom_world_z_m=.4,forbidden=[]),[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=10.,clock=lambda:0.)
+
+
+class ContinuousMcModeTests(unittest.TestCase):
+    def row(self):
+        return dict(common_mode_desc="LOCOMOTION_DEFAULT",get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_status_value=100,get_mode_status_value=100,get_mode_header_code=0,
+            common_source=dict(name="robotsim_official_cmd_vel"),
+            state_age_s=dict(common=.02385573099309113,get_mode=.20573513799899956))
+
+    def test_recorded_delayed_query_is_not_a_lost_live_mode(self):
+        self.assertTrue(m.carry_motion_handshake(self.row(),"LOCOMOTION_DEFAULT",acquired=True))
+
+    def test_running_status_is_a_valid_live_action(self):
+        row=self.row();row["common_mode_status_value"]=200
+        self.assertTrue(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
+
+    def test_initial_acquisition_still_requires_fresh_agreeing_rpc(self):
+        row=self.row()
+        self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT"))
+        row["state_age_s"]["get_mode"]=.10
+        self.assertTrue(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT"))
+
+    def test_fresh_conflicting_or_rejected_rpc_still_stops(self):
+        for key,value in [("get_mode_desc","STAND_DEFAULT"),("get_mode_header_code",1),
+                          ("get_mode_status_value",300)]:
+            row=self.row();row["state_age_s"]["get_mode"]=.10;row[key]=value
+            self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
+
+    def test_live_mode_source_and_status_remain_mandatory(self):
+        for key,value in [("common_mode_desc","STAND_DEFAULT"),
+                          ("common_mode_status_value",300),
+                          ("common_source",dict(name="other_owner"))]:
+            row=self.row();row[key]=value
+            self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
+
+    def test_stale_live_state_cannot_be_replaced_by_fresh_rpc(self):
+        row=self.row();row["state_age_s"]=dict(common=.200000001,get_mode=.01)
+        self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
+
+    def test_future_query_stamp_is_not_accepted(self):
+        row=self.row();row["state_age_s"]["get_mode"]=-.001
+        self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
 
 
 if __name__=="__main__":unittest.main()
@@ -1654,7 +1696,7 @@ class RejectedCarryHandshakeEvidenceTests(unittest.TestCase):
             and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
         row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="LOCOMOTION_DEFAULT",
             get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
-            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01,common=.01))
         ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=True,
             cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=.75)
         with self.assertRaisesRegex(RuntimeError,"CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED"):
@@ -1821,7 +1863,7 @@ class LoadedFoundationStartTests(unittest.TestCase):
             and any(isinstance(stmt,ast.Raise) and any(isinstance(x,ast.Constant) and x.value=="CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED" for x in ast.walk(stmt)) for stmt in node.body))
         row=dict(sample_monotonic_s=12.,sim_time_s=11.,common_mode_desc="STAND_DEFAULT",
             get_mode_desc="STAND_DEFAULT",common_mode_status_value=100,get_mode_status_value=100,
-            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01))
+            get_mode_header_code=0,common_source=dict(name="robotsim_official_cmd_vel"),state_age_s=dict(get_mode=.01,common=.01))
         ns=dict(tick=12.,activation_started=10.,handshake=False,acquired=False,
             cfg=dict(motion_mode="LOCOMOTION_DEFAULT"),result={},row=row,activation_grace_s=2.75)
         exec(compile(ast.Module(body=[guard],type_ignores=[]),"ramp_pending","exec"),ns)
