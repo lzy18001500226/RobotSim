@@ -19,7 +19,8 @@ def prepare_publisher():
         record=json.loads(path.read_text())
         if record["source"]["sha256"]==sha(source) and record["introspection_library"]["sha256"]==sha(library) and record["image_id"]==image_id and record.get("compiled_no_physics") and record.get("marker_rejection_pass") and sha(record["binary"]["path"])==record["binary"]["sha256"]:
             return path
-    if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("compile native body tool only before simulation startup")
+    from scripts.research.issue46.native_runtime.native_container_guard import require_exclusive_x2_runtime
+    require_exclusive_x2_runtime()
     out=pg.create_unique_output_directory(root,prefix="native-body-pose-no-physics-build").native_path
     pg.write_new_bytes(out/source.name,source.read_bytes())
     script=r"""set -eo pipefail

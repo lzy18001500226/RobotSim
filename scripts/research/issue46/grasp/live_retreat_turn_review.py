@@ -143,7 +143,8 @@ def main():
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return
     status=subprocess.run(["docker","info","--format","{{.ServerVersion}}"],text=True,capture_output=True,timeout=8)
     if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
-    if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
+    from scripts.research.issue46.native_runtime.native_container_guard import require_exclusive_x2_runtime
+    require_exclusive_x2_runtime()
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
     attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False;camera_endpoint_printed=False
     (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))

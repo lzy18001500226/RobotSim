@@ -248,7 +248,8 @@ def main():
     if not args.native_physics_audit:
         raise ValueError("approved-circle execution requires --native-physics-audit")
     original=native.run
-    if original(["docker","ps","-q"],timeout_s=5).stdout.strip():raise RuntimeError("conflicting container")
+    from scripts.research.issue46.native_runtime.native_container_guard import require_exclusive_x2_runtime
+    require_exclusive_x2_runtime()
     tracking=None
     tracking_output=None
     perception_process=None
