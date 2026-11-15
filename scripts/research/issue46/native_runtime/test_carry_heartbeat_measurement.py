@@ -70,7 +70,7 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
 
     def check(self, health, row_stamp=995_000_000):
         ns = dict(json=json, MICRO=dict(carry=dict(pid=os.getpid())),
-                  r=dict(generation=1, host_monotonic_ns=row_stamp),
+                  r=dict(generation=1, host_monotonic_ns=row_stamp, **self.measured_row()), math=math,
                   time=NS(monotonic_ns=lambda: self.now),
                   Path=lambda path: NS(read_text=lambda: json.dumps(health)))
         exec(reader_block(), ns)
@@ -97,10 +97,41 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "HEARTBEAT_UNQUALIFIED") as result:
             self.check(health)
         detail = json.loads(str(result.exception).split(":", 1)[1])
-        self.assertEqual(detail["failed_checks"], ["physical_fresh"])
+        self.assertEqual(detail["failed_checks"], ["measurement_fresh_at_publication"])
         self.assertEqual(detail["checked_host_ns"], self.now)
         self.assertGreater(detail["physical_age_s"], .2)
         self.assertAlmostEqual(detail["latest_physics_age_s"], .005)
+
+    def test_independent_fresh_streams_do_not_sum_transport_delays(self):
+        health = self.publish()
+        health["host_monotonic_ns"] = self.now - 134_425_928
+        health["native_source_host_ns"] = self.now - 210_986_743
+        self.check(health, row_stamp=self.now - 23_239_055)
+
+    def test_current_physical_state_and_owner_must_both_remain_fresh(self):
+        health = self.publish()
+        with self.assertRaisesRegex(RuntimeError, "HEARTBEAT_UNQUALIFIED"):
+            self.check(health, row_stamp=self.now - 200_000_001)
+        health["host_monotonic_ns"] = self.now - 200_000_001
+        health["native_source_host_ns"] = self.now - 210_000_000
+        with self.assertRaisesRegex(RuntimeError, "HEARTBEAT_UNQUALIFIED"):
+            self.check(health)
+
+    def test_current_slip_or_external_support_fails_despite_healthy_owner(self):
+        health = self.publish()
+        current = self.measured_row()
+        current["bodies"]["test_cylinder"]["position_m"][0] = .02
+        original = self.measured_row
+        self.measured_row = lambda: current
+        with self.assertRaisesRegex(RuntimeError, "CURRENT_CARRY_OBJECT_POSE_OR_SLIP"):
+            self.check(health)
+        self.measured_row = original
+        current = self.measured_row()
+        current["contacts"] = [dict(body1="test_cylinder", body2="table",
+                                    local_force_torque=[1., 0., 0., 0., 0., 0.])]
+        self.measured_row = lambda: current
+        with self.assertRaisesRegex(RuntimeError, "CURRENT_CARRY_OBJECT_EXTERNAL_SUPPORT"):
+            self.check(health)
 
     def test_invalid_owner_generation_and_unhealthy_still_stop(self):
         good = self.publish()

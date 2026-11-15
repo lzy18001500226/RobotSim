@@ -596,16 +596,35 @@ def run_probe(smoke_only=False):
                     checked_ns=time.monotonic_ns()
                     heartbeat_age_s=(checked_ns-health["host_monotonic_ns"])*1e-9
                     physical_age_s=(checked_ns-health["native_source_host_ns"])*1e-9
+                    current_physical_age_s=(checked_ns-r["host_monotonic_ns"])*1e-9
+                    measurement_age_at_publication_s=(health["host_monotonic_ns"]-health["native_source_host_ns"])*1e-9
                     checks=dict(mode=health.get("mode")=="MEASURED_LOAD_BEARING_CARRY_HOLD",
                         healthy=health.get("healthy") is True,owner_pid=health.get("pid")==MICRO["carry"]["pid"],
                         generation=health.get("generation")==r["generation"],
-                        heartbeat_fresh=0.<=heartbeat_age_s<=.20,physical_fresh=0.<=physical_age_s<=.20)
+                        heartbeat_fresh=0.<=heartbeat_age_s<=.20,
+                        measurement_fresh_at_publication=0.<=measurement_age_at_publication_s<=.20,
+                        physical_fresh=0.<=current_physical_age_s<=.20)
                     if not all(checks.values()):
                         detail={k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}
                         detail.update(checked_host_ns=checked_ns,heartbeat_age_s=heartbeat_age_s,
-                            physical_age_s=physical_age_s,latest_physics_age_s=(checked_ns-r["host_monotonic_ns"])*1e-9,
+                            physical_age_s=physical_age_s,latest_physics_age_s=current_physical_age_s,
+                            measurement_age_at_publication_s=measurement_age_at_publication_s,
                             failed_checks=[name for name,passed in checks.items() if not passed])
                         raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED:"+json.dumps(detail))
+                    # Owner liveness and physical state are independent measured streams.
+                    # Never use heartbeat timestamps as a substitute for current object checks.
+                    for c in r.get("contacts",[]):
+                        pair={c.get("body1"),c.get("body2")}
+                        if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
+                            incidental=MICRO["carry"].get("incidental_contact_diagnostic")
+                            if incidental and c.get("distance_m",-1.)>=-.005 and pair.intersection(set(MICRO.get("robot_bodies") or [])):continue
+                            raise RuntimeError("CURRENT_CARRY_OBJECT_EXTERNAL_SUPPORT")
+                    hand=r["bodies"]["R_omnipicker_base_link"];obj=r["bodies"]["test_cylinder"];H=hand["rotation"];B=obj["rotation"]
+                    delta=[obj["position_m"][i]+health["grasp_height_above_center_m"]*B[3*i+2]-hand["position_m"][i] for i in range(3)]
+                    local=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
+                    slip=math.sqrt(sum((a-b)**2 for a,b in zip(local,health["object_in_hand_reference_m"])))
+                    if not math.isfinite(slip) or len(health["object_in_hand_reference_m"])!=3 or (slip>.01 and not health.get("carry_retention_only",False)) or (not health.get("empty_bottle_tilt_allowed",False) and B[8]<math.cos(.10)) or obj["position_m"][2]<.25:
+                        raise RuntimeError("CURRENT_CARRY_OBJECT_POSE_OR_SLIP:"+json.dumps({"slip_m":slip,"vertical_axis_dot":B[8],"bottle_z_m":obj["position_m"][2],"source_host_ns":r["host_monotonic_ns"]}))
                 if MICRO.get("carry"):
                     for c in r.get("contacts",[]):
                         pair={c.get("body1"),c.get("body2")}
