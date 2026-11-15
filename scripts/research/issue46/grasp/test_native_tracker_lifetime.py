@@ -53,8 +53,12 @@ class TrackerLifetimeTests(unittest.TestCase):
                 clock.now += max(seconds, 1e-6)
                 inputs()
 
+            compute_calls=0
             def solve(model, row, reference, seed, phase):
-                clock.now += compute_delay
+                nonlocal compute_calls
+                delay=compute_delay[min(compute_calls,len(compute_delay)-1)] if isinstance(compute_delay,list) else compute_delay
+                compute_calls+=1;clock.now+=delay
+                inputs()  # Native observer runs independently of this solver.
                 return np.zeros(len(tracker.ik.ARM)), {}
 
             inputs()
@@ -76,6 +80,7 @@ class TrackerLifetimeTests(unittest.TestCase):
                 "elapsed_s": clock.now - start,
                 "target": json.loads(output.read_text()) if output.exists() else None,
                 "trace": json.loads(output.with_suffix(".trace.json").read_text()),
+                "recoveries": json.loads(output.with_suffix(".deadline-recoveries.json").read_text()),
             }
 
     @staticmethod
@@ -133,9 +138,36 @@ class TrackerLifetimeTests(unittest.TestCase):
         self.assertGreater(result["elapsed_s"], 45.2)
         self.assertLess(result["elapsed_s"], 45.4)
 
-    def test_compute_over_200ms_still_stops(self):
+    def test_persistently_expired_computation_still_stops(self):
         result = self.run_loop(lambda elapsed: None, compute_delay=.201)
         self.assertEqual(result["failure"], "NATIVE_TRACKING_COMPUTE_DEADLINE")
+
+    def test_one_expired_result_is_discarded_then_fresh_result_published(self):
+        result=self.run_loop(lambda elapsed:None,compute_delay=[.205,.003],stop_after=.6)
+        self.assertIsNone(result["failure"])
+        self.assertEqual([x["event"] for x in result["recoveries"]],
+                         ["EXPIRED_IK_RESULT_DISCARDED","FRESH_IK_RESULT_RECOVERED"])
+        self.assertTrue(result["trace"])
+        self.assertTrue(all(0<=r["created_host_ns"]-r["source_host_ns"]<=200000000 for r in result["trace"]))
+
+    def test_carry_recovery_restarts_derivative_from_fresh_sample(self):
+        phase=self.phase("CARRY_HOLD",0.,carry_lease_s=10.,
+                         post_retract_physical_hold_pass=True,
+                         carry_source_speed_rad_s=[1.]*len(tracker.ik.ARM))
+        result=self.run_loop(lambda elapsed:phase,compute_delay=[0.,.205,.003],stop_after=.6)
+        self.assertIsNone(result["failure"])
+        self.assertEqual(result["recoveries"][-1]["event"],"FRESH_IK_RESULT_RECOVERED")
+        self.assertTrue(all(0<=r["created_host_ns"]-r["source_host_ns"]<=200000000 for r in result["trace"]))
+
+    def test_compute_recovery_cannot_hide_generation_change(self):
+        result=self.run_loop(lambda elapsed:None,compute_delay=[.205,.003],generation_after=.2)
+        self.assertEqual(result["failure"],"NATIVE_TRACKING_GENERATION_CHANGED")
+        self.assertFalse(result["trace"])
+
+    def test_compute_recovery_cannot_publish_after_50ms_budget(self):
+        result=self.run_loop(lambda elapsed:None,compute_delay=[.205,.051],stop_after=1.)
+        self.assertEqual(result["failure"],"NATIVE_TRACKING_COMPUTE_DEADLINE")
+        self.assertFalse(result["trace"])
 
     def test_generation_change_still_stops(self):
         result = self.run_loop(lambda elapsed: None, generation_after=.5)

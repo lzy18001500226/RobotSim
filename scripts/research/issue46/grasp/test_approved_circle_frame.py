@@ -103,7 +103,8 @@ class FrameTests(unittest.TestCase):
         for value in (1.,float('nan'),100.):
             with self.assertRaises(ValueError):exec(code,{'reference':{'native_no_contact_gain_cycle_budget_s':value}})
         self.assertIn("startup_deadline=time.monotonic()+45.+cycle_budget",source)
-        self.assertIn("if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')",source)
+        self.assertIn("if not 0<=age<=.20:",source)
+        self.assertIn("raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')",source)
         self.assertIn("if (now-row['host_monotonic_ns'])*1e-9>.20",source)
 
     def test_empty_bottle_rigid_carry_follows_torso_without_chasing_object(self):

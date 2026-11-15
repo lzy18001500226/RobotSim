@@ -595,7 +595,7 @@ def track_native(reference_path, latest_path, output_path):
     if reference.get("approach_staging"):source_position_mode_kp(reference)
     cycle_budget=float(reference.get('native_no_contact_gain_cycle_budget_s',0.))
     if cycle_budget not in (0.,9.):raise ValueError('unreviewed native no-contact cycle budget')
-    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);startup_deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
+    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);startup_deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];deadline_recoveries=[];recovery_deadline_ns=None;previous_carry=None;carry_velocity=np.zeros(7)
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
     # Before producing any executable target, await a genuinely fresh sample.
@@ -610,7 +610,10 @@ def track_native(reference_path, latest_path, output_path):
     try:
         while not stop.exists():
             tick=time.monotonic();row=json.loads(Path(latest_path).read_text());age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
-            if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
+            if not 0<=age<=.20:
+                if age>=0 and recovery_deadline_ns is not None and time.monotonic_ns()<recovery_deadline_ns:
+                    time.sleep(.002);continue
+                raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
             phase_path=output_path.with_name('native_tracking_phase.json')
             phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
@@ -641,7 +644,25 @@ def track_native(reference_path, latest_path, output_path):
             if revision is not None and revision!=locals().get('previous_pose_revision'):
                 seed=np.array([row['joints'][name]['q'] for name in ik.ARM])
                 previous_carry=None;previous_pose_revision=revision
-            generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
+            generation=row['generation'];previous_seed=seed.copy()
+            seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
+            now=time.monotonic_ns()
+            if (now-row['host_monotonic_ns'])*1e-9>.20:
+                # Discard expired results; the consumer holds the last setpoint
+                # and already permits a bounded 50ms fresh-target reread.
+                event={'event':'EXPIRED_IK_RESULT_DISCARDED','phase':(phase or {}).get('phase'),
+                    'source_host_ns':row['host_monotonic_ns'],'checked_host_ns':now,
+                    'source_age_s':(now-row['host_monotonic_ns'])*1e-9,
+                    'compute_wall_s':time.monotonic()-tick}
+                deadline_recoveries.append(event);print(json.dumps(event),flush=True)
+                if recovery_deadline_ns is None:recovery_deadline_ns=now+50000000
+                elif now>=recovery_deadline_ns:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
+                seed=previous_seed;previous_carry=None;carry_velocity=np.zeros(7)
+                time.sleep(0);continue
+            if recovery_deadline_ns is not None:
+                if now>recovery_deadline_ns:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
+                deadline_recoveries.append({'event':'FRESH_IK_RESULT_RECOVERED','source_host_ns':row['host_monotonic_ns'],'checked_host_ns':now})
+                recovery_deadline_ns=None
             if phase is not None and phase.get('phase')=='CARRY_HOLD':
                 if previous_carry is not None and row['host_monotonic_ns']>previous_carry[0]:
                     carry_velocity=bounded_tracking_velocity(previous_carry[1],seed,(row['host_monotonic_ns']-previous_carry[0])*1e-9,phase['carry_source_speed_rad_s'])
@@ -652,7 +673,6 @@ def track_native(reference_path, latest_path, output_path):
                     handoff={'classification':'BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
                     output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
             now=time.monotonic_ns()
-            if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
             record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'phase_revision':(phase or {}).get('carry_pose_revision'),'right_velocity_rad_s':dict(zip(ik.ARM,carry_velocity.tolist())),'metrics':metrics}
             temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path);trace.append(record)
             period=.02 if phase is not None and phase.get('phase')=='CARRY_HOLD' else .1
@@ -663,6 +683,7 @@ def track_native(reference_path, latest_path, output_path):
         raise
     finally:
         output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
+        output_path.with_suffix('.deadline-recoveries.json').write_text(json.dumps(deadline_recoveries))
 
 
 def torso_horizontal_retract(rotation):
