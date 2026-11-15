@@ -131,14 +131,21 @@ def ensure_mode(desired, read_mode, send_once, *, timeout_s=5.0, pending_readine
               "acknowledgement": None, "transport_error": None,
               "read_transport_errors": read_transport_errors}
     # Delivered McActionStatus: IDLE=0, RUNNING=100, TRANSITION=200.
+    # Another legitimate transition can still be finishing when a zero-command
+    # caller requests stand. Wait inside the original deadline; never treat200
+    # as applied and never send a competing action while it is transitioning.
+    current=initial
+    result["prior_transition_observations"]=[]
+    while current["name"]!=desired and current["status"]==200:
+        result["prior_transition_observations"].append(current)
+        _infra_time.sleep(min(.02,remaining()))
+        current=read()
     # A matching name during TRANSITION is not an applied, running mode.
-    if initial["name"] == desired and initial["status"] == 100:
-        result.update(outcome="ALREADY_APPLIED", applied=initial,
+    if current["name"] == desired and current["status"] == 100:
+        result.update(outcome="ALREADY_APPLIED", applied=current,
                       elapsed_s=infra_elapsed()-started)
         return result
-    if initial["name"] != desired:
-        if initial["status"] != 100:
-            raise ModeHandshakeError("MODE_TRANSITION_NOT_READY:" + repr(initial))
+    if current["name"] != desired:
         result["set_sent"] = True
         try:
             ack = send_once(remaining())

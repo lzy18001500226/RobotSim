@@ -99,8 +99,43 @@ class GeneratedHandshakeTests(unittest.TestCase):
     def test_other_mode_transition_cannot_be_interrupted(self):
         from scripts.research.issue46.native_runtime.mode_handshake import ensure_mode, ModeHandshakeError
         sent=[]
-        with self.assertRaisesRegex(ModeHandshakeError,"MODE_TRANSITION_NOT_READY"):
-            ensure_mode("STAND_DEFAULT", lambda _:dict(name="PASSIVE_DEFAULT",status=200,header_code=0), lambda _:sent.append(True))
+        with self.assertRaisesRegex(ModeHandshakeError,"MODE_READBACK_TIMEOUT"):
+            ensure_mode("STAND_DEFAULT", lambda _:dict(name="PASSIVE_DEFAULT",status=200,header_code=0), lambda _:sent.append(True), timeout_s=.02)
         self.assertEqual(sent,[])
+
+
+class ExistingModeTransitionTests(unittest.TestCase):
+    def invoke_transition(self, sequence, *, timeout_s=.2):
+        from unittest.mock import patch
+        from scripts.research.issue46.native_runtime import mode_handshake as m
+        clock=NS(now=0.);sent=[];rows=iter(sequence);last=sequence[-1]
+        def read(_):
+            nonlocal last
+            last=next(rows,last);return last
+        def send(_):
+            sent.append(dict(last))
+            return dict(status=1,header_code=0)
+        with patch.object(m,"infra_elapsed",lambda:clock.now), \
+             patch.object(m._infra_time,"sleep",lambda dt:setattr(clock,"now",clock.now+dt)):
+            result=m.ensure_mode("STAND_DEFAULT",read,send,timeout_s=timeout_s)
+        return result,sent
+
+    def test_existing_step_transition_finishes_before_single_stand_request(self):
+        row=lambda name,status:dict(name=name,status=status,header_code=0)
+        result,sent=self.invoke_transition([row("LOCOMOTION_STEP",200),row("LOCOMOTION_STEP",100),row("STAND_DEFAULT",100)])
+        self.assertEqual(sent,[row("LOCOMOTION_STEP",100)])
+        self.assertEqual(result["applied"],row("STAND_DEFAULT",100))
+        self.assertEqual(len(result["prior_transition_observations"]),1)
+
+    def test_already_arriving_stand_does_not_repeat_request_or_accept200(self):
+        row=lambda status:dict(name="STAND_DEFAULT",status=status,header_code=0)
+        result,sent=self.invoke_transition([row(200),row(100)])
+        self.assertFalse(sent);self.assertEqual(result["applied"],row(100))
+
+    def test_permanent_prior_transition_still_times_out(self):
+        from scripts.research.issue46.native_runtime.mode_handshake import ModeHandshakeError
+        with self.assertRaisesRegex(ModeHandshakeError,"MODE_READBACK_TIMEOUT"):
+            self.invoke_transition([dict(name="LOCOMOTION_STEP",status=200,header_code=0)],timeout_s=.10)
+
 
 if __name__ == "__main__": unittest.main()
