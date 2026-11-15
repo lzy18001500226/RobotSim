@@ -2373,13 +2373,15 @@ def main() -> None:
         pg.write_new_text(output / "post_reset_stand_sample.stdout", sample.stdout)
         sample_data = json.loads(sample.stdout.strip().splitlines()[-1]) if sample.returncode == 0 else {"returncode": sample.returncode}
         result["post_reset_stand"] = sample_data
-        if sample.returncode != 0 or not sample_data.get("stability", {}).get("pass"):
-            raise RuntimeError(f"post-reset stand is unstable: {sample.stdout[-1200:]}")
-        result["gates"]["POST_RESET_STAND_STABILITY"] = "PASS"
         if args.lateral_motion_direction or args.far_observe_approach:
             from scripts.research.issue46.native_runtime.native_lateral_motion_probe import confirm_physical_standing
             result["initial_native_standing_check"]=confirm_physical_standing(output)
             result["gates"]["INITIAL_NATIVE_PHYSICAL_STANDING"]="PASS"
+        qualification=stl_hand_startup.qualify_initial_standing(sample_data,result.get("initial_native_standing_check"))
+        result["initial_stand_evidence_qualification"]=qualification
+        if sample.returncode != 0 or not qualification["pass"]:
+            raise RuntimeError("POST_RESET_STAND_UNQUALIFIED:"+json.dumps(qualification))
+        result["gates"]["POST_RESET_STAND_STABILITY"] = "PASS"
         if args.startup_opening_diagnostic:
             # No route/source/arm plan may execute after this diagnostic branch.
             observed=[];deadline=time.monotonic()+8.;initial_xy=None

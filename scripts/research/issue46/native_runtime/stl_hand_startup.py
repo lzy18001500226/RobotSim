@@ -283,6 +283,25 @@ def build_native_arm_relay_config(source: dict[str, object], *, relay_waist=Fals
     return result
 
 
+def qualify_initial_standing(ros_observation, native_check=None):
+    """Keep missing ROS odometry separate from measured physical instability."""
+    mode_ok=(ros_observation.get("mode_name")=="STAND_DEFAULT" and
+             ros_observation.get("mode_status")==100)
+    stability=ros_observation.get("stability",{})
+    if mode_ok and stability.get("pass"):
+        return {"pass":True,"evidence":"ROS_ODOMETRY_AND_IMU"}
+    no_odom=(stability.get("sample_count")==0 and
+             stability.get("planar_drift_m") is None)
+    if mode_ok and no_odom and native_check and native_check.get("pass_result"):
+        drift=native_check.get("max_planar_drift_m")
+        if drift is not None and 0. <= drift <= .05:
+            return {"pass":True,"evidence":"FRESH_NATIVE_HEIGHT_TILT_BILATERAL_SUPPORT_AND_DRIFT",
+                    "warning":"ROS_ODOMETRY_NOT_OBSERVED; original ROS evidence remains missing",
+                    "thresholds_changed":False}
+    return {"pass":False,"failure":"STAND_OBSERVATION_MISSING" if no_odom
+            else "STAND_STABILITY_UNQUALIFIED","mode_qualified":mode_ok}
+
+
 def build_stand_client_script(*, observe_only: bool = False) -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
     code = """#!/usr/bin/env python3

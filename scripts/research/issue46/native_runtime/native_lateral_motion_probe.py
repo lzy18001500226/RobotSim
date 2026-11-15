@@ -147,7 +147,7 @@ def native_standing_snapshot(row):
     if pose["z"]<.45:reasons.append("HEIGHT")
     if math.hypot(pose["roll"],pose["pitch"])>math.radians(15):reasons.append("TILT")
     if min(feet.values())<5.:reasons.append("BILATERAL_SUPPORT")
-    return dict(ready=not reasons,reasons=reasons,height_m=pose["z"],feet_normal_n=feet,source_host_ns=row["host_monotonic_ns"],generation=row["generation"],sim_time_s=row["sim_time_s"])
+    return dict(ready=not reasons,reasons=reasons,x_m=pose["x"],y_m=pose["y"],height_m=pose["z"],feet_normal_n=feet,source_host_ns=row["host_monotonic_ns"],generation=row["generation"],sim_time_s=row["sim_time_s"])
 
 
 def confirm_physical_standing(output):
@@ -160,8 +160,10 @@ def confirm_physical_standing(output):
             raise RuntimeError("LATERAL_INITIAL_PHYSICAL_STAND_FAILED:"+str(value["reasons"]))
         if first is None:first=value
         if value["generation"]!=first["generation"]:raise RuntimeError("INITIAL_STAND_GENERATION_CHANGED")
+        drift=max(math.hypot(v["x_m"]-first["x_m"],v["y_m"]-first["y_m"]) for v in rows)
+        if drift>.05:raise RuntimeError("INITIAL_STAND_PLANAR_DRIFT")
         if value["sim_time_s"]-first["sim_time_s"]>=1.:
-            result=dict(pass_result=True,samples=rows,scope="REAL_PHYSICS_HEIGHT_TILT_AND_BILATERAL_SUPPORT",thresholds_changed=False)
+            result=dict(pass_result=True,samples=rows,max_planar_drift_m=drift,scope="REAL_PHYSICS_HEIGHT_TILT_BILATERAL_SUPPORT_AND_DRIFT",thresholds_changed=False)
             pg.write_new_text(output/"initial_native_standing_check.json",json.dumps(result,indent=2)+"\n");return result
         time.sleep(.02)
     raise RuntimeError("INITIAL_PHYSICAL_STANDING_WINDOW_INCOMPLETE")
