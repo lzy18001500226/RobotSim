@@ -86,6 +86,16 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Existing supported stop sequence: retain active zero commands for
         # the full window before relinquishing our own input source.
         result["release_source_after_zero_window"]=True
+        # The scene front wall has a real central opening. A root-only room
+        # rectangle rejected an actual stopped carry at y=-1.931787m while
+        # the nearest enabled wall proxy was150mm away. Reuse the existing
+        # bounded opening apron; keep side walls and every collision gate.
+        box=result.get("task_workspace_xy_bounds",[-1.65,1.65,-1.75,1.75])
+        result["front_opening_apron_xy_bounds"]=[-.65,.65,-2.35,box[2]]
+        result["front_opening_apron_scope"]="RAICOM_CENTRAL_OPENING_TASK_AREA_ONLY"
+        result["front_opening_apron_evidence"]=(
+            "reviews/issue-46/carry-opening-workspace-case5-20261115T101836Z/"
+            "saved_pose_turn_screen_aabb_verified.json")
         # Loaded CCW forward arcs at the measured south-wall start drifted
         # into the wall-side workspace. Reuse the physically successful
         # clockwise/pure-yaw prefix; actual-pose route screening remains required.

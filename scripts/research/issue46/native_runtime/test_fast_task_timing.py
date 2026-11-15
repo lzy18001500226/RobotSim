@@ -71,7 +71,9 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertNotIn("release_source_after_zero_window",default)
         self.assertTrue(fast["release_source_after_zero_window"])
         self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
-        self.assertNotIn("front_opening_apron_xy_bounds",fast)
+        self.assertEqual(fast["front_opening_apron_xy_bounds"],[-.65,.65,-2.35,-1.75])
+        self.assertNotIn("front_opening_apron_xy_bounds",default)
+
         self.assertEqual(fast["minimum_actual_retreat_m"],.30)
         self.assertEqual(fast["retreat_target_m"],.70)
         self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
@@ -91,6 +93,21 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["approach_task_yaw_tolerance_rad"],.30)
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("release_source_after_zero_window",cfg)
+    def test_real_stopped_carry_uses_opening_without_admitting_side_walls(self):
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import carry_workspace_contains
+        cfg={"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,
+             "turn_translation_strategy":"PURE_YAW","base_goal_world_xy":[.015,.98],
+             "task_workspace_xy_bounds":[-1.85,1.85,-1.9,1.85]}
+        fast=task_route_profile(cfg,fast_task_timing=True)
+        box=fast["task_workspace_xy_bounds"];apron=fast["front_opening_apron_xy_bounds"]
+        self.assertFalse(carry_workspace_contains({"x":.559361939,"y":-1.931787011},box))
+        self.assertTrue(carry_workspace_contains({"x":.559361939,"y":-1.931787011},box,apron))
+        for x,y in ((.66,-1.93),(-.66,-1.93),(0.,-2.351),(1.,-2.),(-1.,-2.)):
+            self.assertFalse(carry_workspace_contains({"x":x,"y":y},box,apron))
+        self.assertEqual(box,cfg["task_workspace_xy_bounds"])
+        self.assertNotIn("front_opening_apron_xy_bounds",cfg)
+
 class ClockFaultBrakingSourceTests(unittest.TestCase):
     def test_clock_stop_keeps_zero_source_until_existing_handoff(self):
         from scripts.research.issue46.native_runtime.native_base_micro_probe import qualified_carry_clock_stop
