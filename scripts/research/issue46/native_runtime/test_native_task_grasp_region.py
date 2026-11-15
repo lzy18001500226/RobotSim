@@ -243,6 +243,76 @@ class FreshRgbdAcquisitionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_ACQUISITION_DEADLINE"):
             self.run_acquisition([.06],timeout_s=.05)
 
+
+class StationarySnapshotHandoffTests(unittest.TestCase):
+    def acquire(self, *, freeze_delays=(243609, 0), timeout_s=6.,
+                verification_offset_m=0., read_fault=None):
+        from unittest.mock import patch
+        from scripts.research.issue46.perception import native_rgbd_grasp as vision
+        clock = {"now": 1_000_000_000, "images": 0, "freeze": 0}
+        audit = []
+        original_freeze = vision.make_stationary_snapshot
+        def read():
+            if read_fault:
+                raise RuntimeError(read_fault)
+            return {"generation": 1, "host_monotonic_ns": clock["now"]}
+        def capture(native):
+            clock["images"] += 1
+            duration = 88_453_663 if clock["images"] == 1 else 199_867_690
+            clock["now"] += duration
+            shift = verification_offset_m if clock["images"] > 1 else 0.
+            return clock["images"], {"center_xy_world_m": [1.42+shift, -1.38],
+                "top_world_z_m": .77, "axis_world": [0., 0., 1.], "diameter_m": .07}
+        def freeze(*args, **kwargs):
+            n = clock["freeze"]
+            clock["freeze"] += 1
+            clock["now"] += freeze_delays[min(n, len(freeze_delays)-1)]
+            return original_freeze(*args, **kwargs)
+        with patch.object(task.time, "monotonic_ns", side_effect=lambda: clock["now"]), \
+             patch.object(vision, "make_stationary_snapshot", side_effect=freeze):
+            result = task.acquire_stationary_control_snapshot(
+                read, capture, generation=1, after_source_ns=0,
+                acquisition_audit=audit, index=5, timeout_s=timeout_s)
+        return result, audit, clock
+
+    def test_saved_199867_to_200111_ms_boundary_reacquires_new_verification(self):
+        (native, images, snapshot), audit, clock = self.acquire()
+        self.assertEqual(clock["images"], 3)
+        rejected = audit[1]["snapshot_rejections"]
+        self.assertEqual(len(rejected), 1)
+        self.assertAlmostEqual(float(rejected[0]["failure"].split(":")[1]),
+                               .200111299)
+        self.assertFalse(rejected[0]["used_for_planning"])
+        verified = snapshot["pre_execution_verification"]
+        self.assertGreater(verified["source_host_ns"], rejected[0]["source_host_ns"])
+        self.assertEqual(verified["source_host_ns"], native["host_monotonic_ns"])
+        self.assertEqual(images, [("a", 1), ("b", 3)])
+        self.assertLessEqual((snapshot["frozen_at_host_ns"]-
+                              verified["source_host_ns"])*1e-9, .20)
+
+    def test_fresh_pair_is_used_without_retry(self):
+        (native, images, snapshot), audit, clock = self.acquire(freeze_delays=(0,))
+        self.assertEqual(clock["images"], 2)
+        self.assertFalse(audit[1]["snapshot_rejections"])
+        self.assertEqual(images, [("a", 1), ("b", 2)])
+
+    def test_persistently_expiring_verifications_exhaust_bounded_readiness(self):
+        with self.assertRaisesRegex(RuntimeError, "TASK_RGBD_.*(TIMEOUT|DEADLINE)"):
+            self.acquire(freeze_delays=(243609,), timeout_s=.6)
+
+    def test_observed_object_motion_is_not_swallowed_as_a_stale_image(self):
+        with self.assertRaisesRegex(RuntimeError, "OBJECT_NOT_STATIONARY"):
+            self.acquire(freeze_delays=(0,), verification_offset_m=.01)
+
+    def test_native_physical_fault_is_not_retried(self):
+        with self.assertRaisesRegex(RuntimeError, "SOURCE_JOINT_LIMIT"):
+            self.acquire(read_fault="SOURCE_JOINT_LIMIT")
+
+    def test_no_unbounded_readiness_budget(self):
+        with self.assertRaisesRegex(ValueError, "budget"):
+            self.acquire(timeout_s=7.)
+
+
 if __name__ == "__main__":
     unittest.main()
 

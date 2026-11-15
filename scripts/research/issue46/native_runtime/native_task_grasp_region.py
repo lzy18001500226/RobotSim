@@ -68,6 +68,51 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
         return native, rgb, observation
     raise RuntimeError("TASK_RGBD_ACQUISITION_TIMEOUT")
 
+
+def acquire_stationary_control_snapshot(read_native, capture, *, generation,
+                                        after_source_ns, acquisition_audit,
+                                        index, timeout_s=6.0):
+    """No-motion readiness: retry an expired verification before freezing it.
+
+    Keep both image source stamps and the 200ms check. The total budget equals
+    the previous two 3s acquisitions; physical/source faults still propagate.
+    """
+    from scripts.research.issue46.perception import native_rgbd_grasp as vision
+    if not 0. < timeout_s <= 6.:
+        raise ValueError("stationary RGBD acquisition budget exceeds 6s")
+    deadline = time.monotonic_ns()+round(timeout_s*1e9)
+    observations, captured_images = [], []
+    for label in ("a", "b"):
+        audit = {"index": index, "label": label, "attempts": [],
+                 "snapshot_rejections": []}
+        acquisition_audit.append(audit)
+        while True:
+            remaining_s = (deadline-time.monotonic_ns())*1e-9
+            if remaining_s <= 0.:
+                raise RuntimeError("TASK_RGBD_SNAPSHOT_ACQUISITION_TIMEOUT")
+            native, rgb, obs = acquire_control_observation(
+                read_native, capture, generation=generation,
+                after_source_ns=after_source_ns, attempts=audit["attempts"],
+                timeout_s=min(3., remaining_s))
+            after_source_ns = native["host_monotonic_ns"]
+            if label == "b":
+                try:
+                    snapshot = vision.make_stationary_snapshot(
+                        observations[0], obs, generation=generation)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("STALE_RGBD_SOURCE:"):
+                        raise
+                    audit["snapshot_rejections"].append({
+                        "source_host_ns": obs["source_host_ns"],
+                        "rejected_host_ns": time.monotonic_ns(),
+                        "failure": str(exc), "used_for_planning": False})
+                    continue
+            observations.append(obs)
+            captured_images.append((label, rgb))
+            break
+    return native, captured_images, snapshot
+
+
 def task_route_profile(profile, *, fast_task_timing=False):
     """Select the short checked turn; preserve every physical/control bound."""
     import copy
@@ -896,21 +941,12 @@ def execute(run, container, environment, output, scene, cache, reference, limits
             return rgb, estimated
         adjustment_budget=reference["maximum_stance_adjustments"]
         for index in range(adjustment_budget+1):
-            observations = []
-            captured_images=[]
-            for label in ("a", "b"):
-                audit = {"index": index, "label": label, "attempts": []}
-                acquisition_audit.append(audit)
-                native, rgb, obs = acquire_control_observation(
-                    lambda: read_fresh_native_row(output/"native_latest.json"), capture,
-                    generation=warm["generation"], after_source_ns=after_source_ns,
-                    attempts=audit["attempts"])
-                after_source_ns = native["host_monotonic_ns"]
-                observations.append(obs)
-                captured_images.append((label,rgb))
-            # Qualify/freeze acquired observations before diagnostic PNG I/O.
-            # No timestamp changes: only valid fresh frames can create a snapshot.
-            snapshot = vision.make_stationary_snapshot(*observations, generation=native["generation"])
+            native, captured_images, snapshot = acquire_stationary_control_snapshot(
+                lambda: read_fresh_native_row(output/"native_latest.json"), capture,
+                generation=warm["generation"], after_source_ns=after_source_ns,
+                acquisition_audit=acquisition_audit, index=index)
+            after_source_ns = native["host_monotonic_ns"]
+            # Only a successfully frozen fresh pair can reach planning or PNG I/O.
             for label,picture in captured_images:
                 Image.fromarray(picture).save(output/f"task_region_{index}_{label}.png")
             early_target=-2.15
