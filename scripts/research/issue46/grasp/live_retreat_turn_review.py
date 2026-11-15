@@ -69,6 +69,11 @@ def main():
     if args.fast_task_timing:
         if not args.task_grasp_region or args.bottle_height_m!=.22:raise ValueError("fast timing requires H220 RGBD task")
         CMD.append("--fast-task-timing")
+        if not args.grasp_only:
+            # One full-task budget includes ownership, source-mode readbacks,
+            # measured stops and both legs of travel, not only commanded motion.
+            if "--carry-timeout-s" in CMD:CMD[CMD.index("--carry-timeout-s")+1]="180"
+            else:CMD.extend(["--carry-timeout-s","180"])
     if args.lateral_motion_direction:
         if not args.from_start or not args.task_grasp_region or args.bottle_height_m!=.22 or getattr(args,"grasp_only",False):raise ValueError("lateral diagnostics require full START H220 observation")
         CMD.extend(["--lateral-motion-direction",args.lateral_motion_direction,"--lateral-motion-profile",args.lateral_motion_profile])
@@ -137,7 +142,7 @@ def main():
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
     if args.to_delivery_table:
         from scripts.research.issue46.native_runtime.native_base_micro_probe import build_carry_route_script
-        route_check=build_carry_route_script(None,{},[],carry_pid=1,timeout_s=90.,transit_policy_050=True,away_1m=True,straight_retreat_turn=True,compact_turn=True,gait_prepare=("--carry-gait-prepare" in CMD),transit_command_speed=float(CMD[CMD.index("--carry-transit-command-speed")+1]),compact_centre_feedback=True,release_source_on_stop=True,compact_angular_cap=args.carry_angular_cap,delivery=json.loads(profile.read_text()),vendor_transition_table=True)
+        route_check=build_carry_route_script(None,{},[],carry_pid=1,timeout_s=float(CMD[CMD.index("--carry-timeout-s")+1]) if "--carry-timeout-s" in CMD else 90.,transit_policy_050=True,away_1m=True,straight_retreat_turn=True,compact_turn=True,gait_prepare=("--carry-gait-prepare" in CMD),transit_command_speed=float(CMD[CMD.index("--carry-transit-command-speed")+1]),compact_centre_feedback=True,release_source_on_stop=True,compact_angular_cap=args.carry_angular_cap,delivery=json.loads(profile.read_text()),vendor_transition_table=True)
         compile(route_check,'prephysics_route_configuration','exec')
     if args.check_only:
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return

@@ -226,7 +226,8 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
     if phase=="TRANSIT":
         if record is not None or path.exists():raise RuntimeError("CARRY_TRANSIT_REARM_FORBIDDEN")
         seconds=float(cfg["timeout_s"])
-        if not 5.<=seconds<=90.:raise ValueError("CARRY_TRANSIT_TIMEOUT")
+        limit=180. if cfg.get("delivery") and cfg.get("straight_retreat_turn") and cfg.get("away_1m") and cfg.get("transit_policy_050") else 90.
+        if not 5.<=seconds<=limit:raise ValueError("CARRY_TRANSIT_TIMEOUT")
         if name=="carry_transit_delivery_permit.json":
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
             if not cfg.get("delivery") or cfg.get("delivery_turn_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
@@ -1270,7 +1271,8 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
         # One command bound across compact turn and the later delivery leg.
         delivery=dict(delivery,delivery_tracking_angular_cap_rad_s=min(float(angular_command_cap),float(delivery.get("delivery_tracking_angular_cap_rad_s",angular_command_cap))))
     if angular_command_cap not in (.075,.10,.30,.60) or angular_command_cap>.10 and not compact_turn:raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
-    if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
+    wall_budget_limit=180. if delivery and straight_retreat_turn and away_1m and transit_policy_050 else 90.
+    if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=wall_budget_limit or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     if away_1m and (not transit_policy_050 or (native_step and not straight_retreat_turn) or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
     if transit_command_speed not in (.12,.20) or transit_command_speed>.12 and not (straight_retreat_turn and transit_policy_050):

@@ -527,3 +527,26 @@ class ActualStoppedTurnDirectionTests(unittest.TestCase):
         self.assertGreater(target-pose["yaw"],0.)
         self.assertLess(abs(target-pose["yaw"]),math.pi)
         self.assertAlmostEqual(target,bearing)
+
+class CompleteTransferBudgetTests(unittest.TestCase):
+    def test_complete_transfer_accepts_bounded_budget_without_changing_physical_caps(self):
+        import ast
+        from .native_task_grasp_region import task_route_profile
+        from .native_base_micro_probe import build_carry_route_script
+        profile=Path(runtime.REPO)/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json"
+        cfg=task_route_profile(json.loads(profile.read_text()),fast_task_timing=True)
+        kwargs=dict(carry_pid=19,transit_policy_050=True,away_1m=True,
+                    straight_retreat_turn=True,compact_turn=True,transit_command_speed=.20,
+                    compact_centre_feedback=True,release_source_on_stop=True,
+                    compact_angular_cap=.60,delivery=cfg,vendor_transition_table=True,
+                    native_step=cfg.get("transit_motion_mode")=="LOCOMOTION_STEP")
+        code=build_carry_route_script(None,{},[],timeout_s=180.,**kwargs)
+        compile(code,"bounded_complete_transfer","exec")
+        tree=ast.parse(code)
+        call=next(n.value for n in reversed(tree.body) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and n.value.func.attr=="update")
+        actual=ast.literal_eval(call.args[0])["carry"]
+        self.assertEqual(actual["timeout_s"],180.)
+        self.assertEqual(actual["delivery"]["transit_root_cap_m_s"],.60)
+        self.assertEqual(actual["angular_command_cap"],.60)
+        with self.assertRaises(ValueError):build_carry_route_script(None,{},[],timeout_s=181.,**kwargs)
+        with self.assertRaises(ValueError):build_carry_route_script([0.,0.],{},[],carry_pid=19,timeout_s=180.)
