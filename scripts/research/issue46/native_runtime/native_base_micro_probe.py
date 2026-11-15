@@ -2345,6 +2345,12 @@ def run_carry_navigation(n,contract):
                     scale=bounded_start_scale(max(0.,tick-activation_started),ramp_s)
                     angular*=scale;forward*=scale
                     mission["turn_input_ramp_s"]=ramp_s
+                if mission is not None and mission["phase"]=="RETREAT" and cfg.get("transit_command_speed",.12)==.20 and not (cfg.get("delivery") or {}).get("rearward_foundation_transit"):
+                    # A restored standing pose must not receive a full reverse
+                    # step input. Reuse the reviewed two-second task-input ramp.
+                    scale=bounded_start_scale(max(0.,tick-activation_started),2.)
+                    forward*=scale;angular*=scale
+                    mission["retreat_input_ramp_s"]=2.
                 if mission is not None:
                     forward,angular=loaded_foundation_start(cfg.get("delivery") or {},mission["phase"],
                         max(0.,tick-activation_started),forward,angular)
