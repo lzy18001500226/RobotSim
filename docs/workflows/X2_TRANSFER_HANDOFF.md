@@ -4,6 +4,20 @@
 
 ## 当前Goal：提高验证效率并完成统一11点，再接LiDAR（2026-11-14）
 
+d0f9f48新5号002356Z：实际抬升最小59.005mm、手部上向支持1.962344N、
+取瓶桌力0；退开、转身、前向到第二桌和物理复合停稳通过，放置NOT RUN。
+失效是可选第二次补走中的TERMINAL_REAPPROACH_HEADING_CHANGED，不是碰撞、
+速度门或抓取失败。记录状态离线复核：第一次停姿(.237656,.769953)放置IK失败；
+一次补走后(.202005,.847136)原完整lowering/placement检查PASS_STATIC。
+原名义目标(.015,.90)位于约43deg边界，第二次激活的轻微漂移就触发异常。
+修正为目标离开既有前进锥时停止可选补走，保留完整零输入/站立/复合停稳，
+正常返回原名义导航结果，再由既有实际站姿放置IK决定是否伸手；不升级名义
+坐标或任何物理失败。已发非零命令仍须观测实际STEP/source；未发非零命令
+不得因未观测STEP而伪报失败。240项聚焦回归通过；新动态结果另记。
+离线证据reviews/issue-46/case5-terminal-stop-placement-forensics-20261115T003528Z/，
+0次mj_step；不能替代新物理放置结果。
+
+
 0318a08新实测：0号000148Z完整START搬运放置PASS，最小抬升58.861mm，
 最终桌面独立支撑2.020s/min1.961997N、pad0N。视频：
 reviews/issue-46/native-transfer-recorded-review-20261115T001008Z/full_x2_actual_transfer_review.mp4。

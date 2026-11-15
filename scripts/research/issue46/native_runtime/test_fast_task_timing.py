@@ -72,8 +72,8 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertTrue(fast["release_source_after_zero_window"])
         self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
         self.assertNotIn("front_opening_apron_xy_bounds",fast)
-        self.assertNotIn("minimum_actual_retreat_m",fast)
-        self.assertNotIn("retreat_target_m",fast)
+        self.assertEqual(fast["minimum_actual_retreat_m"],.30)
+        self.assertEqual(fast["retreat_target_m"],.70)
         self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
         self.assertEqual(fast["delivery_motion_mode"],"LOCOMOTION_STEP")
         self.assertFalse(fast["rearward_foundation_transit"])
@@ -305,6 +305,78 @@ class TerminalReapproachContractTests(unittest.TestCase):
         self.assertIn('TERMINAL_REAPPROACH_STOP_OR_TIME_UNQUALIFIED',code)
         self.assertIn('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED',code)
         self.assertIn('n.publish(0.12',code)
+class TerminalReapproachForwardConeTests(unittest.TestCase):
+    """Execute the generated optional correction, including its physical stop."""
+    def run_guard(self, *, issue_first=False, acquired=True, stopped=True, body=1):
+        import ast, math
+        from types import SimpleNamespace
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        tree=ast.parse(micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True))
+        guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(x,ast.Constant) and x.value=="bounded_terminal_forward_reapproach" for x in ast.walk(n.test)))
+        start=dict(x=.20200494085780069,y=.8471362097209246,yaw=2.1237359516808545)
+        outside=dict(start,yaw=2.10)
+        events=[];samples=[]
+        if issue_first:samples.append(dict(start))
+        samples.extend([outside]*8)
+        class Node:
+            stop_started=False
+            trace=[]
+            latest_row={}
+            def await_graph(self):events.append("graph")
+            def stand_once(self,*args):events.append(("stand",args))
+            def source_enabled(self,value):events.append(("source",value))
+            def pump(self):pass
+            def sample(self):
+                pose=samples.pop(0)
+                return dict(pose=pose,body_status=body,common_mode_desc="LOCOMOTION_STEP" if acquired else "STAND_DEFAULT",
+                            get_mode_desc="LOCOMOTION_STEP" if acquired else "STAND_DEFAULT",
+                            common_source={"name":"robotsim_official_cmd_vel"})
+            def publish(self,*values):events.append(("nonzero",values))
+            def deadline_zero(self):events.append("zero")
+            def observe(self,duration,**kwargs):
+                events.append(("observe",duration,kwargs))
+                return {"pass":stopped}
+        cfg={"delivery":{"bounded_terminal_forward_reapproach":True},"permit_filename":"first.json","release_source_on_stop":True}
+        result={"post_stop_composite":{"pass":True}}
+        ns=dict(mission={"phase":"DELIVERY"},cfg=cfg,result=result,end=start,goal=[.015,.90],
+                n=Node(),baseline=1,until=100.,time=SimpleNamespace(monotonic=lambda:10.,sleep=lambda _:None),
+                math=math,functional_approach_limit=lambda *_:.15,
+                carry_transit_phase=lambda *args:{"phase":args[1]},closed_permits=[],transit_permit={},
+                arm_carry_motion=lambda *args:events.append("arm"),stop_wait_s=2.)
+        return compile(ast.Module(body=[guard],type_ignores=[]),"actual optional forward correction","exec"),ns,events
+
+    def test_outside_cone_before_first_command_stops_without_false_applied_mode_failure(self):
+        code,ns,events=self.run_guard(acquired=False)
+        exec(code,ns)
+        self.assertFalse(any(isinstance(e,tuple) and e[0]=="nonzero" for e in events))
+        self.assertIn("zero",events)
+        self.assertTrue(any(isinstance(e,tuple) and e[0]=="observe" and e[2].get("require_stop") for e in events))
+        self.assertEqual(ns["result"]["terminal_reapproach_deferred_to_actual_placement"]["reason"],"NOMINAL_GOAL_LEFT_FORWARD_CONE")
+        self.assertTrue(ns["result"]["terminal_reapproach_deferred_to_actual_placement"]["original_placement_preflight_still_required"])
+        self.assertFalse(ns["result"]["terminal_forward_reapproach"][0]["nonzero_commands_issued"])
+        self.assertEqual(ns["cfg"]["delivery_rearm_count"],1)
+
+    def test_leaving_cone_after_command_zeros_and_requires_fresh_stop(self):
+        code,ns,events=self.run_guard(issue_first=True)
+        exec(code,ns)
+        self.assertEqual(sum(isinstance(e,tuple) and e[0]=="nonzero" for e in events),1)
+        self.assertTrue(ns["result"]["terminal_forward_reapproach"][0]["nonzero_commands_issued"])
+        self.assertTrue(ns["result"]["post_stop_composite"]["pass"])
+        self.assertEqual(ns["cfg"]["delivery_rearm_count"],1)
+
+    def test_nonzero_command_still_requires_applied_mode(self):
+        code,ns,_=self.run_guard(issue_first=True,acquired=False)
+        with self.assertRaisesRegex(RuntimeError,"TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED"):exec(code,ns)
+
+    def test_failed_stop_is_never_upgraded(self):
+        code,ns,_=self.run_guard(stopped=False)
+        exec(code,ns)
+        self.assertFalse(ns["result"]["post_stop_composite"]["pass"])
+
+    def test_body_status_failure_remains_immediate(self):
+        code,ns,_=self.run_guard(body=2)
+        with self.assertRaisesRegex(RuntimeError,"TERMINAL_REAPPROACH_BODY_STATUS"):exec(code,ns)
+
 class CarryShoulderPlanningReserveTests(unittest.TestCase):
     def test_loaded_gait_reserve_stays_inside_unchanged_source_bounds(self):
         import numpy as np

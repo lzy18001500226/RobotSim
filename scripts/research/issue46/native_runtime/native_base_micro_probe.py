@@ -2372,18 +2372,24 @@ def run_carry_navigation(n,contract):
                     n.pump();pulse=n.sample();pose=pulse['pose']
                     if pulse['body_status']!=baseline:raise RuntimeError('TERMINAL_REAPPROACH_BODY_STATUS')
                     err=(math.atan2(goal[1]-pose['y'],goal[0]-pose['x'])-pose['yaw']+math.pi)%(2*math.pi)-math.pi
-                    if abs(err)>.75:raise RuntimeError('TERMINAL_REAPPROACH_HEADING_CHANGED')
+                    if abs(err)>.75:
+                        # A nominal goal drifting out of the forward cone is
+                        # a reason to stop this optional correction, not to
+                        # discard an otherwise safe actual-pose placement.
+                        result['terminal_reapproach_deferred_to_actual_placement']=dict(reason='NOMINAL_GOAL_LEFT_FORWARD_CONE',measured_pose=pose,original_placement_preflight_still_required=True)
+                        break
                     pulse_acquired=pulse_acquired or (pulse['common_mode_desc']=='LOCOMOTION_STEP' and pulse['get_mode_desc']=='LOCOMOTION_STEP' and pulse['common_source']['name']=='robotsim_official_cmd_vel')
                     first_pulse=pose if first_pulse is None else first_pulse
                     n.publish(.12,0.,max(-.60,min(.60,2.4*err)));n.trace.append(pulse);time.sleep(.02)
                 n.deadline_zero();n.stop_started=True;transit_permit=carry_transit_phase(transit_permit,'BRAKING',cfg,n.latest_row)
                 n.observe(1.05,baseline=baseline);n.pump();pulse=n.sample()
                 pulse_acquired=pulse_acquired or (pulse['common_mode_desc']=='LOCOMOTION_STEP' and pulse['get_mode_desc']=='LOCOMOTION_STEP' and pulse['common_source']['name']=='robotsim_official_cmd_vel')
-                if not pulse_acquired:raise RuntimeError('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED')
+                if first_pulse is not None and not pulse_acquired:raise RuntimeError('TERMINAL_REAPPROACH_APPLIED_MODE_NOT_OBSERVED')
                 if cfg.get('release_source_on_stop'):n.source_enabled(False)
                 n.stand_once();stopped=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
                 end=n.sample()['pose'];result['post_stop_composite']=stopped;result['end_pose']=end
-                result.setdefault('terminal_forward_reapproach',[]).append(dict(index=correction,source_pose=first_pulse,stop=stopped,stopped_pose=end,requested_nonzero_duration_s=.20,source_and_mode_observed=pulse_acquired))
+                result.setdefault('terminal_forward_reapproach',[]).append(dict(index=correction,source_pose=first_pulse,stop=stopped,stopped_pose=end,requested_nonzero_duration_s=.20,source_and_mode_observed=pulse_acquired,nonzero_commands_issued=first_pulse is not None))
+                if result.get('terminal_reapproach_deferred_to_actual_placement'):break
         if mission is not None and mission.get('phase')=='DELIVERY' and cfg['delivery'].get('bounded_final_dock_alignment'):
             saved_mode=cfg.get('motion_mode');cfg['motion_mode']='LOCOMOTION_DEFAULT'
             old_turn_delta=(mission['turn_end_pose']['yaw']-mission['previous_yaw']+math.pi)%(2*math.pi)-math.pi
