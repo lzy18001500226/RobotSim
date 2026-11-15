@@ -87,6 +87,25 @@ def observe_placement_approach(tick,point,axis,hand_command,observation,*,genera
     raise RuntimeError("PLACEMENT_APPROACH_NOT_REACHED:"+json.dumps(dict(last=last,stable_samples=len(stable))))
 
 
+def placement_execution_budget():
+    """Bound host execution separately from unchanged physical acceptance.
+
+    Each 20 ms send also performs feedback, tracking and publication. The
+    recorded case5 approach took 29.089 s for 375 scheduled ticks plus measured
+    convergence; 35 s cannot cover the complete 1025-tick placement. Budget
+    200 ms host time per scheduled tick, plus independently bounded
+    convergence and two real support observations. This is a task watchdog,
+    not permission for stale feedback or a mechanical tolerance.
+    """
+    motion_ticks=150+200+25+400+150+100
+    tick_wall_s=.20
+    approach_wall_s=2.5
+    support_wall_s=10.
+    return dict(motion_ticks=motion_ticks,tick_wall_s=tick_wall_s,
+                approach_wall_s=approach_wall_s,support_wall_s=support_wall_s,
+                total_wall_s=motion_ticks*tick_wall_s+approach_wall_s+2.*support_wall_s)
+
+
 def perform_native_placement(n, request):
     # This function is injected into the existing owner process. It uses that
     # process's original send/tracker/force/feedback path, never a second owner.
@@ -97,7 +116,9 @@ def perform_native_placement(n, request):
         request.get("confirmed_stand") is not True or
         not 0.<=(time.monotonic_ns()-int(request["created_host_ns"]))*1e-9<=.20):
         raise RuntimeError("PLACEMENT_HANDOFF_NOT_QUALIFIED")
-    began=time.monotonic()
+    began=time.monotonic();budget=placement_execution_budget();deadline=began+budget["total_wall_s"]
+    timing=dict(budget=budget,stage="INITIALIZE",command_ticks=0,maximum_tick_wall_s=0.)
+    n.placement_timing=timing
     n.refresh_native();n.placement_root_start=list(n.native_row["bodies"]["pelvis"]["position_m"])
     if request.get("preplacement_arm_settings"):
         n.placement_request=request
@@ -115,14 +136,19 @@ def perform_native_placement(n, request):
     n.lift_phase.update(placement_active=True,placement_start_world_m=initial,placement_request=request)
     rows=[];n.placement_rows=rows
     def tick(point,axis,hand_command):
-        if time.monotonic()-began>35.:raise RuntimeError("PLACEMENT_WATCHDOG")
-        n.lift_phase.update(placement_target_world_m=list(point),placement_axis_world=list(axis))
+        if time.monotonic()>deadline:raise RuntimeError("PLACEMENT_WATCHDOG:"+json.dumps(timing))
+        tick_started=time.monotonic()
+        timing["elapsed_wall_s"]=time.monotonic()-began
+        n.lift_phase.update(placement_target_world_m=list(point),placement_axis_world=list(axis),placement_execution_timing=dict(timing))
         n.write_phase(n.lift_phase)
         n.send(target,.02,"CARRY_HOLD",hand_command)
         n.refresh_native()
         if math.dist(start_pose,n.native_row["bodies"]["pelvis"]["position_m"])>.08:raise RuntimeError("PLACEMENT_BASE_MOVED")
         if not rows or n.native_row["host_monotonic_ns"]>rows[-1]["host_monotonic_ns"]:rows.append(n.native_row)
+        timing["command_ticks"]+=1
+        timing["maximum_tick_wall_s"]=max(timing["maximum_tick_wall_s"],time.monotonic()-tick_started)
         return placement_contact_state(n.native_row,request)
+    timing["stage"]="RAISE_TO_CLEARANCE"
     high=initial.copy();high[2]=max(initial[2],clearance[2])
     for index in range(150):
         u=(index+1)/150.;v=u*u*(3.-2.*u)
@@ -130,16 +156,19 @@ def perform_native_placement(n, request):
         axis=[a+v*(b-a) for a,b in zip(initial_axis,goal_axis)]
         size=math.sqrt(sum(x*x for x in axis));axis=[x/size for x in axis]
         tick(point,axis,HAND_RIGHT)
+    timing["stage"]="TRANSLATE_ABOVE_TABLE"
     for index in range(200):
         u=(index+1)/200.;v=u*u*(3.-2.*u)
         tick([a+v*(b-a) for a,b in zip(high,clearance)],goal_axis,HAND_RIGHT)
+    timing["stage"]="MEASURED_APPROACH"
     for _ in range(25):tick(clearance,goal_axis,HAND_RIGHT)
     approach=observe_placement_approach(tick,clearance,goal_axis,HAND_RIGHT,
         lambda:dict(n.tracking_metrics,generation=n.native_generation),generation=request["generation"],
-        deadline_s=min(began+35.,time.monotonic()+2.5))
+        deadline_s=min(deadline,time.monotonic()+budget["approach_wall_s"]))
     write_durable_milestone("/workspace/evidence/native_placement_approach_result.json",approach)
     # Approach the support surface slowly. A positive actual vertical table
     # reaction gates release; a planned geometric height alone never suffices.
+    timing["stage"]="LOWER_UNTIL_TABLE_SUPPORT"
     point=clearance.copy();contact=None
     for _ in range(400):
         point[2]-=.0002
@@ -148,14 +177,17 @@ def perform_native_placement(n, request):
         if contact["table_vertical_force_n"]>10.*request["bottle_mass_kg"]*9.81:raise RuntimeError("PLACEMENT_EXCESS_TABLE_FORCE")
         if contact["table_vertical_force_n"]>.2:break
     else:raise RuntimeError("PLACEMENT_TABLE_CONTACT_NOT_OBSERVED")
+    timing["stage"]="RELEASE_ON_MEASURED_TABLE_SUPPORT"
     n.placement_release=True
     start_command=float(n.grip_command)
     for index in range(150):
         u=(index+1)/150.;u=u*u*(3.-2.*u)
         tick(point,goal_axis,start_command+u*(HAND_OPEN-start_command))
     n.placement_released=True
-    # Reserve the unchanged 100 withdrawal ticks and 175 final hold ticks.
-    first_hold_deadline=began+35.-(100+175)*.02
+    # Each support observation has its own bounded wall window; acceptance
+    # still requires two seconds of measured, consecutive simulation support.
+    timing["stage"]="RELEASED_SUPPORT"
+    first_hold_deadline=min(deadline,time.monotonic()+budget["support_wall_s"])
     result=observe_released_support(tick,point,request,rows,deadline_s=first_hold_deadline)
     if not result or not result["pass_result"]:raise RuntimeError("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED:"+json.dumps(result))
     # Clear the real open claw, then require the same independent released
@@ -165,14 +197,15 @@ def perform_native_placement(n, request):
     hand=n.native_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];local=CIRCLE_CONTRACT["circle_center_local_m"]
     outward=[sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)];length=math.sqrt(sum(x*x for x in outward))
     retreat=[point[i]-.08*outward[i]/length for i in range(3)]
-    start_point=point.copy()
+    start_point=point.copy();timing["stage"]="OPEN_CLAW_WITHDRAWAL"
     for index in range(100):
         u=(index+1)/100.;v=u*u*(3.-2.*u)
         tick([a+v*(b-a) for a,b in zip(start_point,retreat)],goal_axis,HAND_OPEN)
-    result=observe_released_support(tick,retreat,request,rows,deadline_s=began+35.)
+    timing["stage"]="FINAL_RELEASED_SUPPORT"
+    result=observe_released_support(tick,retreat,request,rows,deadline_s=min(deadline,time.monotonic()+budget["support_wall_s"]))
     if not result["pass_result"]:raise RuntimeError("PLACEMENT_NOT_STABLE_AFTER_WITHDRAWAL:"+json.dumps(result))
     result["open_claw_withdrawal_m"]=.08
-    result.update(owner_pid=os.getpid(),generation=n.native_generation,command_path="EXISTING_HAL_ARM_AND_HAND_OWNER",table_body="raicom_delivery_table",elapsed_wall_s=time.monotonic()-began,request=request)
+    result.update(execution_timing=dict(timing),owner_pid=os.getpid(),generation=n.native_generation,command_path="EXISTING_HAL_ARM_AND_HAND_OWNER",table_body="raicom_delivery_table",elapsed_wall_s=time.monotonic()-began,request=request)
     write_durable_milestone("/workspace/evidence/native_table_place_result.json",result)
     n.placement_completed_arm_target={name:float(n.last_published_arm_target[name]) for name in RIGHT}
     n.placement_completed=True
@@ -182,7 +215,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,placement_execution_budget,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]
@@ -195,7 +228,7 @@ def extend_existing_owner(script):
                 "       with open('/workspace/evidence/carry_place_request.json') as stream:request=json.load(stream)",
                 "       perform_native_placement(n,request)",
                 "      except Exception as exc:",
-                "       if not os.path.exists('/workspace/evidence/native_table_place_result.json'):write_durable_milestone('/workspace/evidence/native_table_place_result.json',{'pass_result':False,'failure':str(exc),'owner_pid':os.getpid(),'time_ns':time.monotonic_ns()})",
+                "       if not os.path.exists('/workspace/evidence/native_table_place_result.json'):write_durable_milestone('/workspace/evidence/native_table_place_result.json',{'pass_result':False,'failure':str(exc),'execution_timing':getattr(n,'placement_timing',None),'owner_pid':os.getpid(),'time_ns':time.monotonic_ns()})",
                 "       raise",
             ])
         if "n.send(carry_target," in line and "'CARRY_HOLD',HAND_RIGHT)" in line:

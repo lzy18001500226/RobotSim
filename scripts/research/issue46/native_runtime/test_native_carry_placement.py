@@ -251,3 +251,70 @@ class MeasuredPlacementApproachTests(unittest.TestCase):
         for errors,options in [([.00562],{}),([.0],{'stale':True}),([.0],{'generation':2}),([float('nan')],{})]:
             with self.assertRaisesRegex(RuntimeError,'PLACEMENT_APPROACH_NOT_REACHED'):
                 self.run_observation(errors,**options)
+
+
+class PlacementHostBudgetRegressionTests(unittest.TestCase):
+    def execute_owner(self, tick_wall_s):
+        # Offline owner contract test: fresh feedback and synthetic support;
+        # this does not run MuJoCo or establish a physical placement PASS.
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        state=SimpleNamespace(now=100.,writes={},calls=0)
+        fixture=PlacementTests();request=fixture.request()
+        request.update(schema="robotsim.x2.table-place-request.v1",owner_pid=os.getpid(),
+                       created_host_ns=round(state.now*1e9),navigation_and_composite_stop_pass=True,
+                       confirmed_stand=True,section_target_world_m=[.15,1.52,.70])
+        clock=SimpleNamespace(monotonic=lambda:state.now,monotonic_ns=lambda:round(state.now*1e9))
+        class Owner:
+            native_generation=1
+            last_published_arm_target={}
+            lift_phase={}
+            grip_command=0.
+            tracking_metrics={}
+            hand_command=0.
+            def refresh_native(self):
+                row=fixture.row(state.calls,pad=0. if self.hand_command==1. else 2.)
+                row.update(host_monotonic_ns=round(state.now*1e9),sim_time_s=state.now)
+                row["bodies"].update(pelvis=dict(position_m=[0.,0.,.65]),
+                    R_omnipicker_base_link=dict(position_m=[.15,1.52,.80],rotation=[1.,0.,0.,0.,1.,0.,0.,0.,1.]))
+                row["joints"]={"R_claw_joint":{"q":-1.}}
+                point=self.lift_phase.get("placement_target_world_m",[.15,1.52,.80])
+                if point[2]>.70 and self.hand_command!=1.:
+                    row["contacts"]=[c for c in row["contacts"] if c["body1"]!="raicom_delivery_table"]
+                self.native_row=row
+                self.tracking_metrics=dict(source_host_ns=row["host_monotonic_ns"],generation=1,actual_position_error_m=0.)
+            def write_phase(self,phase):pass
+            def send(self,target,seconds,stage,hand_command):
+                state.now+=tick_wall_s;state.calls+=1;self.hand_command=hand_command
+        n=Owner();n.lift_phase={}
+        original_approach=p.observe_placement_approach;original_support=p.observe_released_support
+        def approach(*args,**kw):return original_approach(*args,**kw,clock=clock.monotonic)
+        def support(*args,**kw):return original_support(*args,**kw,clock=clock.monotonic)
+        with patch.object(p,"time",clock),patch.object(p,"CIRCLE_CONTRACT",
+                {"circle_center_local_m":[.10,0.,0.],"local_bottle_axis_in_hand":[0.,0.,1.]},create=True), \
+             patch.object(p,"HAND_RIGHT",0.,create=True),patch.object(p,"HAND_OPEN",1.,create=True), \
+             patch.object(p,"RIGHT",[],create=True), \
+             patch.object(p,"write_durable_milestone",lambda path,value:state.writes.update({path:value}),create=True), \
+             patch.object(p,"observe_placement_approach",approach),patch.object(p,"observe_released_support",support):
+            return p.perform_native_placement(n,request),state
+
+    def test_recorded_host_overhead_completes_all_stages_without_relaxing_support(self):
+        # Saved runtime: 375 approach ticks + convergence consumed29.089s.
+        result,state=self.execute_owner(.077)
+        self.assertTrue(result["pass_result"])
+        self.assertGreater(result["elapsed_wall_s"],35.)
+        self.assertLess(result["elapsed_wall_s"],p.placement_execution_budget()["total_wall_s"])
+        self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+        self.assertEqual(result["maximum_pad_normal_force_n"],0.)
+        self.assertEqual(result["execution_timing"]["stage"],"FINAL_RELEASED_SUPPORT")
+        self.assertGreaterEqual(result["execution_timing"]["command_ticks"],925)
+
+    def test_wall_deadline_still_stops_and_source_freshness_is_not_relaxed(self):
+        from unittest.mock import patch
+        budget=p.placement_execution_budget()
+        with patch.object(p,"placement_execution_budget",return_value={**budget,"total_wall_s":1.}):
+            with self.assertRaisesRegex(RuntimeError,"PLACEMENT_WATCHDOG"):
+                self.execute_owner(.077)
+        with self.assertRaisesRegex(RuntimeError,"PLACEMENT_APPROACH_NOT_REACHED"):
+            self.execute_owner(.30)

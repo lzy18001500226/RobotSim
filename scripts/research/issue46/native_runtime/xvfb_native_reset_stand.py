@@ -1411,7 +1411,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if getattr(args,"carry_delivery_config",None) is not None:
         result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="NOT_RUN"
         if nav.get("pass_result") and recorded.get("pass") and not review_prefix:
-            from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene,placement_mode_observer_script
+            from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene,placement_mode_observer_script,placement_execution_budget
             # Screen the same Cartesian placement against the actual arrived
             # state, not only the nominal navigation waypoint.
             cfg=json.loads(args.carry_delivery_config.read_text())
@@ -1449,7 +1449,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             fresh=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
             request={**cfg,"schema":"robotsim.x2.table-place-request.v1","created_host_ns":time.monotonic_ns(),"owner_pid":ready["pid"],"generation":fresh["generation"],"navigation_and_composite_stop_pass":True,"confirmed_stand":True,"section_target_world_m":[cfg["placement_center_world_m"][i]+replan_record["grasp_height_above_center_m"]*cfg.get("placement_axis_world",[0.,0.,1.])[i] for i in range(3)],"mode_observation":observed}
             pg.write_new_text(output/"carry_place_request.json",json.dumps(request))
-            place_deadline=time.monotonic()+38.
+            place_deadline=time.monotonic()+placement_execution_budget()["total_wall_s"]+3.
             while not (output/"native_table_place_result.json").exists() and not exit_path.exists() and time.monotonic()<place_deadline:
                 native_grasp_audit.require_fresh_sample(output/"native_latest.json");time.sleep(.05)
             place_path=output/"native_table_place_result.json"
