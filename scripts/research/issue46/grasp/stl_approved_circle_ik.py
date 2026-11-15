@@ -144,19 +144,44 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
 
 
 
-def tracking_phase_is_fresh(phase, now_ns):
+def tracking_phase_limit_s(phase):
+    """Existing phase leases, shared by freshness and process lifetime."""
     from scripts.research.issue46.native_runtime.native_grasp_audit import carry_lease_limit
     limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.,"RETRACTING":6.}
     if phase.get("phase")=="CARRY_HOLD":
         lease=phase.get("carry_lease_s")
-        if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=carry_lease_limit(phase) or phase.get("post_retract_physical_hold_pass") is not True:return False
-        limits["CARRY_HOLD"]=float(lease)
+        if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=carry_lease_limit(phase) or phase.get("post_retract_physical_hold_pass") is not True:return None
+        return float(lease)
+    return limits.get(phase.get("phase"))
+
+
+def tracking_phase_is_fresh(phase, now_ns):
+    limit=tracking_phase_limit_s(phase)
     stage=phase.get("phase");created=phase.get("created_host_ns")
-    if stage not in limits or not isinstance(created,int) or not 0.<=(now_ns-created)*1e-9<=limits[stage]:return False
+    if limit is None or not isinstance(created,int) or not 0.<=(now_ns-created)*1e-9<=limit:return False
     if stage=="RETRACTING":
         end=phase.get("retract_from_hold_end_ns")
         if phase.get("pre_retract_physical_lift_pass") is not True or not isinstance(end,int) or not 0<=created-end<=200000000:return False
     return True
+
+
+def tracking_lifetime_deadline(startup_deadline, phase):
+    """Keep an accepted phase alive without granting an unbounded pre-carry run.
+
+    The original 45s (+ optional 9s unloaded cycle) still bounds unphased
+    approach. Subsequent stages use their unchanged individual leases. Even
+    repeatedly rewritten pre-carry phases cannot exceed startup + 33s.
+    CARRY_HOLD retains its existing independently qualified carry lease.
+    """
+    if phase is None:return startup_deadline
+    limit=tracking_phase_limit_s(phase)
+    created=phase.get("created_host_ns")
+    if limit is None or not isinstance(created,int):raise ValueError("invalid tracking phase lease")
+    deadline=created*1e-9+limit
+    if phase.get("phase")=="CARRY_HOLD":return deadline
+    stages=("ARRIVAL_HOLD","CLOSING","LIFTING","RETRACTING")
+    precarry_budget=sum(tracking_phase_limit_s({"phase":stage}) for stage in stages)
+    return min(deadline,startup_deadline+precarry_budget)
 
 
 def tracking_task(row, reference, phase=None):
@@ -564,7 +589,7 @@ def track_native(reference_path, latest_path, output_path):
     if reference.get("approach_staging"):source_position_mode_kp(reference)
     cycle_budget=float(reference.get('native_no_contact_gain_cycle_budget_s',0.))
     if cycle_budget not in (0.,9.):raise ValueError('unreviewed native no-contact cycle budget')
-    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
+    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);startup_deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
     # Before producing any executable target, await a genuinely fresh sample.
@@ -577,7 +602,7 @@ def track_native(reference_path, latest_path, output_path):
         if time.monotonic()>=readiness_deadline:raise RuntimeError('NATIVE_TRACKING_INITIAL_FRESHNESS_NOT_READY')
         time.sleep(.02)
     try:
-        while time.monotonic()<deadline and not stop.exists():
+        while not stop.exists():
             tick=time.monotonic();row=json.loads(Path(latest_path).read_text());age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
             if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
@@ -598,6 +623,11 @@ def track_native(reference_path, latest_path, output_path):
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
             if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            deadline=tracking_lifetime_deadline(startup_deadline,phase)
+            if time.monotonic_ns()>round(deadline*1e9):
+                raise RuntimeError("NATIVE_TRACKING_LIFETIME_EXPIRED:"+json.dumps({
+                    "phase":(phase or {}).get("phase"),"deadline_host_s":deadline,
+                    "observed_host_s":time.monotonic(),"startup_deadline_host_s":startup_deadline}))
             revision=(phase or {}).get('carry_pose_revision')
             if revision is not None and revision!=locals().get('previous_pose_revision'):
                 seed=np.array([row['joints'][name]['q'] for name in ik.ARM])
@@ -612,7 +642,6 @@ def track_native(reference_path, latest_path, output_path):
                 if not output_path.with_name('native_tracking_carry_handoff.json').exists():
                     handoff={'classification':'BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
                     output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
-                deadline=phase['created_host_ns']*1e-9+float(phase['carry_lease_s'])
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
             record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'phase_revision':(phase or {}).get('carry_pose_revision'),'right_velocity_rad_s':dict(zip(ik.ARM,carry_velocity.tolist())),'metrics':metrics}

@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','carry_tracking_bounds','tracking_task_converged','planar_approach_direction')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','tracking_phase_limit_s','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget','refine_task_feasibility','placement_tracking_bounds','carry_tracking_bounds','tracking_task_converged','planar_approach_direction')]
         from scipy.optimize import least_squares
         cls.ns={'np':np,'least_squares':least_squares};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
@@ -102,7 +102,7 @@ class FrameTests(unittest.TestCase):
             exec(code,ns);self.assertEqual(ns['cycle_budget'],value)
         for value in (1.,float('nan'),100.):
             with self.assertRaises(ValueError):exec(code,{'reference':{'native_no_contact_gain_cycle_budget_s':value}})
-        self.assertIn("deadline=time.monotonic()+45.+cycle_budget",source)
+        self.assertIn("startup_deadline=time.monotonic()+45.+cycle_budget",source)
         self.assertIn("if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')",source)
         self.assertIn("if (now-row['host_monotonic_ns'])*1e-9>.20",source)
 
