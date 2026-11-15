@@ -5,6 +5,16 @@
 ## 当前Goal：提高验证效率并完成统一11点，再接LiDAR（2026-11-14）
 
 
+2026-11-16 175339Z：同版5号RGB-D、抓取、抬升、收臂、持瓶恢复站高通过。
+随后实际停姿yaw=-26.359deg，快速配置强制CLOCKWISE导致目标-240.381deg，
+实际纯yaw命令出现0.818m平移并越过南侧工作区；停止过程中owner再报右膝源速度。
+该轮完整流程FAIL，不是抓取失败。转向配置现改回实际停姿到第二桌的最短方向
+（此例CCW+119.619deg）；不改变STEP模式、命令幅值或物理源约束。
+实际轨迹/朝向图与反事实角度计算：
+rgbd-qualified-proposals-case5-20261115T174958Z/case5_actual_route_heading.png，
+同目录case5_turn_direction_diagnosis.json。新批次：
+actual-pose-short-turn-common-transfer-20261115T181111Z/，未实测阶段不得标PASS。
+
 2026-11-16 173838Z在观察阶段停止：最大蓝色连通域是右下角挡板/地面，
 其拟合半径触及80mm上界且角支持0.395887rad，原0.6rad门正确拒绝；
 原选择器却没有检查较小的真实瓶子候选。相同RGB-D离线复算：瓶径69.369mm，

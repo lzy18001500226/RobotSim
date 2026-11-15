@@ -70,7 +70,7 @@ class CarryStopTimingTests(unittest.TestCase):
         default=task_route_profile(cfg);fast=task_route_profile(cfg,fast_task_timing=True)
         self.assertNotIn("release_source_after_zero_window",default)
         self.assertTrue(fast["release_source_after_zero_window"])
-        self.assertEqual(fast["delivery_turn_direction"],"CLOCKWISE")
+        self.assertEqual(fast["delivery_turn_direction"],"SHORTEST")
         self.assertEqual(fast["front_opening_apron_xy_bounds"],[-.65,.65,-2.35,-1.75])
         self.assertNotIn("front_opening_apron_xy_bounds",default)
 
@@ -512,3 +512,18 @@ class TableFrontBrakingTests(unittest.TestCase):
             exec(compile(program,"actual_generated_delivery_branch","exec"),env);env["probe"]()
             self.assertEqual(result.get("goal_triggered_stop",False),expected)
             self.assertNotIn("pass_result",result)
+
+
+class ActualStoppedTurnDirectionTests(unittest.TestCase):
+    def test_case5_does_not_request_the_recorded_240_degree_long_way(self):
+        import math
+        from .native_task_grasp_region import task_route_profile
+        from .native_base_micro_probe import table_turn_target
+        pose=dict(x=.15329258729027578,y=-1.528204272269804,yaw=-.46005612278287905)
+        cfg=task_route_profile(dict(schema="robotsim.x2.two-table-delivery.v1",
+            transit_root_cap_m_s=.60,turn_translation_strategy="PURE_YAW",base_goal_world_xy=[.015,.98]),fast_task_timing=True)
+        bearing,target=table_turn_target(pose,[.015,.98],
+            cfg["delivery_turn_direction"]=="CLOCKWISE")
+        self.assertGreater(target-pose["yaw"],0.)
+        self.assertLess(abs(target-pose["yaw"]),math.pi)
+        self.assertAlmostEqual(target,bearing)

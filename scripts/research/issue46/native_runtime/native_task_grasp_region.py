@@ -141,10 +141,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["front_opening_apron_evidence"]=(
             "reviews/issue-46/carry-opening-workspace-case5-20261115T101836Z/"
             "saved_pose_turn_screen_aabb_verified.json")
-        # Loaded CCW forward arcs at the measured south-wall start drifted
-        # into the wall-side workspace. Reuse the physically successful
-        # clockwise/pure-yaw prefix; actual-pose route screening remains required.
-        result["delivery_turn_direction"]="CLOCKWISE"
+        # Select from the actual stopped retreat heading. A forced clockwise
+        # turn requested240deg at the measured case5 pose instead of120deg CCW,
+        # prolonging the loaded step drift into the south boundary. Keep the
+        # pure-yaw command, real collision/pose checks and installed step mode.
+        result["delivery_turn_direction"]="SHORTEST"
         result["turn_translation_strategy"]="PURE_YAW"
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
