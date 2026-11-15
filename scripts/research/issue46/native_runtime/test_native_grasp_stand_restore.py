@@ -438,3 +438,19 @@ class IdleLeftParkingTests(unittest.TestCase):
     def test_requires_standing_reference_before_arm_motion(self):
         self.owner.carry_torso_reference_done=False
         with self.assertRaisesRegex(RuntimeError,"REQUEST_UNQUALIFIED"):self.call(10.)
+
+    def test_parking_is_applied_before_each_arm_publication(self):
+        # Applying after publication alternated the old input and parked target
+        # whenever short send() calls restarted. Check the actual replacement.
+        import inspect,ast
+        tree=ast.parse(inspect.getsource(restore.extend_existing_owner))
+        replacements={}
+        for node in ast.walk(tree):
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=="replace":
+                if len(node.args)==2 and all(isinstance(x,ast.Constant) and isinstance(x.value,str) for x in node.args):
+                    replacements[node.args[0].value]=node.args[1].value
+        new=replacements["   published_positions=dict(target)"]
+        self.assertLess(new.index("request_idle_left_parking"),new.index("published_positions"))
+        for original,new in replacements.items():
+            if "if WAIST:" in original:
+                self.assertNotIn("request_idle_left_parking",new)
