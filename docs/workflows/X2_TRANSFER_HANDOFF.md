@@ -522,3 +522,5 @@ WSL终端用相同worktree、env和python参数，不再套wsl.exe。
 手动owner的目标/增益在新鲜源输入时捕获，后续依赖新鲜native物理反馈；未增改执行器/gain或源限制。
 新建只读body observer在原5s准备窗口等待首次有效native状态，不能以ROS端点已发现代替数据新鲜。
 所有实际物理、限位、速度、effort、碰撞、停止和200ms状态验收门保持。
+
+183810Z 抓取与站高恢复通过后，tracker读取源帧年龄219.193884ms即退出。读取和计算过期统一采用既有50ms有界重取；真正新测量仍须<=200ms，时间戳不改写。后续证据：fresh-source-reacquisition-common-transfer-20261115T184703Z。

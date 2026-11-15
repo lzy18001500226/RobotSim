@@ -16,7 +16,7 @@ from scripts.research.issue46.grasp import stl_approved_circle_ik as tracker
 
 class TrackerLifetimeTests(unittest.TestCase):
     def run_loop(self, phase_at, *, stop_after=90., stale_after=None,
-                 generation_after=None, compute_delay=0., cycle_budget=0.):
+                 generation_after=None, compute_delay=0., cycle_budget=0., source_lag=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             latest = root / "native_latest.json"
@@ -37,6 +37,7 @@ class TrackerLifetimeTests(unittest.TestCase):
             def inputs():
                 elapsed = clock.now - start
                 source = clock.now if stale_after is None else min(clock.now, start + stale_after)
+                if source_lag is not None:source-=source_lag(elapsed)
                 latest.write_text(json.dumps({
                     "host_monotonic_ns": ns(source),
                     "generation": 2 if generation_after is not None and elapsed >= generation_after else 1,
@@ -157,6 +158,13 @@ class TrackerLifetimeTests(unittest.TestCase):
         result=self.run_loop(lambda elapsed:phase,compute_delay=[0.,.205,.003],stop_after=.6)
         self.assertIsNone(result["failure"])
         self.assertEqual(result["recoveries"][-1]["event"],"FRESH_IK_RESULT_RECOVERED")
+        self.assertTrue(all(0<=r["created_host_ns"]-r["source_host_ns"]<=200000000 for r in result["trace"]))
+
+    def test_single_219ms_source_gap_reacquires_real_new_measurement(self):
+        result=self.run_loop(lambda elapsed:None,source_lag=lambda t:.219193884 if .199<=t<.235 else 0.,stop_after=.6)
+        self.assertIsNone(result["failure"])
+        self.assertEqual([r["event"] for r in result["recoveries"]],
+                         ["EXPIRED_SOURCE_REREAD","FRESH_IK_RESULT_RECOVERED"])
         self.assertTrue(all(0<=r["created_host_ns"]-r["source_host_ns"]<=200000000 for r in result["trace"]))
 
     def test_compute_recovery_cannot_hide_generation_change(self):

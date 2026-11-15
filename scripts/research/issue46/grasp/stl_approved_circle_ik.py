@@ -610,11 +610,16 @@ def track_native(reference_path, latest_path, output_path):
     try:
         while not stop.exists():
             tick=time.monotonic();row=json.loads(Path(latest_path).read_text());age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
-            if not 0<=age<=.20:
-                if age>=0 and recovery_deadline_ns is not None and time.monotonic_ns()<recovery_deadline_ns:
-                    time.sleep(.002);continue
-                raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
+            if not 0<=age<=.20:
+                if age>=0:
+                    if recovery_deadline_ns is None:
+                        recovery_deadline_ns=time.monotonic_ns()+50000000
+                        deadline_recoveries.append({'event':'EXPIRED_SOURCE_REREAD','source_host_ns':row['host_monotonic_ns'],'checked_host_ns':time.monotonic_ns(),'source_age_s':age})
+                        previous_carry=None;carry_velocity=np.zeros(7)
+                    if time.monotonic_ns()<recovery_deadline_ns:
+                        time.sleep(.002);continue
+                raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
             phase_path=output_path.with_name('native_tracking_phase.json')
             phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
             if reference.get('target_source')=='fresh-rgbd-snapshot' and phase is None:
