@@ -1102,7 +1102,7 @@ class Plan(Node):
     if fault:raise RuntimeError("CLEARANCE_PHYSICAL:"+fault)
     if math.dist(self.native_row["bodies"]["pelvis"]["position_m"],staged["root_reference_world_m"])>.05:raise RuntimeError("CLEARANCE_ROOT_DRIFT")
    if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE'):
-    endpoint=self.tracking_target(retry_s=.05 if stage=='APPROACH' else 0.);target=dict(target)
+    endpoint=self.tracking_target(retry_s=.05);target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      for name in RIGHT:
       correction=float(self.tracking_metrics['cartesian_correction_rad'][name])
@@ -1274,7 +1274,7 @@ try:
  # shoulder-roll limit crossing in 171134Z. Keep actual arrival fail-closed.
  if TRACK_NATIVE_CIRCLE and ENABLE_RESIDUAL_FF and not arrival['pass'] and preclose_error<=.15:
   for refinement in range(8):
-   n.refresh_native();endpoint=n.tracking_target()
+   n.refresh_native();endpoint=n.tracking_target(retry_s=.05)
    for name in RIGHT:
     correction=float(n.tracking_metrics['cartesian_correction_rad'][name])
     if not math.isfinite(correction):raise RuntimeError('NONFINITE_CARTESIAN_CORRECTION')

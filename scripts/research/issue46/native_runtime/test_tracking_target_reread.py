@@ -61,6 +61,21 @@ class TrackingTargetRereadTests(unittest.TestCase):
         self.assertTrue(detail["fresh_tracking_target_recovered"])
         self.assertLessEqual(detail["accepted_source_age_s"], .2)
 
+    def test_recorded_carry_219ms_target_reacquires_instead_of_aborting(self):
+        def read():
+            return self.target(10_000_000 if self.clock.ns >= 1_016_000_000 else 219_550_898)
+        self.assertEqual(self.run_target(read), {"joint": .3})
+        self.assertEqual(self.clock.ns, 1_016_000_000)
+
+    def test_generated_active_stage_reads_all_use_bounded_reacquisition(self):
+        tree=ast.parse(generated())
+        calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call)
+               and isinstance(n.func,ast.Attribute) and n.func.attr=="tracking_target"]
+        self.assertGreaterEqual(len(calls),2)
+        for call in calls:
+            retry=next(k.value for k in call.keywords if k.arg=="retry_s")
+            self.assertEqual(ast.literal_eval(retry),.05)
+
     def test_persistent_expiry_fails_at_50ms_without_setting_endpoint(self):
         with self.assertRaisesRegex(RuntimeError, "STALE_NATIVE_CIRCLE_TRACKING_TARGET"):
             self.run_target(lambda: self.target())

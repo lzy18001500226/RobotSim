@@ -11,6 +11,8 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest import mock
 
+from .native_base_micro_probe import carry_owner_fault
+
 HERE = Path(__file__).parent
 
 
@@ -69,7 +71,7 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
         return value
 
     def check(self, health, row_stamp=995_000_000):
-        ns = dict(json=json, MICRO=dict(carry=dict(pid=os.getpid())),
+        ns = dict(carry_owner_fault=carry_owner_fault,json=json, MICRO=dict(carry=dict(pid=os.getpid())),
                   r=dict(generation=1, host_monotonic_ns=row_stamp, **self.measured_row()), math=math,
                   time=NS(monotonic_ns=lambda: self.now),
                   Path=lambda path: NS(read_text=lambda: json.dumps(health)))

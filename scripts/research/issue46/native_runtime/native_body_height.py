@@ -224,7 +224,8 @@ def run_height_probe(n, contract):
         original_sample=n.sample
         def held_sample(*args,**kwargs):
             value=original_sample(*args,**kwargs);health=json.loads(Path('/workspace/evidence/carry_heartbeat.json').read_text())
-            if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=n.latest_row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('BODY_HELD_OWNER_NOT_FRESH')
+            detail=carry_owner_fault(health,n.latest_row,ready['pid'],time.monotonic_ns())
+            if detail:raise RuntimeError('BODY_HELD_OWNER_NOT_FRESH:'+json.dumps(detail))
             return value
         n.sample=held_sample
     try:

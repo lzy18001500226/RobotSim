@@ -12,6 +12,32 @@ import time
 from pathlib import Path
 
 
+def carry_owner_fault(health, row, expected_pid, checked_ns):
+    """Qualify owner liveness separately from current measured physics.
+
+    Same simulation-only contract for locomotion and held-body transitions.
+    Missing fields fail closed and keep the original owner's failure visible.
+    """
+    heartbeat_age_s=(checked_ns-health.get("host_monotonic_ns",0))*1e-9
+    physical_age_s=(checked_ns-health.get("native_source_host_ns",0))*1e-9
+    current_physical_age_s=(checked_ns-row.get("host_monotonic_ns",0))*1e-9
+    measurement_age_at_publication_s=(health.get("host_monotonic_ns",0)-health.get("native_source_host_ns",0))*1e-9
+    checks=dict(mode=health.get("mode")=="MEASURED_LOAD_BEARING_CARRY_HOLD",
+        healthy=health.get("healthy") is True,owner_pid=health.get("pid")==expected_pid,
+        generation=health.get("generation")==row.get("generation"),
+        owner_liveness=0.<=heartbeat_age_s<=.50,
+        measurement_fresh_at_publication=0.<=measurement_age_at_publication_s<=.20,
+        physical_fresh=0.<=current_physical_age_s<=.20)
+    if all(checks.values()):return None
+    detail={k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}
+    detail.update(owner_liveness_limit_s=.50,physical_freshness_limit_s=.20,
+        checked_host_ns=checked_ns,heartbeat_age_s=heartbeat_age_s,
+        physical_age_s=physical_age_s,latest_physics_age_s=current_physical_age_s,
+        measurement_age_at_publication_s=measurement_age_at_publication_s,
+        failed_checks=[name for name,passed in checks.items() if not passed])
+    return detail
+
+
 def advancing_stamp(store, name, stamp, now):
     """Duplicates/regressions never refresh the age of a qualified sample."""
     old = store.get(name)
@@ -601,27 +627,8 @@ def run_probe(smoke_only=False):
                     raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
                 if MICRO.get("carry"):
                     health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())
-                    checked_ns=time.monotonic_ns()
-                    heartbeat_age_s=(checked_ns-health["host_monotonic_ns"])*1e-9
-                    physical_age_s=(checked_ns-health["native_source_host_ns"])*1e-9
-                    current_physical_age_s=(checked_ns-r["host_monotonic_ns"])*1e-9
-                    measurement_age_at_publication_s=(health["host_monotonic_ns"]-health["native_source_host_ns"])*1e-9
-                    # Simulation-only process liveness is not sensor freshness.
-                    # Actual owner output intervals reached 229ms while the live
-                    # physics remained fresh. Allow one missed output cycle (500ms);
-                    # current physics and the measurement at publication remain200ms.
-                    checks=dict(mode=health.get("mode")=="MEASURED_LOAD_BEARING_CARRY_HOLD",
-                        healthy=health.get("healthy") is True,owner_pid=health.get("pid")==MICRO["carry"]["pid"],
-                        generation=health.get("generation")==r["generation"],
-                        owner_liveness=0.<=heartbeat_age_s<=.50,
-                        measurement_fresh_at_publication=0.<=measurement_age_at_publication_s<=.20,
-                        physical_fresh=0.<=current_physical_age_s<=.20)
-                    if not all(checks.values()):
-                        detail={k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}
-                        detail.update(owner_liveness_limit_s=.50,physical_freshness_limit_s=.20,checked_host_ns=checked_ns,heartbeat_age_s=heartbeat_age_s,
-                            physical_age_s=physical_age_s,latest_physics_age_s=current_physical_age_s,
-                            measurement_age_at_publication_s=measurement_age_at_publication_s,
-                            failed_checks=[name for name,passed in checks.items() if not passed])
+                    detail=carry_owner_fault(health,r,MICRO["carry"]["pid"],time.monotonic_ns())
+                    if detail:
                         raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED:"+json.dumps(detail))
                     # Owner liveness and physical state are independent measured streams.
                     # Never use heartbeat timestamps as a substitute for current object checks.
