@@ -1074,6 +1074,18 @@ def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius,
 
 
 
+
+def stopped_turn_heading_reference(pose, commanded_bearing, delivery=None):
+    """Transit heading is relative to the actual stopped pose after turn drift."""
+    wrap=lambda x:(x+math.pi)%(2*math.pi)-math.pi
+    reference=commanded_bearing
+    if delivery:reference,_=table_turn_target(pose,delivery["base_goal_world_xy"])
+    return dict(heading_error_rad=wrap(reference-pose["yaw"]),
+                commanded_heading_error_rad=wrap(commanded_bearing-pose["yaw"]),
+                reference_bearing_rad=reference,
+                reference="ACTUAL_STOPPED_POSE_TO_DELIVERY_GOAL" if delivery else "COMMANDED_TURN_HEADING")
+
+
 def table_turn_target(pose, goal_xy, clockwise=False, *, rearward=False):
     bearing=math.atan2(goal_xy[1]-pose["y"],goal_xy[0]-pose["x"])
     if rearward:bearing=(bearing+2.*math.pi)%(2.*math.pi)-math.pi
@@ -2110,7 +2122,9 @@ def run_carry_navigation(n,contract):
                             mission["turn_stop_heading_error_rad"]=(bearing-review_end["yaw"]+math.pi)%(2*math.pi)-math.pi
                             return result
                         n.await_graph();stopped=stationary_carry_sample(n,baseline,until,result["turn_stop_composite"])
-                        heading_error=(bearing-stopped["pose"]["yaw"]+math.pi)%(2*math.pi)-math.pi
+                        heading_reference=stopped_turn_heading_reference(stopped["pose"],bearing,cfg.get("delivery"))
+                        heading_error=heading_reference["heading_error_rad"]
+                        mission["stopped_turn_heading_reference"]=heading_reference
                         mission["turn_stop_heading_error_rad"]=heading_error
                         mission["turn_end_pose"]=stopped["pose"]
                         heading_tolerance=float(cfg["delivery"].get("intermediate_turn_heading_tolerance_rad",.12)) if cfg.get("delivery") else .12

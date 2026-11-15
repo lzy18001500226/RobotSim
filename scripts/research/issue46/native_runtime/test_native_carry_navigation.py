@@ -2161,3 +2161,24 @@ class RequestedStepStandTransitionTests(unittest.TestCase):
             and x.value.func.attr=="observe"
             and any(k.arg=="require_stop" and isinstance(k.value,ast.Constant)
                     and k.value.value is True for k in x.value.keywords) for x in assignments))
+
+class ActualStoppedTurnHeadingTests(unittest.TestCase):
+    def test_recorded_case5_drift_uses_current_goal_bearing(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import stopped_turn_heading_reference
+        pose=dict(x=-.5775116952283078,y=-2.2068630879798263,yaw=1.0117841569487105)
+        result=stopped_turn_heading_reference(pose,1.4285060979692368,dict(base_goal_world_xy=[.015,.90]))
+        self.assertGreater(result["commanded_heading_error_rad"],.4)
+        self.assertLess(abs(result["heading_error_rad"]),.4)
+        self.assertEqual(result["reference"],"ACTUAL_STOPPED_POSE_TO_DELIVERY_GOAL")
+        self.assertEqual(pose["x"],-.5775116952283078)
+
+    def test_non_delivery_keeps_original_turn_reference(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import stopped_turn_heading_reference
+        result=stopped_turn_heading_reference(dict(x=1.,y=2.,yaw=.3),.8)
+        self.assertAlmostEqual(result["heading_error_rad"],.5)
+        self.assertEqual(result["reference"],"COMMANDED_TURN_HEADING")
+
+    def test_facing_away_remains_rejected_by_unchanged_tolerance(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import stopped_turn_heading_reference
+        result=stopped_turn_heading_reference(dict(x=0.,y=0.,yaw=-1.57),1.57,dict(base_goal_world_xy=[0.,1.]))
+        self.assertGreater(abs(result["heading_error_rad"]),.4)
