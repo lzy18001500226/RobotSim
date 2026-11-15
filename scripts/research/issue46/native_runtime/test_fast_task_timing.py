@@ -88,7 +88,7 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("delivery_motion_mode",cfg)
         self.assertEqual(default["base_goal_world_xy"],[.015,.98])
-        self.assertEqual(fast["turn_translation_strategy"],"PURE_YAW")
+        self.assertEqual(fast["turn_translation_strategy"],"FORWARD_ARC")
         self.assertTrue(fast["stop_inside_functional_arrival_region"])
         self.assertEqual(fast["approach_task_position_tolerance_m"],.15)
         self.assertEqual(fast["approach_task_yaw_tolerance_rad"],.30)

@@ -146,7 +146,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # prolonging the loaded step drift into the south boundary. Keep the
         # pure-yaw command, real collision/pose checks and installed step mode.
         result["delivery_turn_direction"]="SHORTEST"
-        result["turn_translation_strategy"]="PURE_YAW"
+        # DEFAULT pure-yaw turning displaced the measured case5 outside the
+        # open entry apron. Reuse the existing .20/.60 forward arc (.333m
+        # nominal radius);272 translated full-model gait samples were clear.
+        # Actual dynamics, room bounds and collision checks remain mandatory.
+        result["turn_translation_strategy"]="FORWARD_ARC"
         # Actual stopped pose with13.5deg nominal heading error passed the
         # original full-model placement IK and collision screen. Keep15cm XY;
         # handoff only after a new physical stop and actual-pose placement IK.
