@@ -98,6 +98,9 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_position_tolerance_m"]=.15
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
+        # Explicit task envelope; source wrist limits and actual released
+        # table support stay unchanged. This is not a mechanism modification.
+        result["maximum_planned_bottle_tilt_rad"]=math.radians(16.5)
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
         # Three recorded full transfers measured maximum calibration coast

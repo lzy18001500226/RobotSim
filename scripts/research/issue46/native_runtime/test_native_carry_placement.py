@@ -9,6 +9,29 @@ class PlacementAxisTaskToleranceTests(unittest.TestCase):
         for value in [0.,.02,float('nan'),float('inf')]:
             with self.assertRaises(ValueError):p.placement_axis_tolerance({'placement_axis_tolerance_rad':value})
 
+class PlacementTiltEnvelopeTests(unittest.TestCase):
+    def test_task_envelope_is_explicit_and_legacy_stays_twelve_degrees(self):
+        import math
+        self.assertAlmostEqual(p.placement_planned_tilt_limit({}),math.radians(12.))
+        self.assertAlmostEqual(p.placement_planned_tilt_limit(
+            {"maximum_planned_bottle_tilt_rad":math.radians(16.5)}),math.radians(16.5))
+        for value in [0.,-1.,float("nan"),float("inf"),math.pi/2.]:
+            with self.assertRaises(ValueError):
+                p.placement_planned_tilt_limit({"maximum_planned_bottle_tilt_rad":value})
+
+    def test_tilted_finite_cylinder_checks_entire_projection_not_only_bottom(self):
+        import math
+        cfg=dict(bottle_radius_m=.035,bottle_height_m=.22,
+            table_bounds_min_world_m=[-.45,1.32,0.],
+            table_bounds_max_world_m=[.45,1.88,.55])
+        axis=[0.,math.sin(math.radians(16.)),math.cos(math.radians(16.))]
+        center=[0.,1.389,.66]
+        edge=p.tabletop_bottle_edge_clearances(center,axis,cfg)
+        self.assertGreater(edge[0],.4)
+        self.assertLess(edge[1],.006)
+        center[1]+=.01
+        self.assertGreater(p.tabletop_bottle_edge_clearances(center,axis,cfg)[1],.006)
+
 class ArrivedPoseRouteTests(unittest.TestCase):
     def test_zero_translation_does_not_invent_rotation_to_world_zero(self):
         import inspect,numpy as np,math

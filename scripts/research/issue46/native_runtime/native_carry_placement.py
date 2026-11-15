@@ -108,7 +108,7 @@ def perform_native_placement(n, request):
     local_axis=CIRCLE_CONTRACT["local_bottle_axis_in_hand"]
     initial_axis=[sum(H[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
     goal_axis=list(request.get('placement_axis_world',[0.,0.,1.]))
-    if len(goal_axis)!=3 or not all(math.isfinite(v) for v in goal_axis) or abs(sum(v*v for v in goal_axis)-1.)>.001 or goal_axis[2]<math.cos(math.radians(12.)):raise RuntimeError('PLACEMENT_AXIS_NOT_QUALIFIED')
+    if len(goal_axis)!=3 or not all(math.isfinite(v) for v in goal_axis) or abs(sum(v*v for v in goal_axis)-1.)>.001 or goal_axis[2]<math.cos(placement_planned_tilt_limit(request)):raise RuntimeError('PLACEMENT_AXIS_NOT_QUALIFIED')
     desired=list(request["section_target_world_m"]);clearance=desired.copy();clearance[2]+=.06
     if math.dist(initial,clearance)>.45:raise RuntimeError("PLACEMENT_CARTESIAN_EXCURSION")
     target=dict(n.last_published_arm_target);n.placement_request=request;n.placement_release=False
@@ -182,7 +182,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]
@@ -287,6 +287,22 @@ def tool_projected_table_target(tool_section, tool_axis, config, world_right=Non
     return target+[float(config['tabletop_world_z_m'])+float(config['bottle_height_m'])/2.]
 
 
+def placement_planned_tilt_limit(config):
+    """Task planning envelope, never a vendor joint limit or a release PASS."""
+    value=float(config.get("maximum_planned_bottle_tilt_rad",math.radians(12.)))
+    if not math.isfinite(value) or not 0.<value<math.pi/2.:
+        raise ValueError("invalid placement task tilt envelope")
+    return value
+
+
+def tabletop_bottle_edge_clearances(center, axis, config):
+    """Full finite-cylinder XY projection, including tilted caps and sidewall."""
+    radius=float(config["bottle_radius_m"]);half=float(config["bottle_height_m"])/2.
+    extent=[radius*math.sqrt(max(0.,1.-v*v))+half*abs(v) for v in axis]
+    lo=config["table_bounds_min_world_m"];hi=config["table_bounds_max_world_m"]
+    return [min(center[i]-extent[i]-lo[i],hi[i]-center[i]-extent[i]) for i in (0,1)]
+
+
 def placement_axis_tolerance(config):
     value=float(config.get('placement_axis_tolerance_rad',2.*math.asin(.005)))
     if not math.isfinite(value) or not .001<=value<=math.radians(1.):
@@ -300,7 +316,7 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
     from pathlib import Path
     import mujoco
     import numpy as np
-    from scipy.optimize import least_squares
+    from scipy.optimize import least_squares,minimize
     from scipy.spatial.transform import Rotation
     from scripts.agent import path_governance as pg
     from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
@@ -490,12 +506,55 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
             refined=least_squares(lambda arm:table_endpoint_error(np.r_[arm,fixed_xy]),fit.x[:7],bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=700,ftol=1e-10,xtol=1e-10,gtol=1e-10)
             radial_refinement={"initial_xy_span_m":xy_span,"selected_xy_span_m":float(np.linalg.norm(fixed_xy-hint)),"source_joint_margin_rad":.01,"evaluations":int(refined.nfev),"task_bound_m":.15}
             fit.x=np.r_[refined.x,fixed_xy];fit.nfev+=refined.nfev
+        # Refine the actual task inequalities instead of driving position to
+        # nanometres while ignoring tabletop support. Same source joint box,
+        # 150mm XY region and model; no dynamics or runtime pose writes.
+        task_tilt=placement_planned_tilt_limit(cfg)
+        def endpoint_geometry(x):
+            error=table_endpoint_error(x)[:6]/weights
+            worldaxis=error[3:]/.1+np.array([0.,0.,1.])
+            nominal=np.r_[x[7:],z]-float(cfg.get("grasp_height_above_center_m",.10))*worldaxis
+            edges=tabletop_bottle_edge_clearances(nominal,worldaxis,cfg)
+            actual_edges=tabletop_bottle_edge_clearances(nominal+error[:3],worldaxis,cfg)
+            return error,worldaxis,np.r_[edges,actual_edges]
+        initial_error,initial_axis,initial_edges=endpoint_geometry(fit.x)
+        task_refinement=None
+        if initial_axis[2]<math.cos(task_tilt) or min(initial_edges)<.006:
+            def inequalities(x):
+                error,worldaxis,edges=endpoint_geometry(x)
+                return np.r_[1.-np.dot(error[:3]/.004,error[:3]/.004),
+                             (edges-.006)/.006,1.-np.linalg.norm(x[7:]-hint)/.15]
+            def objective(x):
+                error,worldaxis,edges=endpoint_geometry(x)
+                return float(np.dot(worldaxis-[0.,0.,1.],worldaxis-[0.,0.,1.])
+                             +1e-6*np.dot(x[:7]-saved,x[:7]-saved))
+            refined=minimize(objective,fit.x,method="SLSQP",
+                bounds=list(zip(np.r_[bounds[:,0]+.01,lower_xy],np.r_[bounds[:,1]-.01,upper_xy])),
+                constraints=[dict(type="ineq",fun=inequalities)],
+                options=dict(maxiter=250,ftol=1e-12))
+            feasible=bool(refined.success and np.all(np.isfinite(refined.x)) and min(inequalities(refined.x))>=-1e-7)
+            task_refinement=dict(success=bool(refined.success),feasible=feasible,
+                message=str(refined.message),evaluations=int(refined.nfev),
+                planned_and_actual_edge_clearances_m=endpoint_geometry(refined.x)[2].tolist(),
+                position_refinement_bound_m=.004,table_projection_inset_m=.006,
+                max_planned_tilt_rad=task_tilt)
+            if feasible:
+                fit.x=refined.x;fit.nfev+=refined.nfev
         e=table_endpoint_error(fit.x)[:6]/weights
         goal_axis=data.xmat[hand].reshape(3,3)@axis;planned_tilt=float(np.arccos(np.clip(goal_axis[2],-1.,1.)))
-        if np.linalg.norm(e[:3])>position_tolerance or planned_tilt>math.radians(12.) or np.linalg.norm(fit.x[7:]-hint)>.15:raise ValueError('bounded tabletop endpoint IK not feasible:'+str(dict(position_m=float(np.linalg.norm(e[:3])),planned_tilt_rad=planned_tilt)))
-        cfg['placement_axis_world']=goal_axis.tolist();cfg['maximum_planned_bottle_tilt_rad']=math.radians(12.)
+        if np.linalg.norm(e[:3])>position_tolerance or planned_tilt>task_tilt or np.linalg.norm(fit.x[7:]-hint)>.15:raise ValueError('bounded tabletop endpoint IK not feasible:'+str(dict(position_m=float(np.linalg.norm(e[:3])),planned_tilt_rad=planned_tilt)))
+        cfg['placement_axis_world']=goal_axis.tolist();cfg['maximum_planned_bottle_tilt_rad']=task_tilt
         cfg['placement_center_world_m']=[*(fit.x[7:]-float(cfg.get('grasp_height_above_center_m',.10))*goal_axis[:2]).tolist(),cfg['placement_center_world_m'][2]]
+        if task_refinement is not None and task_refinement["feasible"]:
+            # Use the actual feasible FK endpoint, not the nearby requested
+            # point whose residual we just accepted. Otherwise the downstream
+            # path IK needlessly solves a different, less reachable target.
+            accepted_section=np.r_[fit.x[7:],z]+e[:3]
+            cfg["placement_center_world_m"]=(accepted_section-float(cfg.get("grasp_height_above_center_m",.10))*goal_axis).tolist()
+            task_refinement["accepted_section_world_m"]=accepted_section.tolist()
+            task_refinement["requested_endpoint_residual_m"]=e[:3].tolist()
         cfg['placement_target_selection']['bounded_endpoint_ik']=dict(reference_xy_m=hint.tolist(),selected_xy_m=fit.x[7:].tolist(),max_xy_adjustment_m=.15,source_joint_margin_rad=.01,evaluations=fit.nfev,optimizer_success=bool(fit.success),optimizer_status=int(fit.status),feasibility_verified_separately=True,axis_angle_rad=float(2.*np.arcsin(np.clip(np.linalg.norm(e[3:])/.2,0.,1.))))
+        if task_refinement is not None:cfg["placement_target_selection"]["bounded_endpoint_ik"]["task_refinement"]=task_refinement
         if radial_refinement is not None:cfg['placement_target_selection']['bounded_endpoint_ik']['radial_bound_refinement']=radial_refinement
         data.qpos[qa]=saved;mujoco.mj_forward(model,data)
     goal_axis=np.asarray(cfg.get('placement_axis_world',[0.,0.,1.]))
@@ -517,7 +576,12 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
         fit=least_squares(lambda q:residual(q)*np.r_[np.full(3,1./position_tolerance),np.full(3,1./axis_tolerance)],np.clip(qseed,bounds[:,0]+.01,bounds[:,1]-.01),jac=lambda q:jac(q)*np.r_[np.full(3,1./position_tolerance),np.full(3,1./axis_tolerance)][:,None],bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=500,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         qseed=fit.x;error=residual(qseed)
         mujoco.mj_forward(model,data);bad=collision_screen(check_object=False)
-        checks.append(dict(point=point.tolist(),position_error_m=float(np.linalg.norm(error[:3])),axis_residual=float(np.linalg.norm(error[3:])),legacy_position001_pass=bool(np.linalg.norm(error[:3])<=.001),task_position_tolerance_m=position_tolerance,legacy_axis001_pass=bool(np.linalg.norm(error[3:])<=.001),axis_error_rad=float(2.*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0.,1.))),task_axis_tolerance_rad=axis_angle_tolerance,robot_environment_contacts=bad,right_arm_rad=qseed.tolist()))
+        actual_axis=data.xmat[hand].reshape(3,3)@axis
+        actual_center=data.xpos[hand]+data.xmat[hand].reshape(3,3)@centre-float(cfg.get("grasp_height_above_center_m",.10))*actual_axis
+        table_edges=tabletop_bottle_edge_clearances(actual_center,actual_axis,cfg)
+        if len(checks)==len(targets)-1 and min(table_edges)<.005:
+            raise ValueError("placement endpoint full-cylinder tabletop projection:"+str(table_edges))
+        checks.append(dict(table_projection_edge_clearances_m=table_edges,point=point.tolist(),position_error_m=float(np.linalg.norm(error[:3])),axis_residual=float(np.linalg.norm(error[3:])),legacy_position001_pass=bool(np.linalg.norm(error[:3])<=.001),task_position_tolerance_m=position_tolerance,legacy_axis001_pass=bool(np.linalg.norm(error[3:])<=.001),axis_error_rad=float(2.*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0.,1.))),task_axis_tolerance_rad=axis_angle_tolerance,robot_environment_contacts=bad,right_arm_rad=qseed.tolist()))
         if np.linalg.norm(error[:3])>position_tolerance or np.linalg.norm(error[3:])>axis_tolerance or bad:raise ValueError("placement IK/collision screen:"+str(checks[-1]))
     out=pg.create_unique_output_directory(root/"reviews/issue-46",prefix="two-table-delivery-static-plan").native_path
     digest=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
