@@ -100,6 +100,15 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
+        # Three recorded full transfers measured maximum calibration coast
+        # of0.4233--0.4484m. The existing600mm terminal reserve already exceeds
+        # that plus one150ms sample at the unchanged600mm/s safety cap.
+        # Do not insert another loaded STEP->STAND->STEP just to recalibrate
+        # the same task. Actual final composite stop and placement IK still gate.
+        result["measure_step_braking_after_progress_m"]=0.
+        result["braking_reserve_scope"]=(
+            "EXISTING_600MM_TERMINAL_RESERVE_NO_MIDROUTE_CALIBRATION; "
+            "actual physical speed, collision and stop limits unchanged")
         result["bounded_terminal_forward_reapproach"]=True
         # Saved actual near-table stop blocked30mm lowering at rightknee.
         # The smallest checked backoff80mm passed original lowering/placement.

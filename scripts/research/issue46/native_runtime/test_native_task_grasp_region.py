@@ -99,6 +99,20 @@ class ClockRecoveryTests(unittest.TestCase):
         self.assertIs(result["stop_inside_functional_arrival_region"], False)
         self.assertEqual(result["delivery_turn_direction"], "SHORTEST")
 
+    def test_common_transfer_reuses_existing_conservative_braking_reserve(self):
+        from pathlib import Path
+        profile = json.loads((Path(task.__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        cfg = task.task_route_profile(profile, fast_task_timing=True)
+        self.assertEqual(profile["measure_step_braking_after_progress_m"],.35)
+        self.assertEqual(cfg["measure_step_braking_after_progress_m"],0.)
+        self.assertIs(cfg["conservative_terminal_stop"],True)
+        # Saved independent calibration maxima; retain the existing0.60m
+        # trigger, including one source-observer sample at the safety cap.
+        self.assertLess(max(.4372201199,.4483791632,.4232571191)+.60*.15,.60)
+        self.assertEqual(cfg["transit_root_cap_m_s"],.60)
+        self.assertEqual(cfg["planned_step_deceleration_s"],.60)
+        self.assertEqual(cfg["stand_transition_strategy"],"ZERO_WINDOW_THEN_SD")
+
     def test_common_transfer_requires_measured_retreat_before_turn(self):
         from pathlib import Path
         from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
