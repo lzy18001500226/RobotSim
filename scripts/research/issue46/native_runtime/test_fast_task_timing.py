@@ -569,3 +569,21 @@ class CompleteTransferBudgetTests(unittest.TestCase):
             self.assertTrue(eval(expression,scope),rel)
             args.carry_timeout_s=180.;args.carry_delivery_config=None
             self.assertTrue(eval(expression,scope),rel)
+
+    def test_extended_route_does_not_extend_existing_total_owner_lifetime(self):
+        import ast
+        from types import SimpleNamespace
+        from .native_grasp_audit import carry_lease_limit
+        tree=ast.parse((Path(runtime.REPO)/"scripts/research/issue46/native_runtime/xvfb_native_reset_stand.py").read_text())
+        a=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=="requested_hold_budget" for t in n.targets))
+        b=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any("carry_lease_s" in ast.unparse(t) for t in n.targets) and "requested_hold_budget" in ast.unparse(n.value))
+        code=compile(ast.fix_missing_locations(ast.Module(body=[a,b],type_ignores=[])),"real_runner_hold_budget","exec")
+        for restored,expected in [(True,300.),(False,200.)]:
+            record={"lift_preflight":{"retract_preflight":{}}}
+            scope=dict(args=SimpleNamespace(carry_timeout_s=180.,carry_delivery_config="frozen"),
+                restoring_carry=restored,replan_record=record)
+            exec(code,scope)
+            phase=record["lift_preflight"]["retract_preflight"]
+            phase.update(postured_native_stand_restore=restored,carry_pose_frame="PELVIS_RIGID")
+            self.assertEqual(phase["carry_lease_s"],expected)
+            self.assertLessEqual(phase["carry_lease_s"],carry_lease_limit(phase))

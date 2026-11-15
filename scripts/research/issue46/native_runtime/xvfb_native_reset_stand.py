@@ -2805,7 +2805,10 @@ def main() -> None:
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
                                 if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
-                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)+(140. if restoring_carry else 0.)
+                                    # Stage deadlines share the existing total owner lifetime.
+                                    # Extending walking must not silently extend that 300s/200s lease.
+                                    requested_hold_budget=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)+(140. if restoring_carry else 0.)
+                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=min(300. if restoring_carry else 200.,requested_hold_budget)
                                     if args.carry_delivery_config is not None:
                                         replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
                                         replan_record['lift_preflight']['retract_preflight']['planar_speed_warning_only']=bool(json.loads(args.carry_delivery_config.read_text()).get("planar_speed_warning_only"))
