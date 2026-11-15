@@ -250,7 +250,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.,"common":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+                return dict(source_clock_generation=0,get_mode_status_value=100,native_generation=1,leg_states=[dict(velocity=0.)],body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.,"common":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
@@ -1089,9 +1089,9 @@ class ContinuousMcModeTests(unittest.TestCase):
     def test_recorded_delayed_query_is_not_a_lost_live_mode(self):
         self.assertTrue(m.carry_motion_handshake(self.row(),"LOCOMOTION_DEFAULT",acquired=True))
 
-    def test_running_status_is_a_valid_live_action(self):
+    def test_transition_status_is_not_qualified_live_motion(self):
         row=self.row();row["common_mode_status_value"]=200
-        self.assertTrue(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
+        self.assertFalse(m.carry_motion_handshake(row,"LOCOMOTION_DEFAULT",acquired=True))
 
     def test_initial_acquisition_still_requires_fresh_agreeing_rpc(self):
         row=self.row()

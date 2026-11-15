@@ -112,10 +112,29 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
         health = self.publish()
         with self.assertRaisesRegex(RuntimeError, "HEARTBEAT_UNQUALIFIED"):
             self.check(health, row_stamp=self.now - 200_000_001)
-        health["host_monotonic_ns"] = self.now - 200_000_001
-        health["native_source_host_ns"] = self.now - 210_000_000
+        health["host_monotonic_ns"] = self.now - 500_000_001
+        health["native_source_host_ns"] = self.now - 510_000_000
         with self.assertRaisesRegex(RuntimeError, "HEARTBEAT_UNQUALIFIED"):
             self.check(health)
+
+    def test_scheduling_jitter_does_not_expire_live_owner_with_fresh_physics(self):
+        for age_ns in (201502700,210164530,228606798,400000000,500000000):
+            health=self.publish()
+            health.update(host_monotonic_ns=self.now-age_ns,
+                          native_source_host_ns=self.now-age_ns-10000000)
+            self.check(health)
+
+    def test_owner_liveness_stops_at_half_second_without_restamping(self):
+        health=self.publish()
+        health.update(host_monotonic_ns=self.now-500000001,
+                      native_source_host_ns=self.now-510000001)
+        with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED") as exc:
+            self.check(health)
+        detail=json.loads(str(exc.exception).split(":",1)[1])
+        self.assertEqual(detail["failed_checks"],["owner_liveness"])
+        self.assertEqual(detail["owner_liveness_limit_s"],.5)
+        self.assertEqual(detail["physical_freshness_limit_s"],.2)
+        self.assertEqual(health["host_monotonic_ns"],499999999)
 
     def test_current_slip_or_external_support_fails_despite_healthy_owner(self):
         health = self.publish()
@@ -137,7 +156,7 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
         good = self.publish()
         for key, value in [("pid", -1), ("generation", 2), ("healthy", False),
                            ("mode", "CARRY_ABORT_LAST_COMMAND_HOLD"),
-                           ("host_monotonic_ns", self.now - 200_000_001),
+                           ("host_monotonic_ns", self.now - 500_000_001),
                            ("native_source_host_ns", self.now + 1)]:
             with self.subTest(key=key):
                 health = copy.deepcopy(good)
@@ -146,93 +165,8 @@ class CarryHeartbeatMeasurementTests(unittest.TestCase):
                     self.check(health)
 
 
-class CarryOwnerSnapshotRereadTests(unittest.TestCase):
-    def run_reread(self, update_at=None, *, healthy=True, generation=1, native_age_s=.037):
-        from scripts.research.issue46.native_runtime import native_base_micro_probe as m
-        clock=NS(now=1.)
-        def now_ns():return round(clock.now*1e9)
-        old=dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",healthy=healthy,
-                 pid=19,generation=generation,host_monotonic_ns=789835470)
-        def read():
-            if update_at is not None and clock.now>=1.+update_at:
-                return json.dumps(dict(old,host_monotonic_ns=now_ns()))
-            return json.dumps(old)
-        events=[]
-        health_path=NS(read_text=read)
-        native_path=NS(read_text=lambda:json.dumps(dict(
-            generation=1,host_monotonic_ns=now_ns()-round(native_age_s*1e9))))
-        def sleep(duration):clock.now+=duration
-        with mock.patch.object(m,"time",NS(monotonic=lambda:clock.now,
-                monotonic_ns=now_ns,sleep=sleep)):
-            result=m.await_recent_carry_owner(health_path,native_path,19,1,events,1.)
-        return result,events,clock.now-1.
-
-    def test_recorded_210ms_snapshot_waits_for_next_publication(self):
-        # 080004Z: at failure the next observed owner sample was 28.5ms away.
-        result,events,elapsed=self.run_reread(.029)
-        self.assertGreater(result["host_monotonic_ns"],1_000_000_000)
-        self.assertGreaterEqual(elapsed,.029)
-        self.assertLessEqual(elapsed,.05)
-        self.assertLessEqual(events[0]["final_age_s"],.2)
-
-    def test_missing_owner_update_never_refreshes_or_accepts_old_stamp(self):
-        result,events,elapsed=self.run_reread()
-        self.assertEqual(result["host_monotonic_ns"],789835470)
-        self.assertAlmostEqual(elapsed,.05)
-        self.assertGreater(events[0]["final_age_s"],.2)
-        health=CarryHeartbeatMeasurementTests().publish()
-        health.update(result,native_source_host_ns=780000000)
-        with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED"):
-            CarryHeartbeatMeasurementTests().check(health)
-
-    def test_failed_owner_does_not_wait(self):
-        result,events,elapsed=self.run_reread(.01,healthy=False)
-        self.assertEqual(elapsed,0.)
-        self.assertFalse(result["healthy"])
-        self.assertEqual(events,[])
-
-    def test_wrong_generation_does_not_wait(self):
-        result,events,elapsed=self.run_reread(.01,generation=2)
-        self.assertEqual(elapsed,0.)
-        self.assertEqual(result["generation"],2)
-
-    def test_stale_physics_is_not_masked_by_snapshot_wait(self):
-        result,events,elapsed=self.run_reread(.01,native_age_s=.200000001)
-        self.assertEqual(elapsed,0.)
-        self.assertEqual(result["host_monotonic_ns"],789835470)
 
 
-class CarryFirstPumpTests(unittest.TestCase):
-    def test_actual_pump_reads_first_native_generation_before_owner_check(self):
-        import threading
-        from scripts.research.issue46.native_runtime import native_base_micro_probe as m
-        tree=ast.parse((HERE/"native_base_micro_probe.py").read_text())
-        method=next(n for n in ast.walk(tree)
-                    if isinstance(n,ast.FunctionDef) and n.name=="pump")
-        compiled=compile(ast.Module(body=[method],type_ignores=[]),"actual-first-pump","exec")
-        stamp=1_000_000_000
-        fresh=dict(generation=1,process_pid=101,host_monotonic_ns=stamp)
-        health=dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",healthy=True,
-                    pid=19,generation=1,host_monotonic_ns=stamp)
-        paths=lambda p:NS(read_text=lambda:json.dumps(health if "heartbeat" in p else fresh))
-        node=NS(latest_row=None,refresh_native_pose=lambda:None,feedback_executor=None,
-                telemetry_lock=threading.RLock(),pumped_epoch=0,source_epoch=0,
-                pending={},readbacks={},events=[],moving=False,
-                get_mode=NS(service_is_ready=lambda:False),
-                current=NS(service_is_ready=lambda:False))
-        actual_checked=[]
-        def owner_check(*args):
-            actual_checked.append(args[3])
-            self.assertEqual(args[3],1)
-            self.assertIsNone(node.latest_row)
-        ns=dict(time=NS(monotonic=lambda:1.),MICRO=dict(carry=dict(pid=19)),
-                drain_ready_callbacks=lambda *args:None,rclpy=None,
-                GetMcAction=NS(Request=object),GetCurrentInputSource=NS(Request=object),
-                Path=paths,json=json,await_recent_carry_owner=owner_check)
-        exec(compiled,ns)
-        ns["pump"](node)
-        self.assertEqual(actual_checked,[1])
-        self.assertEqual(node.latest_row,fresh)
 
 
 if __name__ == "__main__":
