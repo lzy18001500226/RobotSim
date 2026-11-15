@@ -118,13 +118,13 @@ class TrackerLifetimeTests(unittest.TestCase):
     def test_precarry_total_cap_survives_repeated_phase_timestamp_renewal(self):
         result = self.run_loop(lambda elapsed: self.phase("CLOSING", elapsed))
         self.assertIn("NATIVE_TRACKING_LIFETIME_EXPIRED", result["failure"] or "")
-        # Original startup 45 + unchanged phase windows 12 + 6 + 9 + 6.
-        self.assertGreaterEqual(result["elapsed_s"], 78.)
-        self.assertLess(result["elapsed_s"], 78.2)
+        # Startup 45 + motion windows 12 + 6 + 9 + 6 + two existing 5s holds.
+        self.assertGreaterEqual(result["elapsed_s"], 88.)
+        self.assertLess(result["elapsed_s"], 88.2)
 
     def test_existing_six_second_closing_lease_is_not_extended(self):
         result = self.run_loop(lambda elapsed: self.phase("CLOSING", 0.))
-        self.assertEqual(result["failure"], "CLOSURE_PHASE_EXPIRED")
+        self.assertTrue(result["failure"].startswith("CLOSURE_PHASE_EXPIRED:"))
         self.assertLess(result["elapsed_s"], 6.2)
 
     def test_stale_source_after_old_cutoff_still_stops(self):
@@ -143,9 +143,29 @@ class TrackerLifetimeTests(unittest.TestCase):
 
     def test_expired_carry_lease_still_stops(self):
         result = self.run_loop(self.grasp_phases)
-        self.assertEqual(result["failure"], "CLOSURE_PHASE_EXPIRED")
+        self.assertTrue(result["failure"].startswith("CLOSURE_PHASE_EXPIRED:"))
         self.assertGreater(result["elapsed_s"], 56.)
         self.assertLess(result["elapsed_s"], 56.2)
+
+    def test_retract_motion_and_existing_measured_hold_have_separate_budgets(self):
+        # Real070857Z failure: 4s motion plus measured hold exceeded6s.
+        phase=self.phase("RETRACTING",0.,pre_retract_physical_lift_pass=True,
+                         retract_from_hold_end_ns=999950000000)
+        result=self.run_loop(lambda elapsed:phase,stop_after=7.)
+        self.assertIsNone(result["failure"])
+        result=self.run_loop(lambda elapsed:phase,stop_after=12.)
+        self.assertTrue(result["failure"].startswith("CLOSURE_PHASE_EXPIRED:"))
+        self.assertGreater(result["elapsed_s"],11.)
+        self.assertLess(result["elapsed_s"],11.2)
+        self.assertIn('"phase": "RETRACTING"',result["failure"])
+
+    def test_existing_hold_timeout_matches_tracker_accounting(self):
+        import inspect
+        from scripts.research.issue46.native_runtime.stl_hand_startup import hold_native_simulation
+        hold_budget=inspect.signature(hold_native_simulation).parameters["wall_timeout_s"].default
+        self.assertEqual(hold_budget,5.)
+        self.assertEqual(tracker.tracking_phase_limit_s({"phase":"LIFTING"}),9.+hold_budget)
+        self.assertEqual(tracker.tracking_phase_limit_s({"phase":"RETRACTING"}),6.+hold_budget)
 
     def test_existing_nine_second_cycle_budget_stays_scoped_to_startup(self):
         result = self.run_loop(lambda elapsed: None, cycle_budget=9.)

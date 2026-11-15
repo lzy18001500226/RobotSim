@@ -145,9 +145,15 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
 
 
 def tracking_phase_limit_s(phase):
-    """Existing phase leases, shared by freshness and process lifetime."""
+    """Bounded execution budgets, separate from 200ms feedback freshness.
+
+    LIFTING/RETRACTING each contain an existing hold_native_simulation call:
+    1.5s measured simulation, at most 5s wall time. Its full wall budget must
+    be added to the original motion lease; it is not a model safety limit.
+    """
     from scripts.research.issue46.native_runtime.native_grasp_audit import carry_lease_limit
-    limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.,"RETRACTING":6.}
+    hold_wall_budget_s=5.  # hold_native_simulation existing unchanged timeout
+    limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.+hold_wall_budget_s,"RETRACTING":6.+hold_wall_budget_s}
     if phase.get("phase")=="CARRY_HOLD":
         lease=phase.get("carry_lease_s")
         if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=carry_lease_limit(phase) or phase.get("post_retract_physical_hold_pass") is not True:return None
@@ -169,8 +175,8 @@ def tracking_lifetime_deadline(startup_deadline, phase):
     """Keep an accepted phase alive without granting an unbounded pre-carry run.
 
     The original 45s (+ optional 9s unloaded cycle) still bounds unphased
-    approach. Subsequent stages use their unchanged individual leases. Even
-    repeatedly rewritten pre-carry phases cannot exceed startup + 33s.
+    approach. Subsequent stages include their existing bounded measured holds. Even
+    repeatedly rewritten pre-carry phases cannot exceed startup + 43s.
     CARRY_HOLD retains its existing independently qualified carry lease.
     """
     if phase is None:return startup_deadline
@@ -622,7 +628,10 @@ def track_native(reference_path, latest_path, output_path):
                     if not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_AFTER_INITIAL_IMAGE_READINESS')
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
-            if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):
+                raise RuntimeError("CLOSURE_PHASE_EXPIRED:"+json.dumps(dict(
+                    phase=phase.get("phase"),phase_created_host_ns=phase.get("created_host_ns"),
+                    checked_host_ns=time.monotonic_ns(),limit_s=tracking_phase_limit_s(phase))))
             deadline=tracking_lifetime_deadline(startup_deadline,phase)
             if time.monotonic_ns()>round(deadline*1e9):
                 raise RuntimeError("NATIVE_TRACKING_LIFETIME_EXPIRED:"+json.dumps({

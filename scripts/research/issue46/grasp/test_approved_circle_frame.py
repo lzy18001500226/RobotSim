@@ -361,7 +361,7 @@ class FrameTests(unittest.TestCase):
                 self.ns["tracking_task"](row,{"grasp_height_above_center_m":.1},phase)
 
     def test_retract_phase_has_own_bounded_clock_after_fresh_physical_lift(self):
-        now=20000000000
+        now=25000000000  # original6s motion lease + existing5s measured hold
         phase={"phase":"RETRACTING","created_host_ns":14000000000,"pre_retract_physical_lift_pass":True,"retract_from_hold_end_ns":13990000000}
         self.assertTrue(self.ns["tracking_phase_is_fresh"](phase,now))
         self.assertFalse(self.ns["tracking_phase_is_fresh"](phase,now+1))
