@@ -235,12 +235,14 @@ def task_route_profile(profile, *, fast_task_timing=False):
     if fast_task_timing:
         # Restore the shared0/10 physical baseline: retreat, turn, then walk
         # forward with heading feedback. No reverse delivery or final pivot.
-        #230032Z STEP transit exceeded the source knee-speed limit after a
-        # successful loaded DEFAULT retreat/turn. Reuse that installed DEFAULT
-        # gait for forward delivery too; retain commands and physical limits.
-        result["forward_response_profile"]="INSTALLED_LOCOMOTION_DEFAULT_AFTER_LOADED_DEFAULT_RETREAT_TURN; source policy/weights/gains unchanged; loaded forward transit requires actual validation"
+        #231321Z DEFAULT delivery drifted backwards despite positive input.
+        # Keep the measured forward STEP route.230032Z exceeded knee speed
+        # during combined steering (~.365rad/s); limit delivery steering only,
+        # leaving the separately qualified turn command and source limits intact.
+        result["forward_response_profile"]="INSTALLED_LOCOMOTION_STEP_FORWARD_AFTER_DEFAULT_TURN; delivery steering capped0.20rad/s; policy/weights/gains unchanged"
+        result["delivery_tracking_angular_cap_rad_s"]=.20
         result.update(rearward_foundation_transit=False,
-            delivery_motion_mode="LOCOMOTION_DEFAULT",
+            delivery_motion_mode="LOCOMOTION_STEP",
             stand_transition_strategy="ZERO_WINDOW_THEN_SD",
             bounded_final_dock_alignment=False,require_forward_delivery=True,
             route_goal_scope="RETREAT_THEN_TURN_THEN_FORWARD_STEERING_TO_ACTUAL_PLACEMENT_REGION")
