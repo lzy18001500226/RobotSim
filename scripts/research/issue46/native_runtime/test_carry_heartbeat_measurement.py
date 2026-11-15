@@ -202,5 +202,38 @@ class CarryOwnerSnapshotRereadTests(unittest.TestCase):
         self.assertEqual(result["host_monotonic_ns"],789835470)
 
 
+class CarryFirstPumpTests(unittest.TestCase):
+    def test_actual_pump_reads_first_native_generation_before_owner_check(self):
+        import threading
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as m
+        tree=ast.parse((HERE/"native_base_micro_probe.py").read_text())
+        method=next(n for n in ast.walk(tree)
+                    if isinstance(n,ast.FunctionDef) and n.name=="pump")
+        compiled=compile(ast.Module(body=[method],type_ignores=[]),"actual-first-pump","exec")
+        stamp=1_000_000_000
+        fresh=dict(generation=1,process_pid=101,host_monotonic_ns=stamp)
+        health=dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",healthy=True,
+                    pid=19,generation=1,host_monotonic_ns=stamp)
+        paths=lambda p:NS(read_text=lambda:json.dumps(health if "heartbeat" in p else fresh))
+        node=NS(latest_row=None,refresh_native_pose=lambda:None,feedback_executor=None,
+                telemetry_lock=threading.RLock(),pumped_epoch=0,source_epoch=0,
+                pending={},readbacks={},events=[],moving=False,
+                get_mode=NS(service_is_ready=lambda:False),
+                current=NS(service_is_ready=lambda:False))
+        actual_checked=[]
+        def owner_check(*args):
+            actual_checked.append(args[3])
+            self.assertEqual(args[3],1)
+            self.assertIsNone(node.latest_row)
+        ns=dict(time=NS(monotonic=lambda:1.),MICRO=dict(carry=dict(pid=19)),
+                drain_ready_callbacks=lambda *args:None,rclpy=None,
+                GetMcAction=NS(Request=object),GetCurrentInputSource=NS(Request=object),
+                Path=paths,json=json,await_recent_carry_owner=owner_check)
+        exec(compiled,ns)
+        ns["pump"](node)
+        self.assertEqual(actual_checked,[1])
+        self.assertEqual(node.latest_row,fresh)
+
+
 if __name__ == "__main__":
     unittest.main()
