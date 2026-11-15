@@ -89,7 +89,7 @@ def receive_native_waist(self,message):
     if not 0.<=source_age<=.20 or stamp<=getattr(self,"mc_waist_source_stamp_ns",-1):return
     self.mc_waist_source_stamp_ns=stamp
     self.mc_waist_message=copy.deepcopy(message);self.mc_waist_receipt=time.monotonic()
-    if getattr(self,"mc_waist_blend_started",None) is None or getattr(self,"mc_waist_abort_frozen",False):return
+    if (getattr(self,"mc_waist_blend_started",None) is None or getattr(self,"mc_waist_abort_frozen",False) or getattr(self,"stationary_delivery_waist_target",None) is not None):return
     source={j.name:float(j.position) for j in message.joints}
     fraction=min(1.,(time.monotonic()-self.mc_waist_blend_started)/4.)
     smooth=fraction*fraction*(3.-2.*fraction)
@@ -164,6 +164,36 @@ def request_carry_waist_return(self,target):
     return target
 
 
+def request_stationary_delivery_waist(self, target):
+    """Reuse the existing bias-compensated waist owner after a real route stop."""
+    import os,json,time,math
+    path="/workspace/evidence/stationary_delivery_waist_request.json"
+    if getattr(self,"stationary_delivery_waist_target",None) is None and os.path.exists(path):
+        req=json.load(open(path));row=self.native_row
+        if (req.get("schema")!="robotsim.stationary-delivery-waist.v1"
+                or req.get("owner_pid")!=os.getpid() or req.get("generation")!=self.native_generation
+                or req.get("physical_stop_pass") is not True
+                or not 0.<=(time.monotonic_ns()-req["created_host_ns"])*1e-9<=.20
+                or not 0.<=(time.monotonic_ns()-row["host_monotonic_ns"])*1e-9<=.20):
+            raise RuntimeError("STATIONARY_DELIVERY_WAIST_REQUEST_UNQUALIFIED")
+        if row.get("generation")!=self.native_generation:raise RuntimeError("STATIONARY_DELIVERY_WAIST_GENERATION")
+        with self.owner_waist_lock:
+            hold={name:float(row["joints"][name]["q"]) for name in WAIST}
+            checks={}
+            for name in WAIST:
+                j=row["joints"][name];kp,kd=GAINS[name]
+                limits=LIFT_CONTRACT["retract_preflight"]["source_motion_limits"][name]
+                if abs(j["qvel"])>.05:raise RuntimeError("STATIONARY_DELIVERY_WAIST_NOT_STOPPED")
+                command=position_mode_setpoint(hold[name],j["q"],j["qvel"],j["bias_force"],kp,kd,limits,120. if name=="waist_yaw_joint" else 36.,bound_effort=True)
+                checks[name]=dict(desired_rad=hold[name],equivalent_position_command_rad=command,kp=kp,kd=kd,source_limits=limits)
+            self.stationary_delivery_waist_target=hold
+            value=dict(schema=req["schema"],owner_pid=os.getpid(),generation=self.native_generation,host_monotonic_ns=time.monotonic_ns(),target_rad=hold,source_checks=checks,policy="EXISTING_POSITION_MODE_GRAVITY_COMPENSATION_UNCHANGED_GAINS")
+            with open("/workspace/evidence/stationary_delivery_waist_feedback.tmp","x") as f:json.dump(value,f)
+            os.replace("/workspace/evidence/stationary_delivery_waist_feedback.tmp","/workspace/evidence/stationary_delivery_waist_feedback.json")
+    hold=getattr(self,"stationary_delivery_waist_target",None)
+    return {**target,**hold} if hold is not None else target
+
+
 def request_native_waist_handoff(self):
     import os,json,time
     path="/workspace/evidence/native_waist_handoff_request.json"
@@ -186,13 +216,13 @@ def extend_existing_owner(script):
         nonlocal script
         if script.count(old)!=1:raise ValueError("postured restoration owner anchor:"+old[:60])
         script=script.replace(old,new)
-    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_native_waist_handoff))
+    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_stationary_delivery_waist,request_native_waist_handoff))
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))
     lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_owner_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
     script="\n".join(lines)+"\n"
-    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self)\n   if WAIST and getattr(self,\'mc_waist_blend_started\',None) is None:\n    w=JointCommandArray();w.header=m.header")
+    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self);target=request_stationary_delivery_waist(self,target)\n   if WAIST and (getattr(self,\'mc_waist_blend_started\',None) is None or getattr(self,\'stationary_delivery_waist_target\',None) is not None):\n    w=JointCommandArray();w.header=m.header")
     replace("    self.waist_pub.publish(w)","    self.waist_pub.publish(w);self.last_waist_message=w")
     replace("self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}","self.last_published_arm_target={name:float(target[name]) for name in CONTROL}")
     replace(" def send(self,target,seconds,stage,hand_right=None):", " def send(self,target,seconds,stage,hand_right=None):\n  if WAIST and stage in (\'CARRY_STOW\',\'CARRY_HOLD\'):target={**self.last_published_arm_target,**target}")
@@ -332,6 +362,30 @@ print(json.dumps(dict(pass_result=True,retired_pids=owned,signal='SIGINT',scope=
     completed=run(['docker','exec',container,'python3','-c',code],timeout_s=6.,check=False)
     if completed.returncode:raise RuntimeError('OWNED_BRIDGE_RETIRE_FAILED:'+completed.stdout[-1000:])
     value=json.loads(completed.stdout.strip().splitlines()[-1]);pg.write_new_text(output/('bridge_retired_'+phase+'.json'),json.dumps(value,indent=2)+'\n');return value
+
+
+def acquire_stationary_delivery_waist(output, ready, navigation):
+    """No new publisher; require qualified stop and fresh same-owner receipt."""
+    import os
+    from scripts.agent import path_governance as pg
+    from scripts.research.issue46.native_runtime.native_grasp_audit import read_fresh_native_row
+    stop=navigation.get("functional_stop_composite",navigation.get("post_stop_composite",{}))
+    if not navigation.get("pass_result") or stop.get("pass") is not True:raise RuntimeError("DELIVERY_WAIST_REQUIRES_PHYSICAL_STOP")
+    row=read_fresh_native_row(output/"native_latest.json")
+    if row["generation"]!=ready["generation"]:raise RuntimeError("DELIVERY_WAIST_GENERATION")
+    req=dict(schema="robotsim.stationary-delivery-waist.v1",owner_pid=ready["pid"],generation=ready["generation"],created_host_ns=time.monotonic_ns(),physical_stop_pass=True)
+    pg.write_new_text(output/"stationary_delivery_waist_request.tmp",json.dumps(req)+"\n")
+    os.replace(output/"stationary_delivery_waist_request.tmp",output/"stationary_delivery_waist_request.json")
+    deadline=time.monotonic()+2.
+    while time.monotonic()<deadline:
+        path=output/"stationary_delivery_waist_feedback.json"
+        if path.exists():
+            feedback=json.loads(path.read_text())
+            if (feedback.get("owner_pid")==ready["pid"] and feedback.get("generation")==ready["generation"]
+                    and 0.<=(time.monotonic_ns()-feedback["host_monotonic_ns"])*1e-9<=.20):return feedback
+            raise RuntimeError("DELIVERY_WAIST_RECEIPT_UNQUALIFIED")
+        time.sleep(.01)
+    raise RuntimeError("DELIVERY_WAIST_RECEIPT_TIMEOUT")
 
 
 def run_body_stage(run, container, environment, output, label):

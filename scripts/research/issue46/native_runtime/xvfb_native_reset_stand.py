@@ -1420,6 +1420,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
                 from scripts.research.issue46.native_runtime.native_grasp_stand_restore import screen_measured_route,retire_owned_zero_bridge,run_body_stage
                 result["delivery_pre_lower_static"]=screen_measured_route(args,output,replan_record,"delivery_pre_lower_snapshot")
                 result["delivery_bridge_retirement"]=retire_owned_zero_bridge(run,container,output,"delivery")
+                from scripts.research.issue46.native_runtime.native_grasp_stand_restore import acquire_stationary_delivery_waist
+                result["delivery_stationary_waist_hold"]=acquire_stationary_delivery_waist(output,ready,nav)
                 result["delivery_body_lowering"]=run_body_stage(run,container,environment,output,"body_crouch_delivery")
                 result["gates"]["DELIVERY_BODY_LOWERING"]="PASS"
             snapshot=native_grasp_audit.read_fresh_native_row(output/"native_latest.json")

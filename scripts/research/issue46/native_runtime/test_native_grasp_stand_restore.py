@@ -319,3 +319,79 @@ class CarryWaistCommandReturnTests(unittest.TestCase):
             with patch('os.path.exists',return_value=True),patch('builtins.open',mock_open()),patch('json.load',side_effect=[bad,{'request':baseline}]),patch('time.monotonic_ns',return_value=1500000000 if change=='stale' else 1001000000):
                 with self.assertRaisesRegex(RuntimeError,'CARRY_WAIST_RETURN_REQUEST_UNQUALIFIED'):restore.request_carry_waist_return(owner,{name:.28 for name in restore.WAIST})
             self.assertFalse(hasattr(owner,'carry_waist_return_started'))
+
+
+class StationaryDeliveryWaistTests(unittest.TestCase):
+    def setUp(self):
+        import os,time,threading
+        self.now=time.monotonic_ns()
+        self.owner=S(native_generation=1,owner_waist_lock=threading.RLock(),native_row=dict(generation=1,host_monotonic_ns=self.now,joints={name:dict(q=-.02936,qvel=0.,bias_force=-7.423) for name in restore.WAIST}))
+        self.request=dict(schema="robotsim.stationary-delivery-waist.v1",owner_pid=os.getpid(),generation=1,created_host_ns=self.now,physical_stop_pass=True)
+        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint
+        self.patches=[patch.object(restore,"GAINS",{n:(40.,5.) for n in restore.WAIST},create=True),patch.object(restore,"LIFT_CONTRACT",{"retract_preflight":{"source_motion_limits":{n:(-.314,.314,13.088) for n in restore.WAIST}}},create=True),patch.object(restore,"position_mode_setpoint",position_mode_setpoint,create=True)]
+        for p in self.patches:p.start();self.addCleanup(p.stop)
+
+    def invoke(self):
+        import io,json
+        def fake_open(path,mode="r",*args,**kwargs):
+            return io.StringIO(json.dumps(self.request)) if mode=="r" else io.StringIO()
+        with patch("os.path.exists",return_value=True),patch("builtins.open",side_effect=fake_open),patch("os.replace"),patch("time.monotonic_ns",return_value=self.now):
+            return restore.request_stationary_delivery_waist(self.owner,{"right_elbow_joint":.4})
+
+    def test_fresh_stopped_owner_holds_actual_waist_with_existing_bias_conversion(self):
+        target=self.invoke()
+        self.assertEqual(target["right_elbow_joint"],.4)
+        self.assertEqual(target["waist_pitch_joint"],-.02936)
+        self.assertEqual(self.owner.native_row["joints"]["waist_pitch_joint"]["q"],-.02936)
+        # Measured before-lowering gravity needs a legal command, not a new gain.
+        command=restore.position_mode_setpoint(-.02936,-.02936,0.,-7.423,40.,5.,(-.314,.314,13.088),36.,bound_effort=True)
+        self.assertAlmostEqual(command,-.214935)
+        self.assertEqual(restore.GAINS["waist_pitch_joint"],(40.,5.))
+
+    def test_nonstopped_or_wrong_owner_or_stale_request_cannot_take_control(self):
+        for key,value in [("physical_stop_pass",False),("owner_pid",-1),("generation",2),("created_host_ns",self.now-201000000)]:
+            original=dict(self.request);self.request[key]=value
+            with self.assertRaisesRegex(RuntimeError,"REQUEST_UNQUALIFIED"):self.invoke()
+            self.assertFalse(hasattr(self.owner,"stationary_delivery_waist_target"));self.request=original
+
+    def test_moving_or_source_limit_waist_cannot_be_adopted(self):
+        for change in [dict(qvel=.051),dict(q=.315)]:
+            old=dict(self.owner.native_row["joints"]["waist_pitch_joint"])
+            self.owner.native_row["joints"]["waist_pitch_joint"].update(change)
+            with self.assertRaises(RuntimeError):self.invoke()
+            self.assertFalse(hasattr(self.owner,"stationary_delivery_waist_target"));self.owner.native_row["joints"]["waist_pitch_joint"]=old
+
+    def test_adopted_target_remains_fixed_through_subsequent_body_lowering(self):
+        self.invoke();self.owner.native_row["joints"]["waist_pitch_joint"]["q"]=-.02
+        target=restore.request_stationary_delivery_waist(self.owner,{"waist_pitch_joint":.1})
+        self.assertEqual(target["waist_pitch_joint"],-.02936)
+
+    def test_native_relay_stops_publishing_once_stationary_owner_has_taken_over(self):
+        original=WaistHandoffTests();original.setUp()
+        try:
+            original.owner.stationary_delivery_waist_target={n:0. for n in restore.WAIST}
+            with patch("time.monotonic",return_value=14.):restore.receive_native_waist(original.owner,original.message)
+            self.assertEqual(original.sent,[])
+            self.assertEqual(original.owner.mc_waist_message.joints[0].position,0.)
+        finally:original.doCleanups()
+
+    def test_host_handoff_requires_qualified_physical_stop(self):
+        from pathlib import Path
+        for nav in [dict(pass_result=False,post_stop_composite={"pass":True}),dict(pass_result=True,post_stop_composite={"pass":False})]:
+            with self.assertRaisesRegex(RuntimeError,"REQUIRES_PHYSICAL_STOP"):
+                restore.acquire_stationary_delivery_waist(Path("/unused"),{},nav)
+
+
+    def test_host_writes_readable_exact_request_and_accepts_same_owner_receipt(self):
+        import tempfile,time,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder);ready=dict(pid=123,generation=1)
+            feedback=dict(owner_pid=123,generation=1,host_monotonic_ns=time.monotonic_ns())
+            (output/"stationary_delivery_waist_feedback.json").write_text(json.dumps(feedback))
+            with patch("scripts.research.issue46.native_runtime.native_grasp_audit.read_fresh_native_row",return_value={"generation":1}),patch("scripts.agent.path_governance.write_new_text",side_effect=lambda path,value:Path(path).write_text(value)):
+                got=restore.acquire_stationary_delivery_waist(output,ready,dict(pass_result=True,post_stop_composite={"pass":True}))
+            self.assertEqual(got,feedback)
+            request=json.loads((output/"stationary_delivery_waist_request.json").read_text())
+            self.assertEqual(request["owner_pid"],123);self.assertTrue(request["physical_stop_pass"])
+            self.assertFalse((output/"stationary_delivery_waist_request.tmp").exists())
