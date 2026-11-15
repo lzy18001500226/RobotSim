@@ -688,8 +688,16 @@ def prioritize_stance_reference(candidates, profile):
     return sorted(candidates, key=lambda candidate: candidate[1] != preferred)
 
 
+def same_measured_stance(root_goal, candidate_yaw, actual_root, actual_yaw):
+    """A reference-region tolerance cannot replace an actual collision witness."""
+    return (np.linalg.norm(np.asarray(root_goal)-np.asarray(actual_root))<=1e-6 and
+            abs(math.atan2(math.sin(candidate_yaw-actual_yaw),
+                           math.cos(candidate_yaw-actual_yaw)))<=1e-6)
+
+
 def region_candidates(study, native_row, estimated_center, visibility_check=None,
-                      reference_heading=.2449960245840995,far_observe=False,pre_raise_target_rad=-2.15):
+                      reference_heading=.2449960245840995,far_observe=False,pre_raise_target_rad=-2.15,
+                      actual_stance_only=False):
     """Co-plan torso viewing direction; current base before bounded relocation."""
     center = np.asarray(estimated_center, dtype=float)
     if center.shape != (3,) or not np.isfinite(center).all():
@@ -723,8 +731,8 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
     yaw_adr = int(study.qadr[0])
     prepared = study.templates["prepared"].copy()
     preparation = [q.copy() for q in study.preparation]
-    if pre_raise_target_rad not in (-2.15,-2.25):raise ValueError("unsupported source-valid pregrasp pose")
-    if far_observe and pre_raise_target_rad==-2.25:
+    if pre_raise_target_rad not in (-2.15,-2.25,-2.45):raise ValueError("unsupported source-valid pregrasp pose")
+    if far_observe and pre_raise_target_rad!=-2.15:
         from scripts.research.issue46.grasp.stance_region_static_review import ACTIVE
         prepared[int(study.qadr[ACTIVE.index("right_elbow_joint")])]=pre_raise_target_rad
     if far_observe and abs(native_row["joints"]["right_elbow_joint"]["q"]-pre_raise_target_rad)<.025:
@@ -764,7 +772,17 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         # Keep the demonstrated forward/turn navigation targets below. A saved
         # *achieved* stopped grasp pose is not the old commanded motion goal:
         # braking/coast made them differ by hundreds of millimetres in Y.
+    if actual_stance_only:
+        candidates=[c for c in candidates if np.linalg.norm(c[0]-anchor)<1e-9 and abs(math.atan2(math.sin(c[2]-yaw),math.cos(c[2]-yaw)))<1e-9]
     rows = []
+    compact_checked=False
+    def compact_current_stance():
+        nonlocal compact_checked
+        if not far_observe or pre_raise_target_rad!=-2.15 or compact_checked:return None,[]
+        compact_checked=True
+        return region_candidates(study,native_row,estimated_center,visibility_check,
+            reference_heading=reference_heading,far_observe=True,
+            pre_raise_target_rad=-2.45,actual_stance_only=True)
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:
             yaw=candidate_yaw
@@ -811,10 +829,10 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
             row["base_motion_required"]=not label.startswith("CURRENT_STANCE")
             if label in profile_by_label:
                 row['grasp_profile']=profile_by_label[label]
-                # Arrival is a region: qualify this actual stance and the same
-                # profile posture before asking for another small base move.
-                if np.linalg.norm(root_goal-root_xy)<=.08 and abs(math.atan2(math.sin(yaw-oldyaw),math.cos(yaw-oldyaw)))<=.20:
-                    row['base_motion_required']=False
+                # A nearby reference is not an actual-pose collision witness.
+                # Only the exact actual stance can omit base motion; the first
+                # ACTUAL_STANCE candidate already screens that measured pose.
+                row['base_motion_required']=not same_measured_stance(root_goal,yaw,root_xy,oldyaw)
             row["pre_raise_forearm_target_rad"]=pre_raise_target_rad
             if pitch_target is not None:row["waist_pitch_target_rad"]=pitch_target
             rows.append(row)
@@ -849,6 +867,9 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
                     row["stage"] = "PREPARED_CAMERA_NOT_QUALIFIED"
                     continue
             if row["base_motion_required"]:
+                compact,compact_rows=compact_current_stance()
+                rows.extend(compact_rows)
+                if compact is not None:return compact,rows
                 if far_observe:
                     from scripts.research.issue46.native_runtime.far_observe_approach import sampled_approach_clearance
                     row["navigation_preflight"]=sampled_approach_clearance(study,native_row,center,row)
@@ -866,7 +887,9 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
                             row["stage"]="NAVIGATION_SIDE_CORRIDOR_COLLISION"
                             continue
             return row, rows
-        return None, rows
+        compact,compact_rows=compact_current_stance()
+        rows.extend(compact_rows)
+        return compact, rows
     finally:
         study.templates["prepared"] = prepared
         study.preparation = preparation

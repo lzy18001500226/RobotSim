@@ -56,7 +56,10 @@ def stop_owner_feedback(owner):
 
 
 def receive_owner_waist(owner, message):
-    # Serialize abort freeze with a possible in-flight waist publication.\n    # Preserve200ms source-message age validation in receive_native_waist.\n    # Allow its existing50ms recovery window to receive a genuinely fresh packet;\n    # otherwise this callback killed the executor before recovery was possible.
+    # Serialize abort freeze with a possible in-flight waist publication.
+    # Preserve200ms source-message age validation in receive_native_waist.
+    # Allow its existing50ms recovery window to receive a genuinely fresh packet;
+    # otherwise this callback killed the executor before recovery was possible.
     with owner.owner_waist_lock:
         if (getattr(owner, "mc_waist_blend_started", None) is not None
                 and not getattr(owner, "mc_waist_abort_frozen", False)

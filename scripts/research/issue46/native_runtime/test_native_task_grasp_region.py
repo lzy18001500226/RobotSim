@@ -132,6 +132,18 @@ class ClockRecoveryTests(unittest.TestCase):
         for key in ("transit_root_cap_m_s","turn_braking_footprint_m","retreat_cross_track_limit_m"):
             self.assertEqual(cfg[key],profile[key])
 
+    def test_nearby_reference_must_not_replace_actual_collision_pose(self):
+        actual=[1.0198491189,-1.4223358472]
+        reference=[1.0026981343,-1.4909411875]
+        self.assertFalse(task.same_measured_stance(reference,.3024451879,actual,.5093669021))
+        self.assertTrue(task.same_measured_stance(actual,.5093669021,actual,.5093669021))
+
+    def test_stance_identity_handles_wrapped_yaw_but_not_region_error(self):
+        import math
+        self.assertTrue(task.same_measured_stance([1.,2.],math.pi,[1.,2.],-math.pi))
+        self.assertFalse(task.same_measured_stance([1.001,2.],0.,[1.,2.],0.))
+        self.assertFalse(task.same_measured_stance([1.,2.],.01,[1.,2.],0.))
+
     def test_selected_posture_reaches_the_actual_consumer_before_any_motion(self):
         from pathlib import Path
         from unittest.mock import patch
