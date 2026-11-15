@@ -103,13 +103,31 @@ Keep physical X2/GPU/vendor-runtime acceptance in the supported local setup.
 Do not remove a failing rule merely to obtain green status: distinguish a
 real code/layout violation from a misclassified research artifact.
 
-Agent/G1 workflows share a per-workflow, per-branch concurrency group across
-push and PR events so newer in-flight checks supersede older ones. This does
-not guarantee one execution per SHA if the first run already completed.
-Scope further CI reduction to demonstrated duplication and required-check
-semantics; disabling CI email does not disable validation.
+| Change/event | Hosted checks |
+| --- | --- |
+| Task-branch push before a PR exists | Full agent infrastructure checks; a successful run retains the existing automatic draft-PR handoff. |
+| Push to a branch with an open PR to main | A read-only exact-head PR lookup skips duplicate push steps; the PR event runs the full agent checks. If lookup is unavailable, run full push checks. |
+| PR touching G1 smoke inputs | Agent checks plus the pinned headless G1 smoke. |
+| Other PR, including docs or X2-only experiments | Agent checks; G1 check explicitly reports physics NOT RUN. |
+| Push to main or manual G1 dispatch | Full G1 smoke. |
 
+G1 inputs are its workflow, launcher, dependency lock, smoke requirements/tests,
+pinned Unitree checkout and CI selector/tests. See
+[`ci_scope.js`](../../scripts/agent/ci_scope.js); extend the selector if the
+smoke acquires new dependencies. Diff errors fail the check rather than imply
+unrelated changes. Retain the stable job/check name: skip expensive steps,
+not the whole workflow with path filters that can leave required checks pending.
+Concurrency cancels older runs within each event/branch; push and PR no longer
+cancel one another. A lightweight push lookup still creates a workflow run;
+this removes duplicate test work, not all GitHub events or notification emails.
+The trusted main-branch auto-PR workflow remains unchanged.
 
-CI covers repository agent infrastructure: Python unit tests/compilation, hook JSON parsing, and lightweight repository checks. A separate G1 MuJoCo job also runs the bounded-command unit checks and pinned headless model/stepping smoke test in a temporary Python 3.12 environment. Keep CI focused on reproducible, project-owned checks. Add C++ and package checks when maintained packages exist. Use Humble `ament_lint` and package-local tests when ROS packages are added; use `launch_testing` for the ROS graph behaviors it can exercise. Do not label hosted CI as Unity GPU, Windows/WSLg, vendor DDS, or hardware validation. Those remain local or HIL evidence at L4/L5.
+CI covers Python unit tests/compilation, mocked automation tests, hook JSON
+parsing and repository governance/links. G1 smoke uses a temporary Python 3.12
+environment. Add C++ and package checks when maintained packages exist. Use
+Humble `ament_lint` and package-local tests when ROS packages are added; use
+`launch_testing` for supported ROS graph checks. Hosted CI does not establish
+X2 physics, Unity GPU, Windows/WSLg, vendor DDS or hardware acceptance; those
+remain local or HIL evidence at L4/L5. Disabling CI email does not disable checks.
 
 Primary upstream testing references: [ROS 2 Humble colcon testing](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/CLI.html), [Humble `launch_testing`](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/Integration.html), and [Humble ament lint](https://docs.ros.org/en/humble/Tutorials/Advanced/Ament-Lint-For-Clean-Code.html). REP-2004's quality levels are optional evidence vocabulary, not a blanket RobotSim certification.

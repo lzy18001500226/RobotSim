@@ -50,6 +50,16 @@ actually enabled. An uncommitted task-worktree change does not update the
 canonical main checkout's hooks. Do not claim a configuration is deployed
 until the intended source is installed and its loaded handlers are verified.
 
+The infra branch's two-handler configuration is a proposed source change,
+not an installation across all checkouts. On 2026-11-15, file inspection found
+four handlers in the canonical checkout, six in Local02's X2 checkout, and two
+in this infra checkout. Their Windows commands still reference canonical
+`projects/RobotSim/scripts/agent` files. The separate user configuration has
+nine Orca lifecycle handlers. These are file inventories, not confirmation of
+the desktop's loaded handlers. Integrate the reviewed infra source first,
+then reload and inspect `/hooks` in the intended trusted checkout; do not edit
+Local02's active checkout or remove Orca handlers during an infra-only task.
+
 UserPromptSubmit/Interrupt metadata and the research capability probe remain
 available as manual diagnostics; they are not default project hooks. Retain
 their files and historical evidence. Their record of a turn ending never
@@ -155,9 +165,13 @@ Do not send per-tool, per-test, per-commit, or progress notifications. Messages 
 ## Milestone email notifications
 
 GitHub Actions CI emails and RobotSim AgentMail messages are separate channels.
-To stop GitHub CI emails, open https://github.com/settings/notifications and,
-under System -> Actions, disable Email (or select Don't notify). Keep CI enabled.
-This changes account notification preferences, not Copilot usage or quotas.
+To stop GitHub CI emails, open https://github.com/settings/notifications and
+change only **System -> Actions -> Email**. Leave the Issue/PR, watching and
+other notification settings intact. This account-level Actions preference
+applies across repositories; it is not a RobotSim-only email switch. Keep CI
+enabled. Workflow code cannot switch off the recipient's GitHub-generated
+mail. [CI scope](../engineering/validation.md#ci-growth) reduces duplicate work;
+it does not change account settings, Copilot usage or quotas.
 
 Send a milestone only after its named acceptance criteria have passed, for
 example H220 RGB-D grasp/lift, then H220 second-table release. Use the existing
