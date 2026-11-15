@@ -78,6 +78,7 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["retreat_target_m"],.70)
         self.assertEqual(fast["base_goal_world_xy"],[.015,.90])
         self.assertEqual(fast["delivery_motion_mode"],"LOCOMOTION_STEP")
+        self.assertEqual(fast["turn_motion_mode"],"LOCOMOTION_DEFAULT")
         self.assertFalse(fast["rearward_foundation_transit"])
         self.assertTrue(fast["require_forward_delivery"])
         self.assertFalse(fast["bounded_final_dock_alignment"])
