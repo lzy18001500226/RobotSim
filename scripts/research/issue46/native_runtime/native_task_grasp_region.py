@@ -118,6 +118,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Maintainer15Nov: self-imposed instantaneous pelvis speed is a
         # diagnostic, not a vendor joint limit or a substitute for balance.
         result["planar_speed_warning_only"]=True
+        # Actual234.461s failure: FoundationWalk's turn activation peaked at
+        #12.222rad/s at the right knee despite only-.054rad/s yaw input.
+        # Reuse the installed action_setting.yaml LOCOMOTION_STEP/cpgstep
+        # runner for turn only; retreat and forward modes remain unchanged.
+        result["turn_motion_mode"]="LOCOMOTION_STEP"
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
         # Reuse the existing0.6s healthy-stop taper for the loaded retreat.

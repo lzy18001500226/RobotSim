@@ -1206,6 +1206,15 @@ def delivery_forward_progress(state, distance, now, active, epoch):
     return result
 
 
+def carry_turn_motion_mode(delivery, native_step=False):
+    """Select only a mode present in the pinned installed MC action table."""
+    mode=(delivery or {}).get("turn_motion_mode",
+                              "LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT")
+    if mode not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):
+        raise ValueError("unsupported carry turn mode")
+    return mode
+
+
 def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None, vendor_transition_table=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     step_all=bool(delivery and delivery.get("transit_motion_mode")=="LOCOMOTION_STEP")
@@ -1269,7 +1278,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),review_prefix_only=bool((delivery or {}).get("review_prefix_only")),incidental_contact_diagnostic=bool((delivery or {}).get("incidental_contact_diagnostic") or (delivery or {}).get("review_prefix_only")),native_step_all_transit=step_all,motion_mode="LOCOMOTION_STEP" if step_all or native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),review_prefix_only=bool((delivery or {}).get("review_prefix_only")),incidental_contact_diagnostic=bool((delivery or {}).get("incidental_contact_diagnostic") or (delivery or {}).get("review_prefix_only")),native_step_all_transit=step_all,motion_mode="LOCOMOTION_STEP" if step_all or native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode=carry_turn_motion_mode(delivery,native_step),transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 

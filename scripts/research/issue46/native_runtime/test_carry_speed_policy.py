@@ -9,6 +9,12 @@ from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 from scripts.research.issue46.native_runtime import native_grasp_audit as audit
 
 class SpeedPolicyTests(unittest.TestCase):
+    def test_turn_mode_override_leaves_legacy_default_and_rejects_unknown_modes(self):
+        self.assertEqual(m.carry_turn_motion_mode(None),"LOCOMOTION_DEFAULT")
+        self.assertEqual(m.carry_turn_motion_mode(None,True),"LOCOMOTION_STEP")
+        self.assertEqual(m.carry_turn_motion_mode(dict(turn_motion_mode="LOCOMOTION_STEP")),"LOCOMOTION_STEP")
+        with self.assertRaises(ValueError):
+            m.carry_turn_motion_mode(dict(turn_motion_mode="invented"))
     def pose(self):
         return dict(x=0.,y=0.,z=.64,roll=0.,pitch=0.,yaw=0.,vx=.611,vy=0.)
     def test_legacy_still_stops_and_optin_preserves_measurement(self):
