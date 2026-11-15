@@ -372,4 +372,39 @@ class FrameTests(unittest.TestCase):
         phase["pre_retract_physical_lift_pass"]=True;phase["retract_from_hold_end_ns"]=now-201000000
         self.assertFalse(self.ns["tracking_phase_is_fresh"](phase,now))
 
+
+class ClearanceWaypointAccuracyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(Path(__file__).with_name("stl_approved_circle_ik.py").read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name == "clearance_waypoint_fit")
+        namespace = {"np": np}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<actual-waypoint-fit>", "exec"),
+             namespace)
+        cls.fit = staticmethod(namespace["clearance_waypoint_fit"])
+    def test_saved_transit_fit_is_accepted_without_changing_the_grasp_target(self):
+        fit = self.fit(
+            [0.0013938760367674021, 0., 0., 0.0023842814764215986, 0., 0.],
+            require_axis=True)
+        self.assertTrue(fit["pass"])
+        self.assertAlmostEqual(fit["position_error_m"], .0013938760367674021)
+
+    def test_large_position_residual_is_rejected(self):
+        self.assertFalse(self.fit(
+            [.00501, 0., 0., 0., 0., 0.], require_axis=True)["pass"])
+
+    def test_large_axis_residual_is_rejected(self):
+        self.assertFalse(self.fit(
+            [0., 0., 0., .01001, 0., 0.], require_axis=True)["pass"])
+
+    def test_nonfinite_residual_is_rejected(self):
+        for value in (float("nan"), float("inf")):
+            self.assertFalse(self.fit(
+                [value, 0., 0., 0., 0., 0.], require_axis=True)["pass"])
+
+    def test_lift_only_waypoint_has_no_axis_target(self):
+        self.assertTrue(self.fit(
+            [0., 0., .004, .02, .02, .02], require_axis=False)["pass"])
+
 if __name__=='__main__':unittest.main()

@@ -764,6 +764,25 @@ def planar_approach_direction(initial,target):
     return direction/length
 
 
+
+def clearance_waypoint_fit(error, *, require_axis):
+    """Accuracy for an unoccupied transit waypoint, never the grasp target.
+
+    A 5mm / 0.01rad fit preserves a useful approximation to the nominal
+    120mm setback / 60mm lift. Actual source limits and the full sampled
+    geometry screen remain mandatory; endpoint grasp tolerances are unchanged.
+    """
+    value = np.asarray(error, dtype=float)
+    position = float(np.linalg.norm(value[:3]))
+    axis = float(np.linalg.norm(value[3:])) if require_axis else None
+    passed = bool(np.isfinite(value).all() and position <= .005
+                  and (not require_axis or axis <= .01))
+    return {"pass": passed, "position_error_m": position,
+            "axis_error_rad": axis, "position_tolerance_m": .005,
+            "axis_tolerance_rad": .01 if require_axis else None,
+            "classification": "INTERMEDIATE_CLEARANCE_WAYPOINT_TASK_ACCURACY"}
+
+
 def staged_clear_approach(model,state,start,finish,opening,center,object_center,local_axis):
     """Reuse bounded circle IK for a table-outside lift, then a high approach."""
     data=mujoco.MjData(model);hand=ik.native.bid(model,"R_omnipicker_base_link")
@@ -778,7 +797,7 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     lo,hi=search[:,0],search[:,1]
     dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
     qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
-    points=[start.copy()];targets=[]
+    points=[start.copy()];targets=[];waypoint_fits=[]
     forearm_first=bool(state.get("forearm_first_approach"))
     preferred=start[2:].copy();weights=np.ones(7)
     if forearm_first:
@@ -808,7 +827,10 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
         if point_index>0 and (np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001):
             fitted=refine_task_feasibility(residual,jac,fitted.x,(lo+1e-5,hi-1e-5),.001,.001)
             error=residual(fitted.x)
-        if np.linalg.norm(error[:3])>.001 or point_index>0 and np.linalg.norm(error[3:])>.001:raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,float(np.linalg.norm(error[:3])),float(np.linalg.norm(error[3:])))))
+        fit = clearance_waypoint_fit(error, require_axis=point_index>0)
+        waypoint_fits.append({"point_index": point_index, **fit})
+        if not fit["pass"]:
+            raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,fit)))
         points.append(np.r_[start[:2],fitted.x]);targets.append(target.tolist())
     points.append(finish.copy())
     # Preserve the exact joint-space path, but subdivide its task segments.
@@ -839,7 +861,7 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     root_rotation=data.xmat[root].reshape(3,3).copy()
     relative=[(root_rotation.T@(np.asarray(point)-root_position)).tolist() for point in targets]
     robots=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,i) for i in range(model.nbody) if model.body_rootid[i]==root]
-    return dict(posture_policy="FOREARM_FIRST_TABLE_OUTSIDE" if forearm_first else "MINIMUM_JOINT_DISPLACEMENT",pass_result=not violations,circle_waypoints_base_m=relative,root_reference_world_m=root_position.tolist(),robot_bodies=robots,all_source_motion_limits=state["runtime_source_motion_limits"],source_effort_limits_nm=efforts,compiled_effort_limits_nm=compiled_arm_effort_limits(model),source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=31*(len(points)-1),violations=violations)
+    return dict(posture_policy="FOREARM_FIRST_TABLE_OUTSIDE" if forearm_first else "MINIMUM_JOINT_DISPLACEMENT",pass_result=not violations,circle_waypoints_base_m=relative,root_reference_world_m=root_position.tolist(),robot_bodies=robots,all_source_motion_limits=state["runtime_source_motion_limits"],source_effort_limits_nm=efforts,compiled_effort_limits_nm=compiled_arm_effort_limits(model),source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=31*(len(points)-1),violations=violations,clearance_waypoint_fits=waypoint_fits)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
