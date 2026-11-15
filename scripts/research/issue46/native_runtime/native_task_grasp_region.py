@@ -107,9 +107,18 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # the same task. Actual final composite stop and placement IK still gate.
         result["measure_step_braking_after_progress_m"]=0.
         result["braking_reserve_scope"]=(
-            "EXISTING_600MM_TERMINAL_RESERVE_NO_MIDROUTE_CALIBRATION; "
+            "COMPILED_TABLE_FRONT_750MM_PLANE_NO_TERMINAL_PULSES; "
             "actual physical speed, collision and stop limits unchanged")
-        result["bounded_terminal_forward_reapproach"]=True
+        # One continuous arrival, then actual-pose IK; a short STEP reactivation
+        # displaced the stopped body into the table in004357Z. Five recorded
+        # braking paths translated to this table-relative plane passed the
+        # original full-model lowering/placement screen (static hypothesis).
+        result["bounded_terminal_forward_reapproach"]=False
+        result["table_front_braking"]={
+            "frame":"native_scene_world","approach_normal_world_xy":[0.,1.],
+            "reserve_m":.75,
+            "evidence":"reviews/issue-46/common-table-plane-braking-preflight-20261115T010845Z/result.json",
+            "scope":"TASK_ROUTE_ONLY_REQUIRES_DYNAMIC_VALIDATION"}
         # Saved actual near-table stop blocked30mm lowering at rightknee.
         # The smallest checked backoff80mm passed original lowering/placement.
         goal=list(result["base_goal_world_xy"])

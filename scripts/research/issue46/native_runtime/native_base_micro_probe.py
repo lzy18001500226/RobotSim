@@ -1482,6 +1482,30 @@ def delivery_heading_acceptance(delivery, yaw_error):
     return {"pass":abs(yaw_error)<=limit,"policy":policy,"legacy_yaw012_pass":legacy,"task_tolerance_rad":limit,"requires_actual_placement_ik_before_arm_motion":limit>.12}
 
 
+def table_front_braking_observation(delivery, pose):
+    """Task stop plane from compiled scene bounds; stop/placement gates remain.
+
+    This room's second table is axis-aligned in native_scene_world. Radial
+    distance to a nominal base point is not distance to the tabletop front.
+    Bounds are verified against the original scene by prepare_delivery_scene.
+    """
+    spec=delivery.get("table_front_braking")
+    if spec is None:return None
+    if (spec.get("frame")!="native_scene_world"
+            or spec.get("approach_normal_world_xy")!=[0.,1.]
+            or spec.get("reserve_m")!=.75
+            or not delivery.get("conservative_terminal_stop")):
+        raise ValueError("unqualified table-front braking policy")
+    front=float(delivery["table_bounds_min_world_m"][1]);y=float(pose["y"])
+    if not all(math.isfinite(x) for x in (front,y)):
+        raise ValueError("nonfinite table-front observation")
+    gap=front-y
+    return dict(policy="COMPILED_SECOND_TABLE_FRONT_PLANE",
+        frame="native_scene_world",front_y_m=front,base_y_m=y,
+        remaining_front_distance_m=gap,reserve_m=.75,
+        due=gap<=.75,actual_stop_and_placement_ik_still_required=True)
+
+
 def delivery_step_heading_stop(distance, trigger, pose, max_sample_gap_s=.15):
     """Stop, never pivot in STEP, within one observed sampling interval.
 
@@ -2137,8 +2161,13 @@ def run_carry_navigation(n,contract):
                     # actual-pose placement IK remain independent requirements.
                     if cfg["delivery"].get("conservative_terminal_stop"):
                         trigger=max(trigger,.60)
-                    if delivery_braking_due(cfg["delivery"],distance,trigger,final_yaw_error):
-                        result["goal_triggered_stop"]=True;mission["delivery_stop_trigger_pose"]=p;break
+                    table_brake=table_front_braking_observation(cfg["delivery"],p)
+                    braking_due=(table_brake["due"] if table_brake is not None
+                                 else delivery_braking_due(cfg["delivery"],distance,trigger,final_yaw_error))
+                    if braking_due:
+                        result["goal_triggered_stop"]=True;mission["delivery_stop_trigger_pose"]=p
+                        if table_brake is not None:mission["terminal_table_plane_stop"]=table_brake
+                        break
                     calibration=float(cfg["delivery"].get("measure_step_braking_after_progress_m",0.))
                     origin_for_measure=mission["delivery_origin_pose"]
                     initial_distance=math.hypot(goal[0]-origin_for_measure["x"],goal[1]-origin_for_measure["y"])
@@ -2191,7 +2220,9 @@ def run_carry_navigation(n,contract):
                     if along>length+.15:raise RuntimeError("DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL")
                     output=controller.step(Pose2D(p["x"],p["y"],delivery_control_yaw(cfg["delivery"],p["yaw"]),"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
                     if cfg["delivery"].get("delivery_motion_mode")=="LOCOMOTION_STEP" and output.state in (NavState.ALIGN,NavState.FINAL_ALIGN):
-                        terminal_stop=delivery_step_heading_stop(distance,trigger,p) if cfg["delivery"].get("conservative_terminal_stop") else None
+                        stop_distance=(max(0.,table_brake["remaining_front_distance_m"]) if table_brake is not None else distance)
+                        stop_trigger=(table_brake["reserve_m"] if table_brake is not None else trigger)
+                        terminal_stop=delivery_step_heading_stop(stop_distance,stop_trigger,p) if cfg["delivery"].get("conservative_terminal_stop") else None
                         if terminal_stop is not None:
                             result['goal_triggered_stop']=True;mission['delivery_stop_trigger_pose']=p
                             mission['terminal_heading_stop_request']=terminal_stop

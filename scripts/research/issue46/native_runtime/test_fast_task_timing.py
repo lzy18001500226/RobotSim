@@ -81,7 +81,7 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertFalse(fast["bounded_final_dock_alignment"])
         self.assertEqual(fast["stand_transition_strategy"],"ZERO_WINDOW_THEN_SD")
         self.assertTrue(fast["conservative_terminal_stop"])
-        self.assertTrue(fast["bounded_terminal_forward_reapproach"])
+        self.assertFalse(fast["bounded_terminal_forward_reapproach"])
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("delivery_motion_mode",cfg)
         self.assertEqual(default["base_goal_world_xy"],[.015,.98])
@@ -260,7 +260,7 @@ class ConservativeTableStopTests(unittest.TestCase):
         import ast
         from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
         script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
-        tree=ast.parse(script);node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Constant) and v.value=="conservative_terminal_stop" for v in ast.walk(n.test)))
+        tree=ast.parse(script);node=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Constant) and v.value=="conservative_terminal_stop" for v in ast.walk(n.test)) and any(isinstance(v,ast.Assign) and any(isinstance(t,ast.Name) and t.id=="trigger" for t in v.targets) for v in n.body))
         ns=dict(cfg={"delivery":{"conservative_terminal_stop":True}},trigger=.22699435678032145);exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_stop_reserve","exec"),ns)
         self.assertEqual(ns["trigger"],.60);self.assertGreater(ns["trigger"]-.418,.60*.15)
 class PlacementRadialLimitTests(unittest.TestCase):
@@ -411,3 +411,74 @@ class CompletedPlacementOwnerTests(unittest.TestCase):
         self.assertIn("target={**target,**self.placement_completed_arm_target}",code)
         self.assertIn("PLACEMENT_PHYSICAL_SAFETY",code) if "PLACEMENT_PHYSICAL_SAFETY" in fixture else None
 if __name__=="__main__":unittest.main()
+
+
+class TableFrontBrakingTests(unittest.TestCase):
+    def cfg(self):
+        return {"conservative_terminal_stop":True,
+            "table_bounds_min_world_m":[-.451,1.3217455072,-.011],
+            "table_front_braking":{"frame":"native_scene_world",
+                "approach_normal_world_xy":[0.,1.],"reserve_m":.75}}
+
+    def test_lateral_error_does_not_move_stop_plane(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import table_front_braking_observation as check
+        for x in (.20,.40,.60):
+            self.assertFalse(check(self.cfg(),{"x":x,"y":.55})["due"])
+            result=check(self.cfg(),{"x":x,"y":.58})
+            self.assertTrue(result["due"])
+            self.assertTrue(result["actual_stop_and_placement_ik_still_required"])
+            self.assertAlmostEqual(result["remaining_front_distance_m"],.7417455072)
+
+    def test_boundary_and_already_crossed_send_stop(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import table_front_braking_observation as check
+        for y in (.5717455072,1.4):
+            self.assertTrue(check(self.cfg(),{"y":y})["due"])
+
+    def test_legacy_profile_stays_legacy(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import table_front_braking_observation as check
+        self.assertIsNone(check({},{"y":.8}))
+
+    def test_unqualified_policy_and_nonfinite_observations_are_rejected(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import table_front_braking_observation as check
+        for key,value in (("frame","map"),("reserve_m",.30),("approach_normal_world_xy",[1.,0.])):
+            cfg=self.cfg();cfg["table_front_braking"][key]=value
+            with self.assertRaises(ValueError):check(cfg,{"y":.6})
+        for y in (float("nan"),float("inf")):
+            with self.assertRaises(ValueError):check(self.cfg(),{"y":y})
+
+    def test_generated_runtime_contains_the_plane_policy(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,native_action_smoothing=True,
+            transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script)
+        self.assertTrue(any(isinstance(n,ast.FunctionDef) and n.name=="table_front_braking_observation" for n in tree.body))
+        self.assertIn('table_brake=table_front_braking_observation(cfg["delivery"],p)',script)
+
+    def test_executed_generated_branch_uses_plane_not_nominal_point_radius(self):
+        import ast
+        from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+        script=micro.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,
+            straight_retreat_turn=True,native_action_smoothing=True,
+            transit_policy_050=True,compact_turn=True)
+        tree=ast.parse(script);block=None
+        for parent in ast.walk(tree):
+            body=getattr(parent,"body",None)
+            if not isinstance(body,list):continue
+            for i,node in enumerate(body):
+                if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=="table_brake" for t in node.targets):
+                    block=body[i:i+3];break
+        self.assertIsNotNone(block)
+        probe=ast.FunctionDef(name="probe",args=ast.arguments(posonlyargs=[],args=[],kwonlyargs=[],kw_defaults=[],defaults=[]),
+            body=[ast.While(test=ast.Constant(True),body=block+[ast.Break()],orelse=[])],decorator_list=[])
+        program=ast.fix_missing_locations(ast.Module(body=[probe],type_ignores=[]))
+        for y,expected in ((.45,False),(.59,True)):
+            result={};mission={}
+            env=dict(cfg={"delivery":self.cfg()},p={"x":.40,"y":y},
+                distance=.4,trigger=.60,final_yaw_error=.1,result=result,mission=mission,
+                table_front_braking_observation=micro.table_front_braking_observation,
+                delivery_braking_due=lambda *a:(_ for _ in ()).throw(AssertionError("legacy radius used")))
+            exec(compile(program,"actual_generated_delivery_branch","exec"),env);env["probe"]()
+            self.assertEqual(result.get("goal_triggered_stop",False),expected)
+            self.assertNotIn("pass_result",result)
