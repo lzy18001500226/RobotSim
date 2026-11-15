@@ -93,6 +93,19 @@ class CarryStopTimingTests(unittest.TestCase):
         self.assertEqual(fast["approach_task_yaw_tolerance_rad"],.30)
         self.assertEqual(fast["transit_root_cap_m_s"],cfg["transit_root_cap_m_s"])
         self.assertNotIn("release_source_after_zero_window",cfg)
+    def test_delivery_lowering_reuses_measured_source_without_relaxing_arrival(self):
+        import copy
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        profile=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        original=copy.deepcopy(profile)
+        selected=task_route_profile(profile,fast_task_timing=True)
+        self.assertEqual(profile,original)
+        self.assertEqual(selected["delivery_body_lowering"]["drop_m"],.10)
+        self.assertEqual(selected["delivery_body_lowering"]["native_frame"],original["delivery_body_lowering"]["native_frame"])
+        self.assertEqual(selected["approach_task_position_tolerance_m"],.15)
+        self.assertEqual(selected["delivery_pose_acceptance"],"ACTUAL_PLACEMENT_IK")
+        self.assertEqual(task_route_profile(profile)["delivery_body_lowering"],original["delivery_body_lowering"])
+
     def test_real_stopped_carry_uses_opening_without_admitting_side_walls(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
         from scripts.research.issue46.native_runtime.native_base_micro_probe import carry_workspace_contains

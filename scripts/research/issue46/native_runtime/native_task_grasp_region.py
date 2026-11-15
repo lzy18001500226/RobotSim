@@ -154,6 +154,12 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["approach_task_position_tolerance_m"]=.15
         result["approach_task_yaw_tolerance_rad"]=.30
         result["delivery_pose_acceptance"]="ACTUAL_PLACEMENT_IK"
+        # The measured safe stop at(.364,.747,2.340rad) failed30mm
+        # placement reach but passed the original full-model100mm lowering
+        # and arm-path screen(20261115T202033Z). Reuse that existing measured
+        # posture; every actual arrival still needs a new geometry screen.
+        if result.get("delivery_body_lowering"):
+            result["delivery_body_lowering"]["drop_m"]=.10
         # Explicit task envelope; source wrist limits and actual released
         # table support stay unchanged. This is not a mechanism modification.
         result["maximum_planned_bottle_tilt_rad"]=math.radians(16.5)
