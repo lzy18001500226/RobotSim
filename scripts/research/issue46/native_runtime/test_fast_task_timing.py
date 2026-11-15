@@ -550,3 +550,22 @@ class CompleteTransferBudgetTests(unittest.TestCase):
         self.assertEqual(actual["angular_command_cap"],.60)
         with self.assertRaises(ValueError):build_carry_route_script(None,{},[],timeout_s=181.,**kwargs)
         with self.assertRaises(ValueError):build_carry_route_script([0.,0.],{},[],carry_pid=19,timeout_s=180.)
+
+    def test_both_executed_cli_guards_accept_only_scoped_complete_task_budget(self):
+        import ast,math
+        from types import SimpleNamespace
+        for rel in ("grasp/stl_approved_circle_native_trial.py","native_runtime/xvfb_native_reset_stand.py"):
+            tree=ast.parse((Path(runtime.REPO)/"scripts/research/issue46"/rel).read_text())
+            guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and "carry_timeout_s" in ast.unparse(n.test) and "physical_lift_test" in ast.unparse(n.test))
+            expression=compile(ast.Expression(guard.test),"executed_cli_budget","eval")
+            args=SimpleNamespace(carry_goal_world_xy=None,carry_away_1m=True,physical_lift_test=True,
+                reviewed_foundationwalk_profile=True,post_lift_retract_world_m=[-.24,0.,0.],
+                coordinated_waist_pitch_offset_rad=0.,coordinated_circle_waist=True,
+                micro_base_probe=False,carry_timeout_s=180.,carry_delivery_config="frozen",
+                carry_straight_retreat_turn=True,carry_transit_speed_policy_050=True)
+            scope=dict(args=args,math=math,restoring_carry=True)
+            self.assertFalse(eval(expression,scope),rel)
+            args.carry_timeout_s=181.
+            self.assertTrue(eval(expression,scope),rel)
+            args.carry_timeout_s=180.;args.carry_delivery_config=None
+            self.assertTrue(eval(expression,scope),rel)

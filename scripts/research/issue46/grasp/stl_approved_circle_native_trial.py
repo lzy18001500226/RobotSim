@@ -242,7 +242,7 @@ def main():
             raise ValueError('bounded retract requires physical lift and <=250mm translation')
     from scripts.research.issue46.native_runtime.native_grasp_stand_restore import postured_carry_requested
     restoring_carry=postured_carry_requested(args)
-    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=(180. if args.carry_delivery_config is not None and args.carry_straight_retreat_turn and args.carry_away_1m and args.carry_transit_speed_policy_050 else 90.) or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):
         raise ValueError('carry needs screened arm-only physical lift/retract and bounded room goal/deadline')
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:

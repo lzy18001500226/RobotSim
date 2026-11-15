@@ -1618,7 +1618,7 @@ def main() -> None:
     from scripts.research.issue46.native_runtime.native_grasp_stand_restore import postured_carry_requested
     restoring_carry=postured_carry_requested(args)
     replan_record={}
-    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or (args.coordinated_circle_waist and not restoring_carry) or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):raise ValueError('bounded arm-only carry route required')
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or (args.coordinated_circle_waist and not restoring_carry) or args.micro_base_probe or not 5.<=args.carry_timeout_s<=(180. if args.carry_delivery_config is not None and args.carry_straight_retreat_turn and args.carry_away_1m and args.carry_transit_speed_policy_050 else 90.) or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):raise ValueError('bounded arm-only carry route required')
 
     if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
         raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
