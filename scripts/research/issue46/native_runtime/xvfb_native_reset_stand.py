@@ -261,7 +261,7 @@ def locomotion_dock_script(
     and ends with a sustained stream of zero commands before unregistering.
     It never addresses MuJoCo qpos/qvel or a simulator-only control topic.
     """
-    from scripts.research.issue46.native_runtime import mode_handshake
+    from scripts.research.issue46.native_runtime import mode_handshake,native_feedback_recovery
     if planar_speed_warning_only and not pickup_navigation:
         raise ValueError("warning-only docking speed requires simulation pickup navigation")
     payload = json.dumps(
@@ -431,14 +431,7 @@ class Dock(Node):
   self.mode_requests.append({'name':name,'t':time.monotonic(),'verification':checked})
  def refresh_native_pose(self):
   if not PLAN.get('native_pose_feedback'):return
-  with open('/workspace/evidence/native_latest.json','rb') as f:
-   f.seek(0,2);f.seek(max(0,f.tell()-262144));raw=f.read()
-  lines=raw.splitlines()
-  if not raw.endswith(bytes([10])):lines=lines[:-1]
-  for line in reversed(lines):
-   try:row=json.loads(line);break
-   except (ValueError,UnicodeDecodeError):continue
-  else:self.feedback_fault={'gate':'NO_NATIVE_DOCK_POSE'};return
+  row=read_fresh_native_snapshot('/workspace/evidence/native_latest.json',generation=getattr(self,'native_generation',None))
   stamp=int(row['host_monotonic_ns']);now=time.monotonic();age=now-stamp*1e-9
   if PLAN.get('native_arm_relay'):
    try:
@@ -600,7 +593,7 @@ finally:
  n.zero_hold(.5)
  if registered:n.disable()
  n.destroy_node();rclpy.shutdown()
-""".replace("__PLAN__", payload).replace("__SAFETY_SOURCE__",safety_source).replace("__MODE_HANDSHAKE_SOURCE__", mode_handshake.generated_source())
+""".replace("__PLAN__", payload).replace("__SAFETY_SOURCE__",safety_source+"\n"+native_feedback_recovery.generated_source()).replace("__MODE_HANDSHAKE_SOURCE__", mode_handshake.generated_source())
 
 
 def lateral_probe_script(lateral_mps: float, duration_s: float) -> str:

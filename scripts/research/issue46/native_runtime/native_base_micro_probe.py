@@ -596,7 +596,7 @@ def run_probe(smoke_only=False):
                     self.pending[name]=(client.call_async(q),now)
             # Service/DDS work above can block. Read the physical snapshot last;
             # retain its acquisition stamp rather than testing a pre-RPC cache.
-            fresh=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
+            fresh=read_fresh_native_snapshot("/workspace/evidence/native_latest.json",generation=getattr(self,"native_generation",None))
             previous=getattr(self,"latest_row",None)
             if previous is not None and (fresh["generation"],fresh["process_pid"])!=(previous["generation"],previous["process_pid"]):
                 raise RuntimeError("NATIVE_EPISODE_CHANGED_DURING_PUMP")

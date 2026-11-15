@@ -524,3 +524,5 @@ WSL终端用相同worktree、env和python参数，不再套wsl.exe。
 所有实际物理、限位、速度、effort、碰撞、停止和200ms状态验收门保持。
 
 183810Z 抓取与站高恢复通过后，tracker读取源帧年龄219.193884ms即退出。读取和计算过期统一采用既有50ms有界重取；真正新测量仍须<=200ms，时间戳不改写。后续证据：fresh-source-reacquisition-common-transfer-20261115T184703Z。
+
+185006Z 导航首发 NATIVE_FEEDBACK_INVALID/STALE_NATIVE_DOCK_POSE 后停物理，tracker随后源帧年龄267.526ms退出。共享native快照读取在导航、导航pump和手臂均采用50ms有界重取，保留200ms可用测量约束及ABI/代次/未来时间拒绝；生成脚本嵌入同一函数源。436项离线回归通过，物理验证归档 unified-native-snapshot-recovery-transfer-20261115T190445Z。

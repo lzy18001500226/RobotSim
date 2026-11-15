@@ -996,14 +996,7 @@ class Plan(Node):
  def refresh_native(self):
   if not USE_NATIVE_FEEDBACK:return
   path='/workspace/evidence/native_latest.json'
-  with open(path,'rb') as f:
-   f.seek(0,2);f.seek(max(0,f.tell()-262144));raw=f.read()
-  lines=raw.splitlines()
-  if not raw.endswith(bytes([10])):lines=lines[:-1]
-  for line in reversed(lines):
-   try:row=json.loads(line);break
-   except (ValueError,UnicodeDecodeError):continue
-  else:raise RuntimeError('NO_COMPLETE_NATIVE_ARM_SAMPLE')
+  row=read_fresh_native_snapshot(path,generation=self.native_generation)
   stamp=int(row['host_monotonic_ns']);age=(time.monotonic_ns()-stamp)*1e-9
   if row.get('engine_version')!=337 or not 0.<=age<=.20:raise RuntimeError('STALE_OR_WRONG_ABI_NATIVE_ARM_SAMPLE:'+json.dumps({'age_s':age,'engine':row.get('engine_version'),'source_ns':stamp,'host_ns':time.monotonic_ns()}))
   if self.native_generation is not None and row['generation']!=self.native_generation:raise RuntimeError('UNEXPECTED_NATIVE_RESET_DURING_ARM_CONTROL')
@@ -1363,6 +1356,8 @@ finally:
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
     script=script.replace("__CONTACT_SETTLE_BUDGET__",repr(float(contact_settle_budget_s)))
+    from scripts.research.issue46.native_runtime.native_feedback_recovery import generated_source as snapshot_recovery_source
+    script=script.replace("class Plan(Node):",snapshot_recovery_source()+"\nclass Plan(Node):",1)
     if lift_contract:
         import inspect
         script=inspect.getsource(hold_native_simulation)+"\n"+script
