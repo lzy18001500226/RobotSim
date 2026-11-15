@@ -593,8 +593,19 @@ def run_probe(smoke_only=False):
                     raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
                 if MICRO.get("carry"):
                     health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())
-                    if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or health.get("healthy") is not True or health.get("pid")!=MICRO["carry"]["pid"] or health.get("generation")!=r["generation"] or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
-                        raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}))
+                    checked_ns=time.monotonic_ns()
+                    heartbeat_age_s=(checked_ns-health["host_monotonic_ns"])*1e-9
+                    physical_age_s=(checked_ns-health["native_source_host_ns"])*1e-9
+                    checks=dict(mode=health.get("mode")=="MEASURED_LOAD_BEARING_CARRY_HOLD",
+                        healthy=health.get("healthy") is True,owner_pid=health.get("pid")==MICRO["carry"]["pid"],
+                        generation=health.get("generation")==r["generation"],
+                        heartbeat_fresh=0.<=heartbeat_age_s<=.20,physical_fresh=0.<=physical_age_s<=.20)
+                    if not all(checks.values()):
+                        detail={k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}
+                        detail.update(checked_host_ns=checked_ns,heartbeat_age_s=heartbeat_age_s,
+                            physical_age_s=physical_age_s,latest_physics_age_s=(checked_ns-r["host_monotonic_ns"])*1e-9,
+                            failed_checks=[name for name,passed in checks.items() if not passed])
+                        raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED:"+json.dumps(detail))
                 if MICRO.get("carry"):
                     for c in r.get("contacts",[]):
                         pair={c.get("body1"),c.get("body2")}

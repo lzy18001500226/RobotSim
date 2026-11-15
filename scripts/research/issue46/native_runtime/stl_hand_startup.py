@@ -1483,6 +1483,10 @@ def _with_carry_lease(script, retract):
 """    self.hand_pub.publish(h);self.last_hand_message=h
     if stage==\'HAND_CLOSE_HOLD\':self.close_publish_count+=1
    if stage=='CARRY_HOLD':
+    # Command publication may block. Re-measure before asserting health,
+    # preserving source acquisition time and every physical/freshness guard.
+    self.refresh_native()
+    if not self.arm_fresh():raise RuntimeError('STALE_CARRY_HEARTBEAT_MEASUREMENT')
     for c in self.native_row.get('contacts',[]):
      pair={c.get('body1'),c.get('body2')}
      if 'test_cylinder' in pair and not pair.intersection({'R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(c['local_force_torque'][0])>.1:
