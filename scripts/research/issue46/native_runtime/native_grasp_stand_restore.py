@@ -4,6 +4,76 @@ import inspect,json,math,time
 WAIST=("waist_yaw_joint","waist_pitch_joint","waist_roll_joint")
 from scripts.research.issue46.native_runtime.native_base_micro_probe import observed_clock_step
 
+def start_owner_feedback(owner):
+    """Reuse the micro/bootstrap executor pattern; no new command publisher."""
+    import threading
+    owner.owner_waist_lock = threading.RLock()
+    if not USE_NATIVE_FEEDBACK:
+        return
+    from rclpy.executors import SingleThreadedExecutor
+    owner.owner_feedback_errors = []
+    owner.owner_feedback_executor = SingleThreadedExecutor()
+    owner.owner_feedback_executor.add_node(owner)
+
+    def spin():
+        try:
+            owner.owner_feedback_executor.spin()
+        except Exception as exc:
+            owner.owner_feedback_errors.append(repr(exc))
+
+    owner.owner_feedback_thread = threading.Thread(
+        target=spin, name="carry-owner-feedback", daemon=True)
+    owner.owner_feedback_thread.start()
+
+
+def check_owner_feedback(owner):
+    if USE_NATIVE_FEEDBACK and (owner.owner_feedback_errors
+            or not owner.owner_feedback_thread.is_alive()):
+        raise RuntimeError("CARRY_FEEDBACK_EXECUTOR_FAILED:"
+                           + str(owner.owner_feedback_errors))
+
+
+def wait_owner_feedback(owner, seconds):
+    """Control-loop wait; exactly one independent executor owns ROS callbacks."""
+    end = time.monotonic() + seconds
+    if not USE_NATIVE_FEEDBACK:
+        while rclpy.ok() and time.monotonic() < end:
+            rclpy.spin_once(owner, timeout_sec=.002)
+        return
+    check_owner_feedback(owner)
+    while rclpy.ok() and time.monotonic() < end:
+        time.sleep(min(.005, max(0., end - time.monotonic())))
+        check_owner_feedback(owner)
+
+
+def stop_owner_feedback(owner):
+    if not USE_NATIVE_FEEDBACK:
+        return
+    owner.owner_feedback_executor.shutdown(timeout_sec=1.)
+    owner.owner_feedback_thread.join(timeout=1.)
+    if owner.owner_feedback_thread.is_alive():
+        raise RuntimeError("CARRY_FEEDBACK_SHUTDOWN_UNCONFIRMED")
+
+
+def receive_owner_waist(owner, message):
+    # Serialize abort freeze with a possible in-flight waist publication.
+    with owner.owner_waist_lock:
+        if (getattr(owner, "mc_waist_blend_started", None) is not None
+                and not getattr(owner, "mc_waist_abort_frozen", False)
+                and time.monotonic() - owner.mc_waist_receipt > .20):
+            raise RuntimeError("MC_WAIST_RELAY_GAP:"
+                               + str(time.monotonic() - owner.mc_waist_receipt))
+        receive_native_waist(owner, message)
+
+
+def freeze_owner_waist(owner):
+    if USE_NATIVE_FEEDBACK:
+        with owner.owner_waist_lock:
+            owner.mc_waist_abort_frozen = True
+    else:
+        owner.mc_waist_abort_frozen = True
+
+
 def receive_native_waist(self,message):
     import copy,os,time,json,math
     callback_started_ns=time.monotonic_ns()
@@ -116,18 +186,27 @@ def extend_existing_owner(script):
         nonlocal script
         if script.count(old)!=1:raise ValueError("postured restoration owner anchor:"+old[:60])
         script=script.replace(old,new)
-    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_native_waist_handoff))
+    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_native_waist_handoff))
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))
-    lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_native_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
+    lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_owner_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
     script="\n".join(lines)+"\n"
     replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self)\n   if WAIST and getattr(self,\'mc_waist_blend_started\',None) is None:\n    w=JointCommandArray();w.header=m.header")
     replace("    self.waist_pub.publish(w)","    self.waist_pub.publish(w);self.last_waist_message=w")
     replace("self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}","self.last_published_arm_target={name:float(target[name]) for name in CONTROL}")
     replace(" def send(self,target,seconds,stage,hand_right=None):", " def send(self,target,seconds,stage,hand_right=None):\n  if WAIST and stage in (\'CARRY_STOW\',\'CARRY_HOLD\'):target={**self.last_published_arm_target,**target}")
-    replace("def carry_abort_last_command_hold(n, carry_error):","def carry_abort_last_command_hold(n, carry_error):"+chr(10)+" n.mc_waist_abort_frozen=True")
+    replace("def carry_abort_last_command_hold(n, carry_error):","def carry_abort_last_command_hold(n, carry_error):"+chr(10)+" freeze_owner_waist(n)")
     replace("   n.pub.publish(n.last_arm_message);n.hand_pub.publish(n.last_hand_message)","   n.pub.publish(n.last_arm_message);n.hand_pub.publish(n.last_hand_message)\n   if getattr(n,\'last_waist_message\',None) is not None:n.waist_pub.publish(n.last_waist_message)")
+    replace("rclpy.init();n=Plan()", "rclpy.init();n=Plan();start_owner_feedback(n)")
+    replace("  while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)",
+            "  wait_owner_feedback(self,s)")
+    replace("   rclpy.spin_once(self,timeout_sec=.001)",
+            "   wait_owner_feedback(self,.001)")
+    replace("  if not USE_NATIVE_FEEDBACK:return\n  path='/workspace/evidence/native_latest.json'",
+            "  if not USE_NATIVE_FEEDBACK:return\n  check_owner_feedback(self)\n  path='/workspace/evidence/native_latest.json'")
+    replace("finally:\n print(json.dumps({'execution_exception_context'",
+            "finally:\n stop_owner_feedback(n)\n print(json.dumps({'execution_exception_context'")
     compile(script,"existing_owner_postured_stand_restore","exec")
     return script
 

@@ -5,6 +5,28 @@
 ## 当前Goal：提高验证效率并完成统一11点，再接LiDAR（2026-11-14）
 
 
+78df5bd：5号012209Z完整START→抓取→正向到第二桌→释放/独立支撑PASS；
+最小抬升58.868mm、上向手力1.962007N、抬升时桌力0、释放后桌支撑2.020s。
+实际停姿(.169398,.914831)，完整放置IK/碰撞及物理停稳PASS；名义15cm位置门未达，
+不能宣称精确名义导航PASS。实际物理视频：
+native-transfer-recorded-review-20261115T013045Z/full_x2_actual_transfer_review.mp4。
+同版0号013146Z已抓取并到第二桌，初始放置静态检查通过；
+开始body_crouch_delivery时owner腰转发334ms未更新，保护停止，放置NOT RUN。
+独立ROS源监听最大腰消息间隔13.492ms，证明不是该轮MC停发；
+具体主循环阻塞调用未记录，回调调度饥饿为待验证的工程推断，不归因于厂商。
+
+复用bootstrap/micro现有独立SingleThreadedExecutor，持瓶owner的既有订阅由唯一
+线程连续处理，不增加命令publisher，不改变源目标、增益、模型或200ms新鲜度门。
+异常传播到控制主循环；abort与腰转发互斥，清理前停接收线程。恢复包不能消除
+已经发生的>200ms腰转发空窗。隔离Humble/aimdk真实消息、network=none实测：
+主循环暂停400ms仍转发200包、最大间隔2.720ms；停源250ms仍硬停，
+恢复包触发gap异常；没有MC/MuJoCo。275项离线回归通过，
+实际0号参数重新生成owner编译通过，未执行任何物理。
+证据：carry-owner-feedback-isolated-validation-20261115T020024Z/。
+下一批同版先0、10、5，再剩余8；旧5号PASS保留但不能冒充新版本回归。
+本研究原型处置仍PORT-TO-C++，不属于生产实时性认证。
+
+
 57ddcb3的5号004357Z抓取、退开、转身和第一次连续接近停稳通过；
 随后可选短促STEP补走的刹停中，右脚踝撞第二桌（sim225.921，
 两接触dist=-5.337/-8.755mm、normal138.6/416.8N），立即终止。放置NOT RUN。

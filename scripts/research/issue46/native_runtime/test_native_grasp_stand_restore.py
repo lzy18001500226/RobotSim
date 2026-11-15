@@ -84,6 +84,36 @@ class WaistHandoffTests(unittest.TestCase):
         self.assertEqual(self.owner.mc_waist_receipt,12.)
 
 
+class OwnerFeedbackSafetyTests(unittest.TestCase):
+    def setUp(self):
+        WaistHandoffTests.setUp(self)
+        import threading
+        self.owner.owner_waist_lock = threading.RLock()
+        self.owner.mc_waist_receipt = 14.
+
+    def test_recovered_callback_cannot_hide_a_substantial_relay_gap(self):
+        with patch('time.monotonic', return_value=14.201):
+            with self.assertRaisesRegex(RuntimeError, 'MC_WAIST_RELAY_GAP'):
+                restore.receive_owner_waist(self.owner, self.message)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.owner.mc_waist_receipt, 14.)
+
+    def test_abort_freeze_prevents_future_waist_publication(self):
+        with patch.object(restore, 'USE_NATIVE_FEEDBACK', True, create=True):
+            restore.freeze_owner_waist(self.owner)
+        with patch('time.monotonic', return_value=14.01):
+            restore.receive_owner_waist(self.owner, self.message)
+        self.assertTrue(self.owner.mc_waist_abort_frozen)
+        self.assertEqual(self.sent, [])
+
+    def test_executor_failure_is_a_control_loop_failure(self):
+        self.owner.owner_feedback_errors = ['invalid source command']
+        self.owner.owner_feedback_thread = S(is_alive=lambda: False)
+        with patch.object(restore, 'USE_NATIVE_FEEDBACK', True, create=True):
+            with self.assertRaisesRegex(RuntimeError, 'CARRY_FEEDBACK_EXECUTOR_FAILED'):
+                restore.check_owner_feedback(self.owner)
+
+
 class NativeHoldClockTests(unittest.TestCase):
     def run_hold(self, speed, generation_change=False):
         from scripts.research.issue46.native_runtime.stl_hand_startup import hold_native_simulation
