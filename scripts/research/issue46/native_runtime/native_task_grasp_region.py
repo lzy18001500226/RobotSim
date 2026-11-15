@@ -120,23 +120,22 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # the fast transit override commanded-.20 instead of the primitive-.12.
         # Keep the primitive's original backward input; forward transit stays.
         result["retreat_forward_command_m_s"]=.12
-        # Three recorded full transfers measured maximum calibration coast
-        # of0.4233--0.4484m. The existing600mm terminal reserve already exceeds
-        # that plus one150ms sample at the unchanged600mm/s safety cap.
-        # Do not insert another loaded STEP->STAND->STEP just to recalibrate
-        # the same task. Actual final composite stop and placement IK still gate.
+        # Earlier coast samples were not a guaranteed stopping bound. Keep
+        # the terminal plane reserve explicit and require measured stop plus
+        # actual-pose placement IK; no extra loaded STEP calibration transition.
         result["measure_step_braking_after_progress_m"]=0.
         result["braking_reserve_scope"]=(
-            "COMPILED_TABLE_FRONT_750MM_PLANE_NO_TERMINAL_PULSES; "
+            "COMPILED_TABLE_FRONT_900MM_PLANE_NO_TERMINAL_PULSES; "
             "actual physical speed, collision and stop limits unchanged")
         # One continuous arrival, then actual-pose IK; a short STEP reactivation
-        # displaced the stopped body into the table in004357Z. Five recorded
-        # braking paths translated to this table-relative plane passed the
-        # original full-model lowering/placement screen (static hypothesis).
+        # displaced the stopped body into the table in004357Z. The114247Z
+        # physical run coasted525mm after the750mm trigger and contacted the
+        # table at the hip/knee. Trigger150mm earlier; the resulting measured
+        # stop must still pass original full-model placement and collision gates.
         result["bounded_terminal_forward_reapproach"]=False
         result["table_front_braking"]={
             "frame":"native_scene_world","approach_normal_world_xy":[0.,1.],
-            "reserve_m":.75,
+            "reserve_m":.90,
             "evidence":"reviews/issue-46/common-table-plane-braking-preflight-20261115T010845Z/result.json",
             "scope":"TASK_ROUTE_ONLY_REQUIRES_DYNAMIC_VALIDATION"}
         # Saved actual near-table stop blocked30mm lowering at rightknee.

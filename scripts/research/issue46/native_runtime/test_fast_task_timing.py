@@ -431,6 +431,19 @@ if __name__=="__main__":unittest.main()
 
 
 class TableFrontBrakingTests(unittest.TestCase):
+    def test_recorded_late_coast_requests_stop_150mm_earlier_without_moving_table(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import table_front_braking_observation as check
+        from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        source={"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,
+                "turn_translation_strategy":"PURE_YAW","base_goal_world_xy":[.015,.98],
+                "table_bounds_min_world_m":[-.451,1.3217455072,-.011]}
+        cfg=task_route_profile(source,fast_task_timing=True)
+        self.assertEqual(cfg["table_front_braking"]["reserve_m"],.90)
+        self.assertFalse(check(cfg,{"x":.42,"y":.42})["due"])
+        self.assertTrue(check(cfg,{"x":.42,"y":.425})["due"])
+        self.assertEqual(cfg["table_bounds_min_world_m"],source["table_bounds_min_world_m"])
+
+
     def cfg(self):
         return {"conservative_terminal_stop":True,
             "table_bounds_min_world_m":[-.451,1.3217455072,-.011],

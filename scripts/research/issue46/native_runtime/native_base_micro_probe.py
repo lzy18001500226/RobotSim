@@ -1564,7 +1564,7 @@ def table_front_braking_observation(delivery, pose):
     if spec is None:return None
     if (spec.get("frame")!="native_scene_world"
             or spec.get("approach_normal_world_xy")!=[0.,1.]
-            or spec.get("reserve_m")!=.75
+            or spec.get("reserve_m") not in (.75,.90)
             or not delivery.get("conservative_terminal_stop")):
         raise ValueError("unqualified table-front braking policy")
     front=float(delivery["table_bounds_min_world_m"][1]);y=float(pose["y"])
@@ -1573,8 +1573,8 @@ def table_front_braking_observation(delivery, pose):
     gap=front-y
     return dict(policy="COMPILED_SECOND_TABLE_FRONT_PLANE",
         frame="native_scene_world",front_y_m=front,base_y_m=y,
-        remaining_front_distance_m=gap,reserve_m=.75,
-        due=gap<=.75,actual_stop_and_placement_ik_still_required=True)
+        remaining_front_distance_m=gap,reserve_m=float(spec["reserve_m"]),
+        due=gap<=float(spec["reserve_m"]),actual_stop_and_placement_ik_still_required=True)
 
 
 def delivery_step_heading_stop(distance, trigger, pose, max_sample_gap_s=.15):
