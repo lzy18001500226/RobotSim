@@ -29,6 +29,49 @@ The matrix is a floor, not permission to omit a directly affected integration le
 
 Robot mechanical-model changes have a separate mandatory source and human-approval gate in the [robot model-integrity contract](model_integrity.md). Passing L0-L5 checks, including a successful simulation, does not substitute for that approval or establish that an experimental mechanism matches the manufacturer model.
 
+## Minimum checks and evidence reuse
+
+The delivery loop is **observed failure -> scoped correction -> affected checks
+-> authorized bounded execution -> measured result**. A check must resolve a
+specific uncertainty; validation is not an independent workstream or a reason
+to keep a ready runtime idle.
+
+- Select checks from the changed dependency, not repository size.
+  Documentation-only work needs scoped diff/link checks, not unit, ROS or
+  physics runs. A localized implementation change needs relevant compilation
+  and regression checks, not the entire historical research suite.
+- Prefer exercising the actual existing entry point, argument path or state
+  transition that failed. Tests must check observable behavior, not duplicate
+  implementation logic or merely assert that a line/helper was added.
+- Keep checks at the boundary that owns the uncertainty; avoid new layers that
+  repeatedly revalidate unchanged internal data. Fresh live telemetry,
+  process ownership and physical safety checks remain per-run/per-tick duties
+  wherever the runtime contract requires them.
+- Once those checks pass, move to the next authorized action. Repeat them only
+  after a relevant edit, failure, dependency change or unresolved concern.
+  Do not add tests that only restate the implementation or re-prove an
+  unchanged accepted baseline.
+- Reuse an accepted result with its artifact identity and relevant configuration.
+  Check changed inputs and cheap provenance checks; do not regenerate every
+  model, 0–100% fit, startup experiment or source inventory. Fresh runtime
+  telemetry and current process ownership remain current-run requirements.
+- One properly instrumented integrated MuJoCo/ROS run may supply relevant L2
+  and L3 evidence together. Do not add a separate headless/infrastructure
+  campaign that tests the same unchanged behavior without necessary new evidence.
+- For changed contact geometry, grasp frames or route intent, prefer the
+  existing web view for early human collaboration. Show planned geometry and
+  recorded physical data separately. Record the version and visual scope of
+  acceptance; reopen it only when that scope changes or evidence contradicts it.
+- Stop an experiment at its first genuine failure, retain it, and choose the
+  next distinct correction from the measurements. Independent repeatability
+  after PASS is justified; an unchanged failed retry is not.
+- Lead reports with physical progress, the first actual failure and the next
+  correction. Counts of tests, screenshots, acknowledgements and offline
+  replays do not substitute for the requested runtime outcome.
+
+These rules reduce duplicate work. They do not lower thresholds, erase
+failures, authorize motion, or turn a geometric fit into physical validation.
+
 ## Test retention and generated evidence
 
 Permanent root `tests/` and package-local tests are maintained regression coverage. Do not remove a test because it is old. One-off debug probes, diagnostic scripts, temporary visual experiments, and ad-hoc reproduction harnesses belong in research or evidence tooling, not in the permanent test suite by default.
@@ -53,6 +96,38 @@ Report commands and relevant versions for reproducibility. A build, syntax check
 
 ## CI growth
 
-CI covers repository agent infrastructure: Python unit tests/compilation, hook JSON parsing, and lightweight repository checks. A separate G1 MuJoCo job also runs the bounded-command unit checks and pinned headless model/stepping smoke test in a temporary Python 3.12 environment. Keep CI focused on reproducible, project-owned checks. Add C++ and package checks when maintained packages exist. Use Humble `ament_lint` and package-local tests when ROS packages are added; use `launch_testing` for the ROS graph behaviors it can exercise. Do not label hosted CI as Unity GPU, Windows/WSLg, vendor DDS, or hardware validation. Those remain local or HIL evidence at L4/L5.
+CI executes repository-authored checks; GitHub is the runner, not the
+authority for robot task success. Local agents should run the relevant checks
+before push; hosted checks then verify the committed files in a clean checkout.
+Keep physical X2/GPU/vendor-runtime acceptance in the supported local setup.
+Do not remove a failing rule merely to obtain green status: distinguish a
+real code/layout violation from a misclassified research artifact.
+
+| Change/event | Hosted checks |
+| --- | --- |
+| Task-branch push before a PR exists | Full agent infrastructure checks; a successful run retains the existing automatic draft-PR handoff. |
+| Push to a branch with an open PR to main | A read-only exact-head PR lookup skips duplicate push steps; the PR event runs the full agent checks. If lookup is unavailable, run full push checks. |
+| PR touching G1 smoke inputs | Agent checks plus the pinned headless G1 smoke. |
+| Other PR, including docs or X2-only experiments | Agent checks; G1 check explicitly reports physics NOT RUN. |
+| Push to main or manual G1 dispatch | Full G1 smoke. |
+
+G1 inputs are its workflow, launcher, dependency lock, smoke requirements/tests,
+pinned Unitree checkout and CI selector/tests. See
+[`ci_scope.js`](../../scripts/agent/ci_scope.js); extend the selector if the
+smoke acquires new dependencies. Diff errors fail the check rather than imply
+unrelated changes. Retain the stable job/check name: skip expensive steps,
+not the whole workflow with path filters that can leave required checks pending.
+Concurrency cancels older runs within each event/branch; push and PR no longer
+cancel one another. A lightweight push lookup still creates a workflow run;
+this removes duplicate test work, not all GitHub events or notification emails.
+The trusted main-branch auto-PR workflow remains unchanged.
+
+CI covers Python unit tests/compilation, mocked automation tests, hook JSON
+parsing and repository governance/links. G1 smoke uses a temporary Python 3.12
+environment. Add C++ and package checks when maintained packages exist. Use
+Humble `ament_lint` and package-local tests when ROS packages are added; use
+`launch_testing` for supported ROS graph checks. Hosted CI does not establish
+X2 physics, Unity GPU, Windows/WSLg, vendor DDS or hardware acceptance; those
+remain local or HIL evidence at L4/L5. Disabling CI email does not disable checks.
 
 Primary upstream testing references: [ROS 2 Humble colcon testing](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/CLI.html), [Humble `launch_testing`](https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/Integration.html), and [Humble ament lint](https://docs.ros.org/en/humble/Tutorials/Advanced/Ament-Lint-For-Clean-Code.html). REP-2004's quality levels are optional evidence vocabulary, not a blanket RobotSim certification.

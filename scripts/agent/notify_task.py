@@ -1564,6 +1564,70 @@ def notify(
     )
 
 
+def notify_milestone(
+    task_id: str,
+    milestone_id: str,
+    summary: str,
+    evidence: list[str],
+    *,
+    worker: str = "Codex",
+    branch: str = "",
+    dry_run: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> Outcome:
+    """Explicit stage attention, independent of Git closeout and chat Stop."""
+    if not TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", milestone_id):
+        return Outcome("blocked", "milestone requires stable Issue task and milestone IDs", exit_code=2)
+    if not summary.strip() or not evidence or len(evidence) > 10:
+        return Outcome("blocked", "milestone requires a summary and 1..10 evidence references", exit_code=2)
+    references = []
+    try:
+        for item in evidence:
+            if item.startswith("https://"):
+                references.extend(_durable_evidence([item]))
+            else:
+                artifact = Path(item)
+                if not artifact.is_file() or artifact.stat().st_size == 0:
+                    raise ValueError("missing or empty evidence file")
+                location = path_governance.describe_output_path(artifact)
+                references.append(location["WSL_PATH"])
+    except (OSError, ValueError, TypeError) as exc:
+        return Outcome("blocked", "milestone evidence rejected (" + type(exc).__name__ + ")", exit_code=2)
+    title = _one_line(summary, 160)
+    subject = "[RobotSim] 阶段完成: " + title[:96]
+    body = "\n".join([
+        "RobotSim milestone notification / 阶段完成通知",
+        "Task: " + task_id,
+        "Milestone: " + milestone_id,
+        "Worker: " + _one_line(worker, 60),
+        "Branch: " + _one_line(branch, 120),
+        "Result: " + title,
+        "Evidence (references only; caller owns acceptance verification):",
+        *references,
+        "This stage notification does not close the overall task or claim a clean/published Git state.",
+        "",
+    ])
+    env = dict(os.environ if environ is None else environ)
+    if not dry_run and not all(env.get(name, "").strip() for name in REQUIRED_SETTINGS):
+        try:
+            if __package__:
+                from .agentmail_stop_hook import _read_bundle, CredentialBridgeError
+            else:
+                from agentmail_stop_hook import _read_bundle, CredentialBridgeError
+            env.update(_read_bundle())
+        except (CredentialBridgeError, ImportError):
+            return Outcome("skipped", "milestone mail credentials unavailable; no request made", exit_code=2)
+    # Worker and attempt are intentionally excluded: wrappers reporting the same
+    # accepted stage must not generate another email.
+    digest = hashlib.sha256(("milestone\0" + ROBOTSIM_REPOSITORY + "\0" + task_id + "\0" + milestone_id).encode()).hexdigest()
+    outcome = _deliver(subject, body, digest, dry_run=dry_run, environ=env)
+    if outcome.state == "sent":
+        return Outcome("sent", "AgentMail accepted the request; recipient delivery is not yet confirmed", subject, body)
+    if outcome.state in {"failed", "skipped"}:
+        return Outcome(outcome.state, outcome.message, subject, body, exit_code=2)
+    return outcome
+
+
 def _branch_at(cwd: object) -> str:
     if not isinstance(cwd, str) or not cwd:
         return ""
@@ -1675,7 +1739,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=("ready_for_review", "task-closeout", "research-completion", "stop", "notification-worker"),
+        choices=("milestone", "ready_for_review", "task-closeout", "research-completion", "stop", "notification-worker"),
         help="attention notification, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
@@ -1686,6 +1750,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--issue", help="issue number, when available")
     parser.add_argument("--dry-run", action="store_true", help="format the message without sending mail")
     parser.add_argument("--quiet", action="store_true", help="suppress notification-worker status output")
+    parser.add_argument("--milestone-id", help="stable accepted stage, independent of turn/attempt/worker")
+    parser.add_argument("--evidence", action="append", default=[], help="milestone evidence: nonempty governed local file or public HTTPS reference")
     return parser
 
 
@@ -1716,6 +1782,14 @@ def main(argv: list[str] | None = None) -> int:
             outcome = Outcome("blocked", "CLOSEOUT BLOCKED: input is not valid JSON", exit_code=2)
         else:
             outcome = process_task_closeout(payload, dry_run=args.dry_run, cwd=Path.cwd())
+    elif args.event == "milestone":
+        if not args.task_id or not args.milestone_id or not args.summary:
+            _parser().error("milestone requires --task-id, --milestone-id, --summary and --evidence")
+        outcome = notify_milestone(
+            args.task_id, args.milestone_id, args.summary, args.evidence,
+            worker=args.worker, branch=args.branch or _branch_at(os.getcwd()),
+            dry_run=args.dry_run,
+        )
     elif not args.task_id or not args.summary:
         _parser().error("Cloud outcome events require --task-id and --summary")
     else:
@@ -1745,7 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
     # when canonical GitHub persistence failed, but AgentMail remains best-effort.
     if args.event == "stop" and not args.dry_run:
         return 0
-    if args.event in {"task-closeout", "research-completion"}:
+    if args.event in {"milestone", "task-closeout", "research-completion"}:
         return outcome.exit_code
     return 0
 

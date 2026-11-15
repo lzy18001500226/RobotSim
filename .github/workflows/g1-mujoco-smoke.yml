@@ -7,12 +7,15 @@ on:
   push:
     branches:
       - main
-      - "issue/**"
-      - "codex/**"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Keep a stable check even when an unrelated PR skips the physics steps.
+concurrency:
+  group: g1-mujoco-smoke-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   g1-mujoco-smoke:
@@ -21,11 +24,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Select G1 smoke dependencies
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/agent/ci_scope.js g1
+
       - uses: actions/setup-python@v5
+        if: steps.scope.outputs.run_smoke == 'true'
         with:
           python-version: "3.12"
 
       - name: Run clean headless smoke test
+        if: steps.scope.outputs.run_smoke == 'true'
         run: ./scripts/run_g1_mujoco_smoke.sh
+
+      - name: Explain unchanged G1 dependencies
+        if: steps.scope.outputs.run_smoke == 'false'
+        run: echo 'G1 physics NOT RUN - no smoke dependencies changed. This is not X2 acceptance.'

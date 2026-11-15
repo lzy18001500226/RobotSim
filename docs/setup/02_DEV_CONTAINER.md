@@ -9,6 +9,34 @@ The project is intended to be reproducible on:
 
 Do not rely on a WSL export as the primary reproducibility mechanism.
 
+## Choose the runtime profile
+
+Use the task's existing launcher and pinned environment. The generic development
+container below is not a replacement for the validated X2 runtime.
+
+| Profile | Purpose and ownership |
+| --- | --- |
+| X2 RAICOM | The active Issue #46/#80 integration uses `robotsim:humble-raicom-runtime-20261019`. Its `stl_hand_startup.py` checks image ID prefix `fed10384dea8`, launches an isolated episode and owns cleanup. Keep its ROS domain 20 and Fast DDS settings with that runner. |
+| Generic Humble development | `docker/compose.yaml` builds `robotsim:humble-dev` for the shared toolchain and earlier G1 work. Use only when that task needs it; its networking/RMW settings do not define the X2 experiment contract. |
+| Historical/optional tools | Grove/Jazzy, FoundationPose/PyTorch and GPU diagnostic images are separate task dependencies. Retain or remove them after inspecting consumers; do not launch them as X2 startup prerequisites. |
+
+The X2 launcher is currently on the assigned integration branch under
+`scripts/research/issue46/native_runtime/stl_hand_startup.py`; it is not
+present in every infra checkout. Resolve the actual worktree with Git and read
+its launcher rather than guessing a path or copying its invocation here.
+
+At the 2026-11-15 inspection, the local RAICOM image resolved to
+`sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31`.
+This is a local image identity, not a registry pull digest or permission to
+rebuild/replace it. A mutable tag alone is insufficient provenance. Preserve
+the vendor delivery, model/configuration hashes and evidence paths alongside
+the image identity; do not commit proprietary packages into Git.
+
+Use [host preflight and cleanup](01_HOST_WSL_DOCKER.md#container-lifecycle-and-cleanup)
+for container retention. An empty container list between episodes is normal.
+The generic commands below build/start containers and are opt-in setup steps,
+not commands that every agent should run before an unrelated task.
+
 ## Build
 
 From the project root:

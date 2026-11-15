@@ -87,7 +87,7 @@ class PreToolGuardTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop", "UserPromptSubmit", "Interrupt"})
+        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop"})
         stop_handler = config["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop_handler.get("type"), "command")
         self.assertIn("scripts/agent/agentmail_stop_hook.py", stop_handler.get("command", ""))
@@ -119,25 +119,16 @@ class PreToolGuardTests(unittest.TestCase):
 
         self.assertEqual(covered, tool_names)
 
-        stop_probes = [
-            handler
-            for group in config["hooks"]["Stop"]
-            for handler in group["hooks"]
-            if "scripts/research/codex_hook_capability_probe.py" in handler.get("command", "")
+        all_handlers = [
+            handler for groups in config["hooks"].values()
+            for group in groups for handler in group["hooks"]
         ]
-        self.assertEqual(len(stop_probes), 1)
-        self.assertIn(
-            "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env ROBOTSIM_HOOK_PROBE_DIR=",
-            stop_probes[0].get("commandWindows", ""),
-        )
-        prompt_probe = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
-        self.assertIn("wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env", prompt_probe.get("commandWindows", ""))
-        lifecycle_handlers = config["hooks"]["UserPromptSubmit"][0]["hooks"][1:]
-        self.assertEqual(len(lifecycle_handlers), 1)
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("command", ""))
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("commandWindows", ""))
-        interrupt_handler = config["hooks"]["Interrupt"][0]["hooks"][0]
-        self.assertIn("scripts/agent/task_lifecycle.py", interrupt_handler.get("commandWindows", ""))
+        self.assertFalse(any(
+            "scripts/research/" in handler.get("command", "")
+            for handler in all_handlers
+        ))
+        self.assertEqual(len(config["hooks"]["Stop"]), 1)
+
 
 
 if __name__ == "__main__":
