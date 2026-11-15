@@ -2387,8 +2387,12 @@ def run_carry_navigation(n,contract):
                     else:mission["delivery_alignment_state"]=None
                     if mission["phase"]=="DELIVERY" and output.state==NavState.DRIVE and cfg["delivery"].get("forward_activation_ramp_s"):
                         ramp=float(cfg["delivery"]["forward_activation_ramp_s"])
-                        if ramp!=1.:raise RuntimeError("FORWARD_ACTIVATION_RAMP_SCOPE")
-                        forward*=min(1.,max(0.,(tick-activation_started)/ramp))
+                        if ramp not in (1.,2.):raise RuntimeError("FORWARD_ACTIVATION_RAMP_SCOPE")
+                        elapsed=max(0.,tick-activation_started)
+                        scale=(bounded_start_scale(elapsed,2.) if ramp==2.
+                               else min(1.,elapsed/ramp))
+                        forward*=scale
+                        mission["delivery_forward_start_ramp_s"]=ramp
                     if mission["phase"]=="DELIVERY" and output.state==NavState.DRIVE and cfg["delivery"].get("pure_forward_direction_probe") and not mission.get("direction_probe",{}).get("qualified"):
                         probe=delivery_direction_probe(mission.get("direction_probe"),p,tick)
                         mission["direction_probe"]=probe

@@ -111,6 +111,10 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Explicit task envelope; source wrist limits and actual released
         # table support stay unchanged. This is not a mechanism modification.
         result["maximum_planned_bottle_tilt_rad"]=math.radians(16.5)
+        # The135927Z run reapplied full+.20 immediately after the turn/stop.
+        # Its first loaded forward steps exceeded the unchanged.60 speed gate.
+        # Reuse the bounded2s input ramp; cruise input and physical limits stay.
+        result["forward_activation_ramp_s"]=2.
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
         # Reuse the existing0.6s healthy-stop taper for the loaded retreat.
