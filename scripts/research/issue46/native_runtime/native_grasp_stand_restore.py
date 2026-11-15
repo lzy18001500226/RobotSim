@@ -56,14 +56,34 @@ def stop_owner_feedback(owner):
 
 
 def receive_owner_waist(owner, message):
-    # Serialize abort freeze with a possible in-flight waist publication.
+    # Serialize abort freeze with a possible in-flight waist publication.\n    # Preserve200ms source-message age validation in receive_native_waist.\n    # Allow its existing50ms recovery window to receive a genuinely fresh packet;\n    # otherwise this callback killed the executor before recovery was possible.
     with owner.owner_waist_lock:
         if (getattr(owner, "mc_waist_blend_started", None) is not None
                 and not getattr(owner, "mc_waist_abort_frozen", False)
-                and time.monotonic() - owner.mc_waist_receipt > .20):
+                and time.monotonic() - owner.mc_waist_receipt > .25):
             raise RuntimeError("MC_WAIST_RELAY_GAP:"
                                + str(time.monotonic() - owner.mc_waist_receipt))
         receive_native_waist(owner, message)
+
+
+def await_fresh_waist_relay(owner):
+    """Existing200ms source age, with one50ms wait for a real new callback."""
+    started=time.monotonic();initial=owner.mc_waist_receipt
+    if started-initial<=.20:return
+    deadline=started+.05
+    while True:
+        now=time.monotonic()
+        if owner.mc_waist_receipt>initial and 0.<=now-owner.mc_waist_receipt<=.20:
+            owner.mc_waist_recovery=dict(previous_receipt_s=initial,
+                new_receipt_s=owner.mc_waist_receipt,wait_s=now-started,
+                initial_age_s=started-initial,source_age_limit_s=.20)
+            return
+        if now>=deadline:
+            raise RuntimeError("MC_WAIST_RELAY_STALE:"+json.dumps(dict(
+                age_s=now-owner.mc_waist_receipt,reread_wait_s=now-started,
+                reread_budget_s=.05,last_callback_timing_ns=getattr(owner,"mc_waist_callback_timing",None))))
+        check_owner_feedback(owner)
+        time.sleep(min(.002,deadline-now))
 
 
 def freeze_owner_waist(owner):
@@ -108,7 +128,7 @@ def receive_native_waist(self,message):
     self.mc_waist_callback_timing={"callback_started_ns":callback_started_ns,"before_publish_ns":before_publish_ns,"after_publish_ns":after_publish_ns,"source_receipt_s":self.mc_waist_receipt}
     now=time.monotonic()
     if now-getattr(self,"mc_waist_report_at",0.)>=.10:
-        value=dict(schema="robotsim.native-waist-handoff-feedback.v1",owner_pid=os.getpid(),generation=self.native_generation,host_monotonic_ns=time.monotonic_ns(),source_receipt_monotonic_s=self.mc_waist_receipt,source_stamp_ns=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec),source_clock_generation=getattr(self,'mc_waist_source_clock_generation',0),source_positions_rad=source,published_positions_rad={j.name:float(j.position) for j in message.joints},callback_timing_ns=dict(self.mc_waist_callback_timing),fraction=fraction,relay_count=self.mc_waist_relay_count,gains="UNCHANGED_CURRENT_MC")
+        value=dict(schema="robotsim.native-waist-handoff-feedback.v1",owner_pid=os.getpid(),generation=self.native_generation,host_monotonic_ns=time.monotonic_ns(),source_receipt_monotonic_s=self.mc_waist_receipt,source_stamp_ns=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec),source_clock_generation=getattr(self,'mc_waist_source_clock_generation',0),source_positions_rad=source,published_positions_rad={j.name:float(j.position) for j in message.joints},callback_timing_ns=dict(self.mc_waist_callback_timing),fraction=fraction,relay_count=self.mc_waist_relay_count,gains="UNCHANGED_CURRENT_MC",bounded_relay_recovery=getattr(self,"mc_waist_recovery",None))
         with open("/workspace/evidence/native_waist_handoff_feedback.tmp","w") as f:json.dump(value,f)
         os.replace("/workspace/evidence/native_waist_handoff_feedback.tmp","/workspace/evidence/native_waist_handoff_feedback.json");self.mc_waist_report_at=now
         self.mc_waist_callback_timing["report_io_finished_ns"]=time.monotonic_ns()
@@ -244,7 +264,7 @@ def request_native_waist_handoff(self):
         with open('/workspace/evidence/native_waist_source_before_handoff.json','x') as f:json.dump(initial,f)
         self.mc_waist_blend_from={j.name:float(j.position) for j in self.last_waist_message.joints}
         self.mc_waist_blend_started=time.monotonic()
-    if getattr(self,"mc_waist_blend_started",None) is not None and time.monotonic()-self.mc_waist_receipt>.20:raise RuntimeError("MC_WAIST_RELAY_STALE:"+json.dumps(dict(age_s=time.monotonic()-self.mc_waist_receipt,last_callback_timing_ns=getattr(self,"mc_waist_callback_timing",None))))
+    if getattr(self,"mc_waist_blend_started",None) is not None:await_fresh_waist_relay(self)
 
 def extend_existing_owner(script):
     """Same arm/hand/waist publishers; only the waist source changes after proof."""
@@ -252,7 +272,7 @@ def extend_existing_owner(script):
         nonlocal script
         if script.count(old)!=1:raise ValueError("postured restoration owner anchor:"+old[:60])
         script=script.replace(old,new)
-    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_idle_left_parking,request_carry_waist_return,request_stationary_delivery_waist,request_native_waist_handoff))
+    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,await_fresh_waist_relay,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_idle_left_parking,request_carry_waist_return,request_stationary_delivery_waist,request_native_waist_handoff))
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))

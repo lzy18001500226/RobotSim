@@ -92,11 +92,44 @@ class OwnerFeedbackSafetyTests(unittest.TestCase):
         self.owner.mc_waist_receipt = 14.
 
     def test_recovered_callback_cannot_hide_a_substantial_relay_gap(self):
-        with patch('time.monotonic', return_value=14.201):
+        with patch('time.monotonic', return_value=14.251):
             with self.assertRaisesRegex(RuntimeError, 'MC_WAIST_RELAY_GAP'):
                 restore.receive_owner_waist(self.owner, self.message)
         self.assertEqual(self.sent, [])
         self.assertEqual(self.owner.mc_waist_receipt, 14.)
+
+    def test_fresh_callback_can_recover_the_recorded225ms_gap(self):
+        with patch("time.monotonic",return_value=14.225):
+            restore.receive_owner_waist(self.owner,self.message)
+        self.assertEqual(len(self.sent),1)
+        self.assertEqual(self.owner.mc_waist_receipt,14.225)
+
+    def test_old_packet_inside_recovery_window_does_not_refresh(self):
+        self.owner.get_clock=lambda:S(now=lambda:S(nanoseconds=2000000000))
+        with patch("time.monotonic",return_value=14.225):
+            restore.receive_owner_waist(self.owner,self.message)
+        self.assertEqual(self.sent,[])
+        self.assertEqual(self.owner.mc_waist_receipt,14.)
+
+    def test_control_wait_requires_a_real_new_receipt_and_keeps200ms_age(self):
+        clock=[14.225]
+        def fresh_callback(seconds):
+            clock[0]+=seconds
+            self.owner.mc_waist_receipt=clock[0]
+        with patch("time.monotonic",side_effect=lambda:clock[0]),patch("time.sleep",side_effect=fresh_callback),patch.object(restore,"USE_NATIVE_FEEDBACK",False,create=True):
+            restore.await_fresh_waist_relay(self.owner)
+        self.assertGreater(self.owner.mc_waist_recovery["new_receipt_s"],14.)
+        self.assertEqual(self.owner.mc_waist_recovery["source_age_limit_s"],.20)
+        self.assertLessEqual(self.owner.mc_waist_recovery["wait_s"],.05)
+
+    def test_control_wait_stops_after50ms_without_new_message(self):
+        clock=[14.225]
+        def wait(seconds):clock[0]+=seconds
+        with patch("time.monotonic",side_effect=lambda:clock[0]),patch("time.sleep",side_effect=wait),patch.object(restore,"USE_NATIVE_FEEDBACK",False,create=True):
+            with self.assertRaisesRegex(RuntimeError,"MC_WAIST_RELAY_STALE"):
+                restore.await_fresh_waist_relay(self.owner)
+        self.assertEqual(self.owner.mc_waist_receipt,14.)
+        self.assertAlmostEqual(clock[0],14.275)
 
     def test_abort_freeze_prevents_future_waist_publication(self):
         with patch.object(restore, 'USE_NATIVE_FEEDBACK', True, create=True):
