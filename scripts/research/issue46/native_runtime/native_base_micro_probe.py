@@ -170,7 +170,11 @@ def carry_transit_speed_limit(record, stamp_ns, generation, owner_pid):
         raise ValueError("CARRY_TRANSIT_PERMIT_FIELDS")
     created,command,end=(record[k] for k in names[:3])
     brake,revoked=record.get("braking_ns"),record.get("revoked_ns")
-    if (not 5_000_000_000<=command-created<=90_000_000_000 or end!=command+15_000_000_000
+    complete_budget=record.get("complete_transfer_budget_s")
+    if complete_budget is not None and (complete_budget!=180. or record["schema"]!="robotsim.carry-transit.v2" or record.get("task_interval_budget")!=7):
+        raise ValueError("CARRY_TRANSIT_TASK_BUDGET")
+    maximum_duration_ns=180_000_000_000 if complete_budget==180. else 90_000_000_000
+    if (not 5_000_000_000<=command-created<=maximum_duration_ns or end!=command+15_000_000_000
             or brake is not None and (type(brake) is not int or not created<=brake<=end)
             or revoked is not None and (type(revoked) is not int or revoked<created
                                        or brake is not None and revoked<brake)):
@@ -254,6 +258,7 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
                     command_deadline_ns=deadline,absolute_deadline_ns=deadline+15_000_000_000,
                     braking_ns=None,revoked_ns=None)
         if cfg.get("compact_turn"):record["task_interval_budget"]=7 if cfg.get("delivery") else 6
+        if limit==180. and seconds>90.:record["complete_transfer_budget_s"]=180.
         root_cap=float((cfg.get("delivery") or {}).get("transit_root_cap_m_s",.50))
         if root_cap not in (.50,.60):raise ValueError("CARRY_TRANSIT_ROOT_POLICY")
         if root_cap==.60:

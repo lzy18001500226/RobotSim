@@ -587,3 +587,30 @@ class CompleteTransferBudgetTests(unittest.TestCase):
             phase.update(postured_native_stand_restore=restored,carry_pose_frame="PELVIS_RIGID")
             self.assertEqual(phase["carry_lease_s"],expected)
             self.assertLessEqual(phase["carry_lease_s"],carry_lease_limit(phase))
+
+    def test_generated_extended_permit_is_accepted_by_real_consumer_and_revoked(self):
+        import ast,tempfile
+        from unittest.mock import patch
+        from .native_base_micro_probe import build_carry_route_script,carry_transit_phase,carry_transit_speed_limit
+        from .native_task_grasp_region import task_route_profile
+        profile=Path(runtime.REPO)/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json"
+        delivery=task_route_profile(json.loads(profile.read_text()),fast_task_timing=True)
+        source=build_carry_route_script(None,{},[],carry_pid=19,timeout_s=180.,
+            transit_policy_050=True,away_1m=True,straight_retreat_turn=True,
+            compact_turn=True,transit_command_speed=.20,compact_centre_feedback=True,
+            release_source_on_stop=True,compact_angular_cap=.60,delivery=delivery,
+            vendor_transition_table=True)
+        tree=ast.parse(source)
+        call=next(n.value for n in reversed(tree.body) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and n.value.func.attr=="update")
+        cfg=ast.literal_eval(call.args[0])["carry"]
+        start=10_000_000_000
+        with tempfile.TemporaryDirectory() as tmp,patch("time.monotonic_ns",return_value=start):
+            record=carry_transit_phase(None,"TRANSIT",cfg,{"generation":1},tmp)
+            self.assertEqual(record["command_deadline_ns"]-start,180_000_000_000)
+            self.assertEqual(carry_transit_speed_limit(record,start+100_000_000_000,1,19),.60)
+            legacy=dict(record);legacy.pop("complete_transfer_budget_s")
+            with self.assertRaisesRegex(ValueError,"PERMIT_BOUND"):carry_transit_speed_limit(legacy,start,1,19)
+            invalid=dict(record,complete_transfer_budget_s=181.)
+            with self.assertRaisesRegex(ValueError,"TASK_BUDGET"):carry_transit_speed_limit(invalid,start,1,19)
+            revoked=carry_transit_phase(record,"REVOKED",cfg,{"generation":1},tmp)
+            self.assertEqual(carry_transit_speed_limit(revoked,start,1,19),.20)
