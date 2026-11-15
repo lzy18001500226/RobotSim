@@ -102,7 +102,7 @@ Where the current Codex client exposes pause, resume, or clear/end controls, Rob
 
 Continue through ordinary test failures and safe alternatives. Stop for architecture acceptance, destructive operations, new credentials/authentication, irreversible dependency migrations, unsafe hardware actuation, or unresolved visual/manual assertions that affect correctness. Routine low-risk merge authorization and required checks/review follow [AGENTS.md](../../AGENTS.md); Goal continuation does not waive these meaningful gates or expand task scope.
 
-For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#closeout), including its explicit `ready_for_review`, `completed`, or `blocked` notifier call. A Goal status and a PR notification are separate records: use the notification that matches the actual task outcome and report deferred checks honestly.
+For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#durable-task-closeout). Local Codex emits one structured final closeout envelope for the Stop hook; Cloud explicitly calls `task-closeout` once. `ready_for_review` is a separate attention command, not an additional terminal closeout. A Goal status, GitHub publication and email delivery are separate records: report the actual outcome and deferred checks honestly.
 
 ## Long-running-agent evidence and future decision
 
