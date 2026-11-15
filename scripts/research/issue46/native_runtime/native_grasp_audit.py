@@ -443,11 +443,12 @@ def read_complete_native_rows(path, *, through_host_ns=None):
     return list(iter_complete_native_rows(path))
 
 
-def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, transit_policy=None, expected_owner_pid=None, review_incidental_contacts=False):
+def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, transit_policy=None, expected_owner_pid=None, review_incidental_contacts=False,planar_speed_warning_only=False):
     """Independent whole recorded carry audit, including skipped callback frames."""
     import math
     from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault,carry_policy_speed_limit
     generation=None;previous=None;first_stamp=None;count=0;max_root=0.;max_ratio=(0.,"")
+    warnings={"sample_count":0,"max_speed_m_s":0.,"first_sim_time_s":None,"last_sim_time_s":None}
     allowed=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")]
     for row in rows:
         if row["host_monotonic_ns"]<start_ns:continue
@@ -464,15 +465,19 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, trans
         pose=native_pose(row)
         if transit_policy and expected_owner_pid is None:return {"pass":False,"failure":"CARRY_AUDIT_OWNER_BINDING_MISSING"}
         limit=carry_policy_speed_limit(transit_policy,row["host_monotonic_ns"],row["generation"],expected_owner_pid)
-        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed,planar_speed_limit=limit,review_incidental_contacts=review_incidental_contacts)
+        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed,planar_speed_limit=limit,review_incidental_contacts=review_incidental_contacts,planar_speed_warning_only=planar_speed_warning_only and limit==.60)
         if fault:return {"pass":False,"failure":fault,"source_host_ns":row["host_monotonic_ns"],"source_sim_time_s":row["sim_time_s"]}
+        if pose.get("planar_speed_warning"):
+            warnings["sample_count"]+=1;warnings["max_speed_m_s"]=max(warnings["max_speed_m_s"],math.hypot(pose["vx"],pose["vy"]))
+            if warnings["first_sim_time_s"] is None:warnings["first_sim_time_s"]=row["sim_time_s"]
+            warnings["last_sim_time_s"]=row["sim_time_s"]
         max_root=max(max_root,math.hypot(pose["vx"],pose["vy"]))
         for name,bounds in limits.items():
             j=row["joints"][name];ratio=max(abs(j["qvel"]),j.get("max_abs_qvel_since_previous_sample",0.))/bounds[2]
             max_ratio=max(max_ratio,(ratio,name))
         previous=row
     if count<2:return {"pass":False,"failure":"INSUFFICIENT_CARRY_NATIVE_EVIDENCE"}
-    return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":count,"host_span_s":(previous["host_monotonic_ns"]-first_stamp)*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1]}
+    return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":count,"host_span_s":(previous["host_monotonic_ns"]-first_stamp)*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1],"speed_check_policy":"DIAGNOSTIC_WARNING_ONLY" if planar_speed_warning_only else "LEGACY_IMMEDIATE_STOP","legacy_planar_speed_gate_pass":warnings["sample_count"]==0,"planar_speed_warnings":warnings}
 
 
 def carry_lease_limit(record):

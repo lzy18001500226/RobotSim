@@ -1366,11 +1366,11 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         result["carry_trace_persistence"]={"mode":"EVIDENCE_DRAIN_FAILED","failure":str(trace_error)}
         if nav.get("pass_result"):raise
 
-    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"])
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"],planar_speed_warning_only=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("planar_speed_warning_only")))
     diagnostic_contacts=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("incidental_contact_diagnostic"))
     if diagnostic_contacts:
         result["carry_native_legacy_strict_contact_audit"]=recorded
-        recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")),expected_owner_pid=ready["pid"],review_incidental_contacts=True)
+        recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=audit_end_ns,transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")),expected_owner_pid=ready["pid"],review_incidental_contacts=True,planar_speed_warning_only=bool(json.loads(args.carry_delivery_config.read_text()).get("planar_speed_warning_only")))
         recorded["contact_policy"]="USER_APPROVED_SIMULATION_ONLY_INCIDENTAL_CONTACT_RECORDING; engine contact forces unchanged"
     result["carry_native_motion_audit"]=recorded
     if getattr(args,"carry_transit_speed_policy_050",False):
@@ -2804,6 +2804,7 @@ def main() -> None:
                                     replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)+(140. if restoring_carry else 0.)
                                     if args.carry_delivery_config is not None:
                                         replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
+                                        replan_record['lift_preflight']['retract_preflight']['planar_speed_warning_only']=bool(json.loads(args.carry_delivery_config.read_text()).get("planar_speed_warning_only"))
                                         settings=json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow")
                                         if settings:replan_record['lift_preflight']['retract_preflight']['carry_native_neutral_stow']=settings
                                         replan_record['lift_preflight']['retract_preflight']['review_prefix_only']=bool(json.loads(args.carry_delivery_config.read_text()).get('review_prefix_only'))

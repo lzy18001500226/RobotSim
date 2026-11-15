@@ -115,6 +115,9 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Its first loaded forward steps exceeded the unchanged.60 speed gate.
         # Reuse the bounded2s input ramp; cruise input and physical limits stay.
         result["forward_activation_ramp_s"]=2.
+        # Maintainer15Nov: self-imposed instantaneous pelvis speed is a
+        # diagnostic, not a vendor joint limit or a substitute for balance.
+        result["planar_speed_warning_only"]=True
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
         # Reuse the existing0.6s healthy-stop taper for the loaded retreat.

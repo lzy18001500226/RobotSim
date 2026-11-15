@@ -75,12 +75,20 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20,review_incidental_contacts=False):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20,review_incidental_contacts=False,planar_speed_warning_only=False):
     if planar_speed_limit not in (.20,.50,.60):raise ValueError("unsupported explicit physical speed profile")
+    if planar_speed_warning_only and planar_speed_limit!=.60:
+        raise ValueError("warning-only speed is scoped to explicit simulation ROOT060")
+    if not all(math.isfinite(pose[k]) for k in ("z","roll","pitch","vx","vy")):
+        return "NONFINITE_BASE_STATE"
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
         return "POSTURE"
-    if math.hypot(pose["vx"], pose["vy"]) > planar_speed_limit:
-        return "PLANAR_SPEED"
+    measured_speed=math.hypot(pose["vx"],pose["vy"])
+    if measured_speed > planar_speed_limit:
+        if not planar_speed_warning_only:return "PLANAR_SPEED"
+        pose["planar_speed_warning"]={"measured_m_s":measured_speed,
+            "diagnostic_threshold_m_s":planar_speed_limit,
+            "response":"RECORD_ONLY; posture, source joints and collisions remain enforced"}
     for name, (lo, hi, speed) in limits.items():
         j = row["joints"][name]
         if not lo-.001 <= j["q"] <= hi+.001:
@@ -643,7 +651,7 @@ def run_probe(smoke_only=False):
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
                 limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .60 if MICRO.get("pickup_stance_profile") else .20
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")))
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")),planar_speed_warning_only=limit==.60 and bool((MICRO.get("carry",{}).get("delivery") or {}).get("planar_speed_warning_only")))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -1725,6 +1733,8 @@ def run_carry_navigation(n,contract):
     if cfg.get("straight_retreat_turn"):result["classification"]="SIMULATION_ONLY_STRAIGHT_RETREAT_AND_INPLACE_TURN_PREFIX"
     if float((cfg.get("delivery") or {}).get("transit_root_cap_m_s",.50))==.60:
         result["classification"]="SIMULATION_ONLY_TABLE_TRANSFER_ROOT060_UNCHANGED_SOURCE_JOINTS"
+        result["root_speed_check_policy"]=("DIAGNOSTIC_WARNING_ONLY" if
+            cfg["delivery"].get("planar_speed_warning_only") else "LEGACY_IMMEDIATE_STOP")
     result["activation_protocol"]="YAW_PRESTEP_EXPERIMENT" if cfg.get("gait_prepare") else "VENDOR_DIRECT_RETREAT_NONZERO"
     watchdog=None;began=None;baseline=None;transit_permit=None;graph_job=None;closed_permits=[];mission=None
     def stand_transition(source_already_disabled=False):
