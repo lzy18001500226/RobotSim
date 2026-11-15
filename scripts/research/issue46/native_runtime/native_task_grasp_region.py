@@ -103,6 +103,9 @@ def task_route_profile(profile, *, fast_task_timing=False):
         result["maximum_planned_bottle_tilt_rad"]=math.radians(16.5)
         result["loaded_terminal_slowdown"]=True
         result["conservative_terminal_stop"]=True
+        # Reuse the existing0.6s healthy-stop taper for the loaded retreat.
+        # Actual source, joint and fault-stop gates remain unchanged.
+        result["planned_retreat_deceleration_s"]=.6
         # Three recorded full transfers measured maximum calibration coast
         # of0.4233--0.4484m. The existing600mm terminal reserve already exceeds
         # that plus one150ms sample at the unchanged600mm/s safety cap.

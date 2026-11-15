@@ -1319,15 +1319,17 @@ def await_step_stand_handoff(n, baseline, deadline_s):
     raise RuntimeError("STEP_STAND_MEASURED_HANDOFF_NOT_READY")
 
 
-def planned_step_deceleration(n, cfg, baseline, deadline_s):
-    """Taper only a healthy planned STEP stop; faults always send immediate zero.
+def planned_step_deceleration(n, cfg, baseline, deadline_s, *, retreat=False):
+    """Taper a healthy planned STEP or explicit default-retreat stop only.
 
     This is a task-layer input ramp, not a change to MC, joint limits or the
     physical stop gate. The absolute route/watchdog deadline is never extended.
     Coast measurements begin before the ramp, so its displacement is included.
     """
-    duration=float((cfg.get("delivery") or {}).get("planned_step_deceleration_s",0.))
-    if not duration or cfg.get("motion_mode")!="LOCOMOTION_STEP":
+    key="planned_retreat_deceleration_s" if retreat else "planned_step_deceleration_s"
+    expected_mode="LOCOMOTION_DEFAULT" if retreat else "LOCOMOTION_STEP"
+    duration=float((cfg.get("delivery") or {}).get(key,0.))
+    if not duration or cfg.get("motion_mode")!=expected_mode:
         n.deadline_zero()
         return dict(applied=False,reason="LEGACY_IMMEDIATE_ZERO")
     if duration!=.6:raise ValueError("PLANNED_STEP_DECELERATION_SCOPE")
@@ -1339,8 +1341,9 @@ def planned_step_deceleration(n, cfg, baseline, deadline_s):
     try:
         if not n.moving or deadline_s-start<duration:
             raise RuntimeError("PLANNED_STEP_STOP_NOT_ARMED_OR_DEADLINE")
-        if initial["lateral"] or initial["forward"]<0.:
+        if initial["lateral"] or (initial["forward"]>=0. if retreat else initial["forward"]<0.):
             raise RuntimeError("PLANNED_STEP_STOP_DIRECTION")
+        evidence["scope"]="DEFAULT_RETREAT" if retreat else "STEP_FORWARD"
         end=start+duration
         while time.monotonic()<end:
             tick=time.monotonic()
@@ -1350,8 +1353,8 @@ def planned_step_deceleration(n, cfg, baseline, deadline_s):
             if time.monotonic()>=deadline_s or not n.moving:
                 raise RuntimeError("PLANNED_STEP_STOP_CANCELLED_OR_DEADLINE")
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
-            if (row["common_mode_desc"]!="LOCOMOTION_STEP"
-                    or row["get_mode_desc"]!="LOCOMOTION_STEP"
+            if (row["common_mode_desc"]!=expected_mode
+                    or row["get_mode_desc"]!=expected_mode
                     or row["common_source"]["name"]!="robotsim_official_cmd_vel"):
                 raise RuntimeError("PLANNED_STEP_STOP_SOURCE_CHANGED")
             scale=max(0.,1.-(time.monotonic()-start)/duration)
@@ -1906,8 +1909,9 @@ def run_carry_navigation(n,contract):
                                                angular_z=retreat_heading_command(error,min(.30 if cfg.get("compact_turn") else .1,cfg["angular_command_cap"])))
                     else:
                         if not acquired:raise RuntimeError("RETREAT_SOURCE_NOT_CONFIRMED")
-                        n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        result["retreat_planned_deceleration"]=planned_step_deceleration(n,cfg,baseline,until,retreat=True)
+                        n.stop_started=True
                         n.source_enabled(False) if cfg.get("release_source_on_stop") and not (cfg.get("delivery") or {}).get("release_source_after_zero_window") else None
                         stand_transition()
                         result["retreat_stop_composite"]=n.observe(stop_wait_s,baseline=baseline,require_stop=True)

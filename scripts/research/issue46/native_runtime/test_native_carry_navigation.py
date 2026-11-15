@@ -2049,6 +2049,35 @@ class PlannedStepDecelerationTests(unittest.TestCase):
         helper=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=="planned_step_deceleration")
         self.assertTrue(any(isinstance(x,ast.Try) and x.finalbody for x in ast.walk(helper)))
 
+class PlannedRetreatDecelerationTests(PlannedStepDecelerationTests):
+    def fixture(self, **kwargs):
+        kwargs.setdefault("mode","LOCOMOTION_DEFAULT")
+        n,cfg,clock=super().fixture(**kwargs)
+        n.command_log[0].update(forward=-.20,angular=.052)
+        cfg.update(motion_mode="LOCOMOTION_DEFAULT")
+        cfg["delivery"]={"planned_retreat_deceleration_s":.6}
+        return n,cfg,clock
+
+    def execute(self,n,cfg,clock,deadline=102.):
+        from unittest.mock import patch
+        with patch.object(m.time,"monotonic",side_effect=lambda:clock.now),patch.object(m.time,"sleep",side_effect=lambda dt:setattr(clock,"now",clock.now+dt)):
+            return m.planned_step_deceleration(n,cfg,1,deadline,retreat=True)
+
+    def test_planned_stop_tapers_both_inputs_and_keeps_absolute_budget(self):
+        n,cfg,clock=self.fixture();evidence=self.execute(n,cfg,clock)
+        self.assertEqual(evidence["scope"],"DEFAULT_RETREAT")
+        self.assertEqual(n.zero_count,1);self.assertAlmostEqual(clock.now,100.6)
+        speeds=[abs(x["forward"]) for x in n.command_log]
+        self.assertTrue(all(a+1e-12>=b for a,b in zip(speeds,speeds[1:])))
+        self.assertEqual(speeds[-1],0.)
+
+    def test_unconfigured_or_other_mode_keeps_immediate_zero(self):
+        for mode,duration in (("LOCOMOTION_DEFAULT",0.),("LOCOMOTION_STEP",.6)):
+            n,cfg,clock=self.fixture();cfg["motion_mode"]=mode
+            cfg["delivery"]["planned_retreat_deceleration_s"]=duration
+            self.assertFalse(self.execute(n,cfg,clock)["applied"])
+            self.assertEqual(n.zero_count,1);self.assertEqual(n.pumps,0)
+
 class RequestedStepStandTransitionTests(unittest.TestCase):
     def test_explicit_step_stop_requests_sd_before_physical_composite(self):
         import inspect
