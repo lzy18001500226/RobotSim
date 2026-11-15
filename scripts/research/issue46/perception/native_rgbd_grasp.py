@@ -93,7 +93,7 @@ def render(model,data,renderer,camera,row):
     f=HEIGHT/(2*math.tan(math.radians(FOVY)/2))
     return rgb,depth,{'fx':f,'fy':f,'cx':(WIDTH-1)/2,'cy':(HEIGHT-1)/2},T
 
-def vertical_component(mask, *, world_height=None):
+def vertical_component(mask, *, world_height=None, return_all=False):
     """Select a 4-connected blue component with real upright height support.
 
     A tilted camera can make an upright bottle appear squat or diagonal.
@@ -102,7 +102,7 @@ def vertical_component(mask, *, world_height=None):
     """
 
     from scipy.ndimage import label,find_objects,binary_erosion
-    labels,count=label(mask);sizes=np.bincount(labels.reshape(-1));best=None
+    labels,count=label(mask);sizes=np.bincount(labels.reshape(-1));best=None;candidates=[]
     for index,bounds in enumerate(find_objects(labels),1):
         if bounds is None or sizes[index]<50:continue
         ys,xs=bounds;height=ys.stop-ys.start;width=xs.stop-xs.start;aspect=height/max(width,1)
@@ -127,8 +127,9 @@ def vertical_component(mask, *, world_height=None):
             if side_count<60:continue
             score=float(len(values))
         info={'pixel_count':float(sizes[index]),'bbox_xyxy':[xs.start,ys.start,xs.stop,ys.stop],'bbox_width_px':float(width),'bbox_height_px':float(height),'vertical_aspect':float(aspect),'score':score}
+        candidates.append((labels==index,info))
         if best is None or score>best[1]['score']:best=(labels==index,info)
-    return best
+    return sorted(candidates,key=lambda pair:pair[1]['score'],reverse=True) if return_all else best
 
 def occluded_cap_points(color_mask, barrel_mask, depth, K, T, circle, barrel_upper):
     """Associate a disconnected visible cap using measured 3D geometry only.
@@ -197,9 +198,23 @@ def estimate(rgb,depth,K,T, *, supported_height_m=None):
     world_height=(T[2,0]*(xs-K["cx"])*proposal_depth/K["fx"]+
                   T[2,1]*(ys-K["cy"])*proposal_depth/K["fy"]+T[2,2]*proposal_depth+T[2,3])
     color_mask=mask.copy()
-    component=vertical_component(mask,world_height=world_height)
-    if component is None:raise ValueError('NO_BLUE_CYLINDER_RGBD_COMPONENT')
-    mask,info=component
+    candidates=vertical_component(mask,world_height=world_height,return_all=True)
+    if not candidates:raise ValueError('NO_BLUE_CYLINDER_RGBD_COMPONENT')
+    rejected=[]
+    for mask,info in candidates:
+        try:
+            estimate,qualified_mask=fit_component(color_mask,mask,info,depth,K,T,
+                                                  supported_height_m=supported_height_m)
+        except ValueError as exc:
+            rejected.append(dict(component=info,failure=str(exc)))
+            continue
+        estimate['rejected_rgb_components']=rejected
+        return estimate,qualified_mask
+    raise ValueError('NO_QUALIFIED_BLUE_CYLINDER:'+json.dumps(rejected))
+
+
+def fit_component(color_mask,mask,info,depth,K,T, *, supported_height_m=None):
+    """Apply the original metric cylinder and support gates to one proposal."""
     # RGB antialiasing and a foreground finger can mix colour/depth at a
     # silhouette. Exclude one image-boundary pixel; this does not shrink any
     # physical collision surface or substitute a truth segmentation mask.

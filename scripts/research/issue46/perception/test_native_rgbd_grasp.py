@@ -65,6 +65,22 @@ def synthetic_cylinder(radius):
     return rgb,depth,K,T,center
 
 class SensorTests(unittest.TestCase):
+    def test_larger_blue_wall_cannot_mask_a_qualified_cylinder(self):
+        rgb,depth,K,T,center=synthetic_cylinder(.035)
+        rgb[:230,260:]=[20,70,220];depth[:230,260:]=.6
+        estimate_record,mask=estimate(rgb,depth,K,T)
+        self.assertAlmostEqual(estimate_record["diameter_m"],.07,delta=.002)
+        self.assertLess(np.linalg.norm(np.array(estimate_record["center_xy_world_m"])-center[:2]),.002)
+        self.assertGreater(len(estimate_record["rejected_rgb_components"]),0)
+        self.assertFalse(mask[:,260:].any())
+
+    def test_all_blue_proposals_unqualified_remains_failure(self):
+        rgb,depth,K,T,center=synthetic_cylinder(.035)
+        rgb[:]=0;depth[:]=np.inf
+        rgb[:230,260:]=[20,70,220];depth[:230,260:]=.6
+        with self.assertRaisesRegex(ValueError,"NO_QUALIFIED_BLUE_CYLINDER"):
+            estimate(rgb,depth,K,T)
+
     def test_snapshot_requires_fresh_independent_reobservation_and_expires(self):
         import copy
         from scripts.research.issue46.perception.native_rgbd_grasp import make_stationary_snapshot,qualify_stationary_snapshot
