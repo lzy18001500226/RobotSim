@@ -1,6 +1,6 @@
 ---
 name: robotsim-x2-runtime-diagnostics
-description: Diagnose RobotSim AgiBot X2 MC, AimDK, ROS 2 or simulator startup, mode switching, command arbitration, reset and missing motion. Use for integration failures, not grasp planning or mechanical reconstruction.
+description: Diagnose RobotSim AgiBot X2 MC, AimDK, ROS 2 or simulator startup, mode switching, command arbitration, reset, missing motion, and Windows/WSL2/Docker ROS 2 clock, DDS, latency or dropped-data failures. Use for integration failures, not grasp planning or mechanical reconstruction.
 ---
 
 # X2 runtime diagnostics
@@ -23,6 +23,12 @@ Check Reset/activation prerequisites, mode transitions, source arbitration, comm
 - Measured physical response and telemetry freshness.
 
 An RPC success, static pose, stale observer or unit test cannot establish applied control. Inspect the saved first failure before changing gains or retrying the same sequence. Do not require a readiness state whose own documented trigger has not yet been sent.
+
+## Diagnose Windows, WSL2 and container boundaries
+
+For cross-environment timing, discovery, delayed commands or missing telemetry, read [WSL2/Docker ROS 2 diagnostics](references/wsl-docker-ros-timing.md). Establish the actual process/daemon topology, then check clocks and Reset, DDS/QoS, queues and finally scheduling. Stop when the failing boundary is explained; do not run every probe by default.
+
+Separate simulation time from monotonic deadlines and network loss from deliberate latest-value replacement or an exhausted observer log. Community Docker examples are conditional references: host networking, shared IPC and clock synchronization are not universal fixes. This reference does not require installing another Skill or changing the current runtime.
 
 ## Validate the smallest justified change
 
