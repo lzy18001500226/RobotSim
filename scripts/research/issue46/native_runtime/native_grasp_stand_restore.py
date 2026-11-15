@@ -140,6 +140,42 @@ def request_torso_carry_reference(self):
     os.replace('/workspace/evidence/carry_torso_reference_feedback.tmp','/workspace/evidence/carry_torso_reference_feedback.json')
 
 
+
+def request_idle_left_parking(self,target):
+    """Move only the unloaded shoulder, using this existing arm owner."""
+    import os,json,time
+    path="/workspace/evidence/idle_left_parking_request.json"
+    joint="left_shoulder_roll_joint"
+    if getattr(self,"idle_left_parking_started",None) is None:
+        if not os.path.exists(path):return target
+        req=json.load(open(path));now=time.monotonic_ns()
+        if (req.get("schema")!="robotsim.idle-left-parking.v1"
+                or req.get("owner_pid")!=os.getpid()
+                or req.get("generation")!=self.native_generation
+                or req.get("pass_static") is not True
+                or not getattr(self,"carry_torso_reference_done",False)
+                or not 0.<=(now-req["created_host_ns"])*1e-9<=.20):
+            raise RuntimeError("IDLE_LEFT_PARKING_REQUEST_UNQUALIFIED")
+        lo,hi,speed=LIFT_CONTRACT["retract_preflight"]["source_motion_limits"][joint]
+        end=float(req["target_rad"])
+        if end!=.35 or not lo+.01<=end<=hi-.01 or abs(end-target[joint])*1.5/4.>speed:
+            raise RuntimeError("IDLE_LEFT_PARKING_SOURCE_LIMIT")
+        self.idle_left_parking_started=time.monotonic()
+        self.idle_left_parking_from=float(target[joint])
+    fraction=min(1.,(time.monotonic()-self.idle_left_parking_started)/4.)
+    u=fraction*fraction*(3.-2.*fraction)
+    target=dict(target);target[joint]=(1.-u)*self.idle_left_parking_from+u*.35
+    if time.monotonic()-getattr(self,"idle_left_parking_report",0.)>=.10:
+        self.idle_left_parking_report=time.monotonic()
+        value=dict(owner_pid=os.getpid(),generation=self.native_generation,
+                   host_monotonic_ns=time.monotonic_ns(),fraction=fraction,
+                   command_rad=target[joint],actual_rad=self.native_row["joints"][joint]["q"],
+                   right_arm_target_changed=False,source_limits_changed=False)
+        with open("/workspace/evidence/idle_left_parking_feedback.tmp","w") as f:json.dump(value,f)
+        os.replace("/workspace/evidence/idle_left_parking_feedback.tmp","/workspace/evidence/idle_left_parking_feedback.json")
+    return target
+
+
 def request_carry_waist_return(self,target):
     import os,json,time
     path='/workspace/evidence/carry_waist_return_request.json'
@@ -216,13 +252,13 @@ def extend_existing_owner(script):
         nonlocal script
         if script.count(old)!=1:raise ValueError("postured restoration owner anchor:"+old[:60])
         script=script.replace(old,new)
-    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_carry_waist_return,request_stationary_delivery_waist,request_native_waist_handoff))
+    helper="\n".join(inspect.getsource(f) for f in (observed_clock_step,start_owner_feedback,check_owner_feedback,wait_owner_feedback,stop_owner_feedback,receive_owner_waist,freeze_owner_waist,receive_native_waist,torso_carry_reference,request_torso_carry_reference,request_idle_left_parking,request_carry_waist_return,request_stationary_delivery_waist,request_native_waist_handoff))
     replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     anchor="self.waist_pub=self.create_publisher("
     lines=script.splitlines();index=next(i for i,l in enumerate(lines) if l.strip().startswith(anchor))
     lines.insert(index+1,"   self.create_subscription(JointCommandArray,\'/robotsim/issue46/mc/waist/command\',lambda m:receive_owner_waist(self,m),QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))")
     script="\n".join(lines)+"\n"
-    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self);target=request_stationary_delivery_waist(self,target)\n   if WAIST and (getattr(self,\'mc_waist_blend_started\',None) is None or getattr(self,\'stationary_delivery_waist_target\',None) is not None):\n    w=JointCommandArray();w.header=m.header")
+    replace("   if WAIST:\n    w=JointCommandArray();w.header=m.header","   if stage==\'CARRY_HOLD\':target=request_carry_waist_return(self,target);request_native_waist_handoff(self);request_torso_carry_reference(self);target=request_idle_left_parking(self,target);target=request_stationary_delivery_waist(self,target)\n   if WAIST and (getattr(self,\'mc_waist_blend_started\',None) is None or getattr(self,\'stationary_delivery_waist_target\',None) is not None):\n    w=JointCommandArray();w.header=m.header")
     replace("    self.waist_pub.publish(w)","    self.waist_pub.publish(w);self.last_waist_message=w")
     replace("self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}","self.last_published_arm_target={name:float(target[name]) for name in CONTROL}")
     replace(" def send(self,target,seconds,stage,hand_right=None):", " def send(self,target,seconds,stage,hand_right=None):\n  if WAIST and stage in (\'CARRY_STOW\',\'CARRY_HOLD\'):target={**self.last_published_arm_target,**target}")
@@ -322,9 +358,62 @@ def restore_postured_hold(run,container,environment,output,ready,result):
             if frame['owner_pid']==ready['pid'] and frame['generation']==ready['generation'] and 0.<=(time.monotonic_ns()-frame['host_monotonic_ns'])*1e-9<=.20:break
         time.sleep(.01)
     else:raise RuntimeError('RESTORED_TORSO_CARRY_REFERENCE_NOT_ACKNOWLEDGED')
-    value=dict(classification="SIMULATION_ONLY_REAL_GRASP_NATIVE_HEIGHT_AND_WAIST_RESTORED",pass_result=True,body_restore=body,native_waist_handoff=feedback,standing_stop=stop,walking_carry_reference=frame,velocity_publishers_created=0,locomotion_actions_sent=0,walking_qualification="NOT_RUN")
+    idle_left=park_idle_left_after_restore(output,ready)
+    value=dict(classification="SIMULATION_ONLY_REAL_GRASP_NATIVE_HEIGHT_AND_WAIST_RESTORED",pass_result=True,body_restore=body,native_waist_handoff=feedback,standing_stop=stop,walking_carry_reference=frame,idle_left_parking=idle_left,velocity_publishers_created=0,locomotion_actions_sent=0,walking_qualification="NOT_RUN")
     pg.write_new_text(output/"postured_standing_restore_result.json",json.dumps(value,indent=2)+"\n")
     return value
+
+
+
+def park_idle_left_after_restore(output,ready):
+    """Statically screen the current parked-arm path before a bounded command."""
+    import os
+    import mujoco
+    from scripts.agent import path_governance as pg
+    from scripts.research.issue46.native_runtime.native_grasp_audit import read_fresh_native_row,apply_recorded_native_frame
+    from scripts.research.issue46.native_runtime.native_carry_posture import screen_native_stow
+    row=read_fresh_native_row(output/"native_latest.json")
+    manifest=json.loads((output/"live_review_model_manifest.json").read_text())
+    from scripts.research.issue46.native_runtime.native_grasp_audit import digest
+    if digest(Path(manifest["path"]))!=manifest["sha256"]:raise RuntimeError("IDLE_LEFT_PARKING_MODEL_HASH")
+    model=mujoco.MjModel.from_binary_path(manifest["path"]);data=mujoco.MjData(model)
+    apply_recorded_native_frame(model,data,row)
+    names=[n for n in row["joints"] if n.startswith(("left_shoulder_","left_elbow_","left_wrist_","right_shoulder_","right_elbow_","right_wrist_"))]
+    if len(names)!=14:raise RuntimeError("IDLE_LEFT_PARKING_ARM_INVENTORY")
+    target={n:float(row["joints"][n]["q"]) for n in names}
+    target["left_shoulder_roll_joint"]=.35
+    proof=screen_native_stow(model,data,dict(arm_target_rad=target,duration_s=4.))
+    pg.write_new_text(output/"idle_left_parking_static.json",json.dumps(proof,indent=2)+"\n")
+    if not proof["pass_static"]:raise RuntimeError("IDLE_LEFT_PARKING_STATIC_COLLISION")
+    row=read_fresh_native_row(output/"native_latest.json")
+    if row["generation"]!=ready["generation"]:raise RuntimeError("IDLE_LEFT_PARKING_GENERATION")
+    request=dict(schema="robotsim.idle-left-parking.v1",owner_pid=ready["pid"],
+                 generation=ready["generation"],created_host_ns=time.monotonic_ns(),
+                 pass_static=True,target_rad=.35)
+    pg.write_new_text(output/"idle_left_parking_request.tmp",json.dumps(request)+"\n")
+    os.replace(output/"idle_left_parking_request.tmp",output/"idle_left_parking_request.json")
+    deadline=time.monotonic()+8.;stable_start=None
+    while time.monotonic()<deadline:
+        row=read_fresh_native_row(output/"native_latest.json")
+        j=row["joints"]["left_shoulder_roll_joint"]
+        path=output/"idle_left_parking_feedback.json"
+        if path.exists():
+            feedback=json.loads(path.read_text())
+            qualified=(feedback["owner_pid"]==ready["pid"]
+                       and feedback["generation"]==ready["generation"]
+                       and 0.<=(time.monotonic_ns()-feedback["host_monotonic_ns"])*1e-9<=.20
+                       and feedback["fraction"]==1. and .25<=j["q"]<=.45
+                       and abs(j["qvel"])<=.05)
+            if qualified:
+                if stable_start is None:stable_start=row["sim_time_s"]
+                if row["sim_time_s"]-stable_start>=.20:
+                    result=dict(pass_result=True,actual_rad=j["q"],actual_velocity_rad_s=j["qvel"],
+                                feedback=feedback,mj_step_calls_in_static_screen=0)
+                    pg.write_new_text(output/"idle_left_parking_result.json",json.dumps(result,indent=2)+"\n")
+                    return result
+            else:stable_start=None
+        time.sleep(.01)
+    raise RuntimeError("IDLE_LEFT_PARKING_ACTUAL_TRACKING_UNQUALIFIED")
 
 
 def postured_carry_requested(args):

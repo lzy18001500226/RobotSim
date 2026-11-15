@@ -395,3 +395,46 @@ class StationaryDeliveryWaistTests(unittest.TestCase):
             request=json.loads((output/"stationary_delivery_waist_request.json").read_text())
             self.assertEqual(request["owner_pid"],123);self.assertTrue(request["physical_stop_pass"])
             self.assertFalse((output/"stationary_delivery_waist_request.tmp").exists())
+
+class IdleLeftParkingTests(unittest.TestCase):
+    def setUp(self):
+        import json,os
+        from unittest.mock import mock_open
+        self.joint="left_shoulder_roll_joint"
+        self.target={self.joint:.127,"right_wrist_roll_joint":.2}
+        self.owner=S(native_generation=1,carry_torso_reference_done=True,
+                     native_row={"joints":{self.joint:{"q":.28}}})
+        self.req=dict(schema="robotsim.idle-left-parking.v1",owner_pid=os.getpid(),
+                      generation=1,created_host_ns=10000000000,pass_static=True,target_rad=.35)
+        self.limits=patch.object(restore,"LIFT_CONTRACT",{"retract_preflight":{"source_motion_limits":{self.joint:(-.061,2.993,13.088)}}},create=True)
+        self.limits.start();self.addCleanup(self.limits.stop)
+
+    def call(self,now,**changes):
+        import json
+        from unittest.mock import mock_open
+        req={**self.req,**changes}
+        with patch("os.path.exists",return_value=True),patch("builtins.open",mock_open(read_data=json.dumps(req))),patch("os.replace"),patch("time.monotonic_ns",return_value=10000000000),patch("time.monotonic",return_value=now):
+            return restore.request_idle_left_parking(self.owner,self.target)
+
+    def test_only_idle_left_joint_changes_continuously(self):
+        for t,expected in ((10.,.127),(12.,(.127+.35)/2),(14.,.35)):
+            got=self.call(t)
+            self.assertAlmostEqual(got[self.joint],expected)
+            self.assertEqual(got["right_wrist_roll_joint"],.2)
+        self.assertEqual(self.target[self.joint],.127)
+
+    def test_no_request_leaves_all_targets_unchanged(self):
+        with patch("os.path.exists",return_value=False):
+            self.assertIs(restore.request_idle_left_parking(self.owner,self.target),self.target)
+
+    def test_stale_wrong_owner_or_unscreened_request_rejected(self):
+        for changes in (dict(created_host_ns=9000000000),dict(owner_pid=-1),dict(generation=2),dict(pass_static=False)):
+            self.owner=S(native_generation=1,carry_torso_reference_done=True)
+            with self.assertRaisesRegex(RuntimeError,"REQUEST_UNQUALIFIED"):self.call(10.,**changes)
+
+    def test_only_screened_source_valid_endpoint_allowed(self):
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_LIMIT"):self.call(10.,target_rad=.5)
+
+    def test_requires_standing_reference_before_arm_motion(self):
+        self.owner.carry_torso_reference_done=False
+        with self.assertRaisesRegex(RuntimeError,"REQUEST_UNQUALIFIED"):self.call(10.)
