@@ -27,7 +27,7 @@ def forward_process(argv, *, cwd, log_path):
             for line in child.stdout:
                 stream.write(line)
                 stream.flush()
-                if line.startswith((PREFIX, "ATTEMPT ", "LIVE_WINDOW_", "FIRST_PERSON_RGB_VIDEO ", "EVIDENCE ")):
+                if line.startswith((PREFIX, "ATTEMPT ", "LIVE_WINDOW_", "FIRST_PERSON_RGB_VIDEO ", "EVIDENCE ", "STARTUP_OR_RUNTIME_FAILED")):
                     print(line, end="", flush=True)
             return child.wait()
         finally:
