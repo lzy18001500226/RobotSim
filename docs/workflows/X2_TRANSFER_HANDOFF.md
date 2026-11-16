@@ -538,3 +538,61 @@ WSL终端用相同worktree、env和python参数，不再套wsl.exe。
 183810Z 抓取与站高恢复通过后，tracker读取源帧年龄219.193884ms即退出。读取和计算过期统一采用既有50ms有界重取；真正新测量仍须<=200ms，时间戳不改写。后续证据：fresh-source-reacquisition-common-transfer-20261115T184703Z。
 
 185006Z 导航首发 NATIVE_FEEDBACK_INVALID/STALE_NATIVE_DOCK_POSE 后停物理，tracker随后源帧年龄267.526ms退出。共享native快照读取在导航、导航pump和手臂均采用50ms有界重取，保留200ms可用测量约束及ABI/代次/未来时间拒绝；生成脚本嵌入同一函数源。436项离线回归通过，物理验证归档 unified-native-snapshot-recovery-transfer-20261115T190445Z。
+
+
+## 2026-11-16：低释放公共流程0/5/10审核
+
+范围是22cm/200g瓶、完整START、远处RGB-D观察和公共搬运放置，
+不是11点验收、雷达定位或真机通过。沿用本工作树/分支及78df5bd搬运策略，
+没有新增点位专用执行分支、机器人机械/摩擦/增益/源限位改动。
+
+本轮证据根（相对于规范reviews/issue-46）：
+`low-release-common-transfer-0510-20261116T063910Z/`。
+审核页：该根下`common-0510-review-20261116T144205Z/index.html`；
+包含实测搬运轨迹、yaw滑块、结束状态后台渲染、原始结果/复核链接。
+
+|点位|实测完整流程|最小抬离|独立桌面支撑|原始运行器记录|
+|---|---|---|---|---|
+|5|物理复核PASS|58.921mm|2.20s|原始FAIL：8秒收尾等待误判；不得覆盖|
+|0|原生全部必需验收PASS|58.875mm|2.42s|外层BLOCKED：650秒总预算在证据收尾超时；不得覆盖|
+|10|原生及外层整轮PASS|59.397mm|2.18s|`transfer10-20261116T145205Z/result.json` PASS|
+
+三者最终夹爪接触力均为0N，桌面竖向支撑约1.962N；源物理及接触验收未替换。
+5号原始episode `raicom-stl-xvfb-native-reset-stand-20261116T132201Z`，
+复核脚本/结果在`point05-physical-reassessment-20261116T141141Z/`，
+重读同一原始native轨迹计算抬升，不运行新物理、不改原FAIL。
+0号episode `raicom-stl-xvfb-native-reset-stand-20261116T140519Z`，
+原生`result.json`本身全部必需验收PASS；外层异常单列于
+`point00-native-audit-review-20261116T142403Z/assessment.json`。
+10号episode `raicom-stl-xvfb-native-reset-stand-20261116T145316Z`。
+5/0/10实测源码分别31009ed、8fd5257、9febb26；是公共流程的逐轮修复验证，
+**不能称为最终同一SHA冻结批次3/3运行器PASS**。人工审核仍PENDING。
+
+本轮失败分类与修复（不是把失败改成动画通过）：
+
+- `CARRY_OWNER_TERMINATION_UNCONFIRMED`：5号实际退出码0，在释放后8.256s退出；
+  8b1de5d将收尾宽限8→20s，退出立即返回；0号8.686s、10号7.732s已确认正常退出。
+- `MC_WAIST_RELAY_GAP`及`RESTORE_GRIP_OWNER_NOT_FRESH`：0号271ms旧间隔令回调线程退出。
+  8fd5257允许真正新且有效的源包恢复，间隔转诊断；父进程在原交接期限内等当前健康心跳。
+  仍拒绝旧/重复/非法源包、错误进程/代次，不用旧包推进新动作。
+- 外层650s预算在物理完成后超时：21055a9将22cm整体预算扩至1000s，
+  包含bootstrap及证据落盘；导航/动作自身预算不变。10号667.281s整轮正常收尾。
+- `PRE_RAISE_SOURCE_MARGIN`：10号规划候选-2.45rad超出官方交集下限-2.356194rad；
+  cd06519改用已有合法-2.25rad，并共享规划/执行检查，**未放宽源限位**。
+- `PRE_RAISE_REUSE_NOT_SAME_EPISODE_AND_TARGET`：合法新候选和早期抬肘角不同被误拒绝。
+  9febb26在完整路径检查后向原owner发新有界请求，反馈绑定请求时间戳；
+  保留旧结果并拒绝不同物理进程。10号实测新目标调整、抓取及完整放置通过。
+
+最终相关164项离线回归PASS；这是软件回归，不替代物理验收。
+所有48个已有无关改动按`protected_before.json`哈希保留；不清理、不合并main。
+放置命令来源仍是hand FK+已知抓取关系/瓶高和已知桌面，允许瓶底距桌面1–3cm时松爪；
+瓶子真值只用于独立支撑/接触的结果验收。低释放区域修复31009ed仍有效。
+
+复现命令（在本工作树，用MuJoCo虚拟环境Python；N替换为0/5/10）：
+
+```bash
+/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -B -u scripts/research/issue46/grasp/table_edge_grasp_trials.py --output-dir /home/lzy18001500226/projects/RobotSim/reviews/issue-46/low-release-common-transfer-0510-20261116T063910Z --case N --visible --far-observe --fast-task-timing --complete-transfer --carry-baseline-78df5bd
+```
+
+下一步先审核本轮0/5/10物理证据及上述运行器区别，再决定剩余8点与雷达替换。
+保留PR106 Draft、Issue46 Open及既有本地文件。
