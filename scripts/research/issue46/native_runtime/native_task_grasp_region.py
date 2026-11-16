@@ -998,6 +998,22 @@ def execute(run, container, environment, output, scene, cache, reference, limits
                                     K=json.dumps(K),T=T)
                 raise
             return rgb, estimated
+        # Compact the forearm while the robot is still at the roomy observation
+        # station. Waiting until close arrival can sweep an open finger through
+        # the bottle even though the final grasp pose itself is reachable.
+        # Reuse the original source-bounded action and its complete elbow sweep.
+        if far_observe and not (output/"pre_raise_forearm_result.json").exists():
+            import xml.etree.ElementTree as ET
+            from scripts.research.issue46.native_runtime.standing_waist_preposition import pre_raise_forearm
+            _,source=native_leg_safety_contract(include_upper_body=True)
+            joint=next(j for j in ET.parse(source["urdf"]).getroot().findall("joint")
+                       if j.get("name")=="right_elbow_joint")
+            proposal=json.loads((output/"standing_grasp_proposal.json").read_text())
+            preparation=pre_raise_forearm(output,proposal,all_limits,float(joint.find("limit").get("effort")),elbow_only=True)
+            pg.write_new_text(output/"task_far_forearm_preparation.json",json.dumps({
+                "reason":"ELBOW_SWEEP_BEFORE_CLOSE_APPROACH",
+                "actual_source_valid_arm_motion":preparation,
+                "model_or_masks_changed":False},indent=2)+"\n")
         adjustment_budget=reference["maximum_stance_adjustments"]
         for index in range(adjustment_budget+1):
             native, captured_images, snapshot = acquire_stationary_control_snapshot(

@@ -1,5 +1,4 @@
 """Phase-specific task accuracy and released-hand regression; no physics."""
-import copy
 import unittest
 import numpy as np
 from scripts.research.issue46.grasp import stl_approved_circle_ik as ik
@@ -35,7 +34,7 @@ class PhaseAwareTrackingTests(unittest.TestCase):
         self.assertTrue(ik.released_withdrawal_axis_free(self.row(),self.proof()))
         self.assertFalse(ik.released_withdrawal_axis_free(self.row(),{}))
         for field,value in [("pass_result",False),("generation",2),
-                            ("measured_hold_sim_s",1.99),("classification","GRIP")]:
+                            ("measured_hold_sim_s",1.99),("measured_hold_sim_s",float("nan")),("classification","GRIP")]:
             phase=self.proof();phase["placement_withdrawal_support"][field]=value
             with self.assertRaises(RuntimeError):ik.released_withdrawal_axis_free(self.row(),phase)
         row=self.row();row["joints"]["R_claw_joint"]["q"]=-.5

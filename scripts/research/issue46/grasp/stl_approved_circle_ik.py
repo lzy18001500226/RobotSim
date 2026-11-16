@@ -527,14 +527,16 @@ def released_withdrawal_axis_free(row, phase):
     if not phase or "placement_withdrawal_support" not in phase:
         return False
     proof=phase["placement_withdrawal_support"]
-    if (not phase.get("placement_active") or
+    open_q=float(row["joints"]["R_claw_joint"]["q"])
+    hold=float(proof.get("measured_hold_sim_s",0.))
+    if (not np.isfinite(open_q) or not np.isfinite(hold) or
+        not phase.get("placement_active") or
         phase.get("placement_execution_timing",{}).get("stage") not in
             ("OPEN_CLAW_WITHDRAWAL","FINAL_RELEASED_SUPPORT") or
         proof.get("pass_result") is not True or
         proof.get("classification")!="RELEASED_BOTTLE_SUPPORTED_BY_DELIVERY_TABLE_NOT_GRIP" or
         proof.get("generation")!=row["generation"] or
-        proof.get("measured_hold_sim_s",0.)<2. or
-        -float(row["joints"]["R_claw_joint"]["q"])<.95):
+        hold<2. or -open_q<.95):
         raise RuntimeError("EMPTY_CLAW_WITHDRAWAL_NOT_RELEASED")
     return True
 
