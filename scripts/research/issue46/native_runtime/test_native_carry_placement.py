@@ -2,6 +2,63 @@
 import unittest
 from scripts.research.issue46.native_runtime import native_carry_placement as p
 
+class ToolEstimatedLowReleaseTests(unittest.TestCase):
+    def config(self):
+        return dict(placement_release_policy="TOOL_ESTIMATED_LOW_DROP",placement_release_height_m=.02,
+                    generation=1,grasp_height_above_center_m=.01,bottle_height_m=.22,bottle_radius_m=.035,
+                    table_bounds_min_world_m=[-.45,1.32,0.],table_bounds_max_world_m=[.45,1.88,.547],tabletop_world_z_m=.547)
+
+    def estimate(self,config,*,gap=.02,axis=(0.,0.,1.)):
+        from unittest.mock import patch
+        import math
+        # FK contains only the hand. No simulated bottle or contact data exists.
+        z=p.low_release_center_height({**config,"placement_release_height_m":gap},axis)+config["grasp_height_above_center_m"]*axis[2]
+        angle=math.atan2(axis[1],axis[2]);c=math.cos(angle);s=math.sin(angle)
+        row=dict(generation=1,host_monotonic_ns=10,bodies={"R_omnipicker_base_link":dict(
+            position_m=[.15,1.52,z],rotation=[1.,0.,0.,0.,c,s,0.,-s,c])})
+        with patch.object(p,"CIRCLE_CONTRACT",dict(circle_center_local_m=[0.,0.,0.],local_bottle_axis_in_hand=[0.,0.,1.]),create=True):
+            return p.placement_tool_estimate(row,config)
+
+    def test_hand_only_estimate_needs_no_object_truth(self):
+        cfg=self.config();estimated=self.estimate(cfg)
+        self.assertAlmostEqual(estimated["bottom_gap_m"],.02)
+        self.assertTrue(p.low_release_ready(estimated,cfg))
+        self.assertIn("NOT_OBJECT_TRUTH",estimated["source"])
+
+    def test_tilted_cylinder_uses_full_projected_bottom_and_edges(self):
+        import math
+        cfg=self.config();axis=[0.,math.sin(math.radians(13.)),math.cos(math.radians(13.))]
+        estimated=self.estimate(cfg,axis=axis)
+        self.assertAlmostEqual(estimated["bottom_gap_m"],.02)
+        self.assertTrue(p.low_release_ready(estimated,cfg))
+        estimated["edge_clearances_m"]=[.001,.1]
+        self.assertFalse(p.low_release_ready(estimated,cfg))
+
+    def test_only_approved_height_and_current_generation_can_release(self):
+        cfg=self.config()
+        for gap in (.009,.031):self.assertFalse(p.low_release_ready(self.estimate(cfg,gap=gap),cfg))
+        estimate=self.estimate(cfg);estimate["generation"]=2
+        self.assertFalse(p.low_release_ready(estimate,cfg))
+        for height in (0.,.009,.031,float("nan"),float("inf")):
+            with self.assertRaises(ValueError):p.low_release_enabled({**cfg,"placement_release_height_m":height})
+        self.assertFalse(p.low_release_enabled({}))
+
+    def test_low_release_authority_does_not_claim_independent_placement(self):
+        fixture=PlacementTests()
+        rows=[fixture.row(i,pad=2.) for i in range(60)]
+        self.assertFalse(p.evaluate_placed_hold(rows,fixture.request())["pass_result"])
+        rows=[fixture.row(i,side="world") for i in range(60)]
+        self.assertFalse(p.evaluate_placed_hold(rows,fixture.request())["pass_result"])
+
+    def test_generated_owner_has_explicit_bounded_release_and_no_pose_write(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.,delivery_table_placement=True,robot_bodies=["pelvis"]))
+        compile(code,"low_release_existing_owner","exec")
+        self.assertIn("placement_low_release_authorized",code)
+        self.assertIn("if len(release_samples)>=3:",code)
+        self.assertIn("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED",code)
+        self.assertNotIn(".qpos[",code)
+
 class PlacementAxisTaskToleranceTests(unittest.TestCase):
     def test_legacy_default_and_explicit_subdegree_target(self):
         self.assertAlmostEqual(.2*__import__('math').sin(p.placement_axis_tolerance({})/2.),.001)

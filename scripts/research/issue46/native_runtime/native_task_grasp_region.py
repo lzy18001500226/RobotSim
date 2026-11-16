@@ -167,6 +167,10 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Explicit task envelope; source wrist limits and actual released
         # table support stay unchanged. This is not a mechanism modification.
         result["maximum_planned_bottle_tilt_rad"]=math.radians(16.5)
+        # Maintainer16Nov: release10-30mm above the tabletop, then observe real
+        # gravity settling. Do not force a carried bottle through the surface.
+        result["placement_release_policy"]="TOOL_ESTIMATED_LOW_DROP"
+        result["placement_release_height_m"]=.02
         # The135927Z run reapplied full+.20 immediately after the turn/stop.
         # Its first loaded forward steps exceeded the unchanged.60 speed gate.
         # Reuse the bounded2s input ramp; cruise input and physical limits stay.

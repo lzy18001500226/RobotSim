@@ -1,13 +1,64 @@
 """Table placement extension for the existing grip owner; no motion publisher.
 
 Targets are the known table frame plus the reviewed circle calibration.
-Native object truth is used only for contact/support/drop acceptance.
+The opt-in low release uses hand FK and a rigid grasp estimate, not object truth.
+Native object truth/contact remains an independent simulation acceptance oracle.
 No source model, qpos write, attachment or alternate controller is introduced.
 """
 from __future__ import annotations
 import json
 import math
 import time
+
+def low_release_enabled(request):
+    policy=request.get("placement_release_policy","MEASURED_TABLE_SUPPORT")
+    if policy not in ("MEASURED_TABLE_SUPPORT","TOOL_ESTIMATED_LOW_DROP"):
+        raise ValueError("unknown placement release policy")
+    if policy=="TOOL_ESTIMATED_LOW_DROP":
+        height=float(request["placement_release_height_m"])
+        if not math.isfinite(height) or not .01<=height<=.03:
+            raise ValueError("approved release height is10-30mm")
+        return True
+    return False
+
+
+def placement_tool_estimate(row,request):
+    """Deployment-available FK estimate; cannot measure slip or replace RGB-D.
+
+    Bottle dimensions and the grasp-section offset are known in this milestone.
+    Deliberately do not read test_cylinder body, velocity, or contact forces.
+    """
+    hand=row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"]
+    local=CIRCLE_CONTRACT["circle_center_local_m"]
+    axis_local=CIRCLE_CONTRACT["local_bottle_axis_in_hand"]
+    section=[hand["position_m"][i]+sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)]
+    axis=[sum(H[3*i+j]*axis_local[j] for j in range(3)) for i in range(3)]
+    offset=float(request["grasp_height_above_center_m"])
+    center=[section[i]-offset*axis[i] for i in range(3)]
+    radius=float(request["bottle_radius_m"]);half=.5*float(request["bottle_height_m"])
+    extent=[radius*math.sqrt(max(0.,1.-v*v))+half*abs(v) for v in axis]
+    lo=request["table_bounds_min_world_m"];hi=request["table_bounds_max_world_m"]
+    edges=[min(center[i]-extent[i]-lo[i],hi[i]-center[i]-extent[i]) for i in (0,1)]
+    values=section+axis+center+edges
+    if not all(math.isfinite(v) for v in values):raise RuntimeError("NONFINITE_TOOL_PLACEMENT_ESTIMATE")
+    return dict(source="HAND_FK_PLUS_KNOWN_GRASP_TRANSFORM_NOT_OBJECT_TRUTH",
+                assumption="RIGID_HELD_OBJECT_NO_SLIP; live placement RGB-D not yet integrated",
+                host_ns=row["host_monotonic_ns"],generation=row["generation"],
+                section_world_m=section,center_world_m=center,axis_world=axis,
+                bottom_gap_m=center[2]-extent[2]-float(request["tabletop_world_z_m"]),
+                edge_clearances_m=edges)
+
+
+def low_release_ready(estimate,request):
+    return (low_release_enabled(request) and estimate["generation"]==request["generation"]
+            and .01<=estimate["bottom_gap_m"]<=.03
+            and min(estimate["edge_clearances_m"])>=.005)
+
+
+def low_release_center_height(config,axis):
+    radius=float(config["bottle_radius_m"]);half=.5*float(config["bottle_height_m"])
+    extent=radius*math.sqrt(max(0.,1.-float(axis[2])**2))+half*abs(float(axis[2]))
+    return float(config["tabletop_world_z_m"])+extent+float(config["placement_release_height_m"])
 
 def placement_contact_state(row, request):
     body=row["bodies"]["test_cylinder"];pos=body["position_m"];R=body["rotation"]
@@ -170,18 +221,29 @@ def perform_native_placement(n, request):
         lambda:dict(n.tracking_metrics,generation=n.native_generation),generation=request["generation"],
         deadline_s=min(deadline,time.monotonic()+budget["approach_wall_s"]))
     write_durable_milestone("/workspace/evidence/native_placement_approach_result.json",approach)
-    # Approach the support surface slowly. A positive actual vertical table
-    # reaction gates release; a planned geometric height alone never suffices.
-    timing["stage"]="LOWER_UNTIL_TABLE_SUPPORT"
+    # The maintainer-approved low drop deliberately releases before support.
+    # Its command gate uses hand FK only; actual support is checked afterward.
+    low_drop=low_release_enabled(request)
+    timing["stage"]="LOWER_TO_TOOL_ESTIMATED_RELEASE_BAND" if low_drop else "LOWER_UNTIL_TABLE_SUPPORT"
     point=clearance.copy();contact=None
+    release_samples=[]
     for _ in range(400):
-        point[2]-=.0002
+        point[2]=max(desired[2],point[2]-.0002) if low_drop else point[2]-.0002
         contact=tick(point,goal_axis,HAND_RIGHT)
         if contact["forbidden"]:raise RuntimeError("PLACEMENT_FORBIDDEN_CONTACT")
         if contact["table_vertical_force_n"]>10.*request["bottle_mass_kg"]*9.81:raise RuntimeError("PLACEMENT_EXCESS_TABLE_FORCE")
-        if contact["table_vertical_force_n"]>.2:break
-    else:raise RuntimeError("PLACEMENT_TABLE_CONTACT_NOT_OBSERVED")
-    timing["stage"]="RELEASE_ON_MEASURED_TABLE_SUPPORT"
+        if low_drop:
+            estimate=placement_tool_estimate(n.native_row,request)
+            if low_release_ready(estimate,request):
+                if not release_samples or estimate["host_ns"]>release_samples[-1]["host_ns"]:release_samples.append(estimate)
+                if len(release_samples)>=3:
+                    n.placement_low_release_authorized=dict(policy=request["placement_release_policy"],estimates=release_samples[-3:])
+                    write_durable_milestone("/workspace/evidence/native_low_release_estimate.json",n.placement_low_release_authorized)
+                    break
+            else:release_samples=[]
+        elif contact["table_vertical_force_n"]>.2:break
+    else:raise RuntimeError("PLACEMENT_TOOL_RELEASE_BAND_NOT_REACHED" if low_drop else "PLACEMENT_TABLE_CONTACT_NOT_OBSERVED")
+    timing["stage"]="RELEASE_FROM_TOOL_ESTIMATED_LOW_HEIGHT" if low_drop else "RELEASE_ON_MEASURED_TABLE_SUPPORT"
     n.placement_release=True
     start_command=float(n.grip_command)
     for index in range(150):
@@ -225,7 +287,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,placement_execution_budget,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,low_release_enabled,placement_tool_estimate,low_release_ready,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,placement_execution_budget,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]
@@ -246,7 +308,7 @@ def extend_existing_owner(script):
         if "if 'test_cylinder' in pair and not pair." in line:
             line=line.replace("and not pair.","and not (getattr(self,'placement_request',None) and 'raicom_delivery_table' in pair) and not pair.")
         if "if (sum(forces.values()) if stage" in line:
-            line=line[:-1]+" and not (getattr(self,'placement_release',False) and placement_contact_state(self.native_row,self.placement_request)['table_vertical_force_n']>.1):"
+            line=line[:-1]+" and not (getattr(self,'placement_release',False) and (getattr(self,'placement_low_release_authorized',None) or placement_contact_state(self.native_row,self.placement_request)['table_vertical_force_n']>.1)):"
         if "if LIFT_CONTRACT is not None and stage in " in line:
             line=line[:-1]+" and not getattr(self,'placement_release',False):"
         if text.startswith("contact_result=native_bilateral_contact("):
@@ -601,6 +663,9 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
         if radial_refinement is not None:cfg['placement_target_selection']['bounded_endpoint_ik']['radial_bound_refinement']=radial_refinement
         data.qpos[qa]=saved;mujoco.mj_forward(model,data)
     goal_axis=np.asarray(cfg.get('placement_axis_world',[0.,0.,1.]))
+    if low_release_enabled(cfg):
+        cfg["placement_center_world_m"][2]=low_release_center_height(cfg,goal_axis)
+        cfg["placement_pose_source"]="HAND_FK_PLUS_REVIEWED_GRASP_CALIBRATION_AND_KNOWN_DIMENSIONS; NO_LIVE_PLACEMENT_RGBD"
     section=np.asarray(cfg["placement_center_world_m"])+float(cfg.get("grasp_height_above_center_m",.10))*goal_axis
     start=data.xpos[hand]+data.xmat[hand].reshape(3,3)@centre
     start_axis=data.xmat[hand].reshape(3,3)@axis
