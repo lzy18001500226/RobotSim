@@ -302,6 +302,30 @@ def qualify_initial_standing(ros_observation, native_check=None):
             else "STAND_STABILITY_UNQUALIFIED","mode_qualified":mode_ok}
 
 
+def native_stand_window(rows):
+    """Same5cm/15deg check on fresh native physics if ROS discovery is empty."""
+    valid=[];last=None;reason=None
+    for row in rows:
+        stamp=row["host_monotonic_ns"]
+        if last is not None:
+            if row["generation"]!=last["generation"]:reason="GENERATION_CHANGED";break
+            if not 0.<(stamp-last["host_monotonic_ns"])*1e-9<=.20:reason="PHYSICS_SAMPLE_GAP";break
+            if row["sim_time_s"]<=last["sim_time_s"]:reason="PHYSICS_NOT_ADVANCING";break
+        position=row["bodies"]["pelvis"]["position_m"]
+        rotation=row["bodies"]["torso_link"]["rotation"]
+        pitch=math.asin(max(-1.,min(1.,-rotation[6])))
+        roll=math.atan2(rotation[7],rotation[8])
+        if not all(math.isfinite(v) for v in position+rotation):reason="NONFINITE_NATIVE_POSE";break
+        valid.append((stamp,position,max(abs(pitch),abs(roll))))
+        last=row
+    span=(valid[-1][0]-valid[0][0])*1e-9 if len(valid)>1 else 0.
+    drift=math.dist(valid[0][1][:2],valid[-1][1][:2]) if len(valid)>1 else None
+    tilt=max((r[2] for r in valid),default=None)
+    return dict(source="FRESH_NATIVE_PHYSICS_SIMULATION_ONLY",sample_count=len(valid),measured_host_s=span,
+                planar_drift_m=drift,max_tilt_rad=tilt,failure=reason,
+                **{"pass":reason is None and span>=2. and drift is not None and drift<=.05 and tilt<=math.radians(15.)})
+
+
 def build_stand_client_script(*, observe_only: bool = False) -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
     code = """#!/usr/bin/env python3
@@ -385,10 +409,33 @@ finally:
     rclpy.shutdown()
 """
     if observe_only:
+        import inspect
         start=code.index('    set_client = node.create_client(')
         end=code.index('    get_client = node.create_client(')
         code=code[:start]+code[end:]
         code=code.replace('int(set_result.response.status.value)','None').replace('set_result.response.message',"'READ_ONLY_NO_ACTION_REQUEST'")
+        # DDS discovery can yield zero odometry/IMU callbacks in this new
+        # observer despite healthy existing native physics. Collect that
+        # independent read-only source during the SAME2.5s window; never turn
+        # absent, stale or frozen feedback into a stability PASS.
+        code=code.replace("def call(node, client, request):",inspect.getsource(native_stand_window)+"\n\ndef call(node, client, request):")
+        code=code.replace("    deadline = time.monotonic() + 2.5","    native_rows=[]\n    deadline = time.monotonic() + 2.5")
+        anchor="        rclpy.spin_once(node, timeout_sec=0.02)"
+        code=code.replace(anchor,anchor+"\n"+"\n".join([
+            "        try:",
+            "            with open('/workspace/evidence/native_latest.json') as stream:row=json.load(stream)",
+            "            age=(time.monotonic_ns()-int(row['host_monotonic_ns']))*1e-9",
+            "            if 0.<=age<=.20 and (not native_rows or row['host_monotonic_ns']>native_rows[-1]['host_monotonic_ns']):native_rows.append(row)",
+            "        except (OSError,ValueError,KeyError):pass",
+        ]))
+        code=code.replace("    print(json.dumps({", "\n".join([
+            "    if len(odom_samples)<2 or not tilt_samples:",
+            "        ros_stability=dict(stability)",
+            "        stability=native_stand_window(native_rows)",
+            "        stability['ros_observation']=ros_stability",
+            "        stability['pass']=stability['pass'] and samples[-1]['mode_name']=='STAND_DEFAULT' and samples[-1]['mode_status']==100",
+            "    print(json.dumps({",
+        ]))
     return code
 
 
