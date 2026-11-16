@@ -312,6 +312,33 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         self.assertFalse(result["pass_result"])
         self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
 
+class CarryOwnerFinalizationTests(unittest.TestCase):
+    def wait(self, exit_after):
+        from types import SimpleNamespace
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
+        clock=[0.]
+        path=SimpleNamespace(exists=lambda:clock[0]>=exit_after)
+        def sleep(dt):clock[0]+=dt
+        with mock.patch.object(parent.time,"monotonic",side_effect=lambda:clock[0]), mock.patch.object(parent.time,"sleep",side_effect=sleep):
+            return parent.wait_carry_owner_exit(path)
+
+    def test_trace_flush_longer_than_eight_seconds_is_not_a_motion_failure(self):
+        result=self.wait(8.26)
+        self.assertTrue(result["confirmed"])
+        self.assertGreaterEqual(result["elapsed_wall_s"],8.26)
+        self.assertLess(result["elapsed_wall_s"],8.32)
+
+    def test_already_exited_owner_returns_without_fixed_wait(self):
+        self.assertEqual(self.wait(0.)["elapsed_wall_s"],0.)
+
+    def test_missing_exit_is_still_rejected_at_bounded_deadline(self):
+        result=self.wait(float("inf"))
+        self.assertFalse(result["confirmed"])
+        self.assertGreaterEqual(result["elapsed_wall_s"],20.)
+        self.assertLess(result["elapsed_wall_s"],20.06)
+
+
 class CarryParentIntegrationTests(unittest.TestCase):
     def test_complete_parent_handoff_branch_without_docker_or_physics(self):
         import json,tempfile,subprocess,time

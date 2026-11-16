@@ -1278,6 +1278,21 @@ def abort_unstopped_carry(container, output, nav, result):
     raise RuntimeError("CARRY_NAVIGATION_UNQUALIFIED_STOP:" + str(nav.get("failure")))
 
 
+def wait_carry_owner_exit(exit_path, *, timeout_s=20.):
+    """Wait for normal trace flushing and ROS teardown after motion is complete.
+
+    The 2026-11-16 point-5 run exited successfully 8.256 s after release;
+    the former 8 s grace falsely rejected it. This does not accept a live
+    owner or change any motion/physical gate.
+    """
+    began=time.monotonic()
+    deadline=began+timeout_s
+    while not exit_path.exists() and time.monotonic()<deadline:
+        time.sleep(.05)
+    return {"confirmed":exit_path.exists(),"elapsed_wall_s":time.monotonic()-began,
+            "timeout_wall_s":timeout_s}
+
+
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
     """Run the existing grip owner and navigation adapter with a measured handoff."""
     import subprocess
@@ -1464,9 +1479,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="PASS" if placed.get("pass_result") else "FAIL"
             if not placed.get("pass_result"):result["failure"]={"gate":"PHYSICAL_TABLE_PLACEMENT","detail":placed}
     pg.write_new_text(output/"carry_release","NAVIGATION_CONTROLLER_FINISHED; PHYSICAL_PASS_REMAINS_SEPARATE\n")
-    deadline=time.monotonic()+8.
-    while not exit_path.exists() and time.monotonic()<deadline:time.sleep(.05)
-    if not exit_path.exists():raise RuntimeError("CARRY_OWNER_TERMINATION_UNCONFIRMED")
+    result["carry_owner_finalization"]=wait_carry_owner_exit(exit_path)
+    if not result["carry_owner_finalization"]["confirmed"]:
+        raise RuntimeError("CARRY_OWNER_TERMINATION_UNCONFIRMED")
     return owner_result()
 
 
