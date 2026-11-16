@@ -138,6 +138,36 @@ class SharedPreRaiseSourceBoundsTests(unittest.TestCase):
         self.assertFalse(w.pre_raise_target_in_source(0.,bounds))
         self.assertFalse(w.pre_raise_target_in_source(float('nan'),bounds))
 
+
+class ForearmRetargetTests(unittest.TestCase):
+    def run_retarget(self, process_pid=33):
+        import os
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            req=dict(schema='robotsim.forearm-pre-raise.v1',created_host_ns=10000000000,duration_s=3.,start_rad=-2.15,target_rad=-2.25,generation=1,process_pid=33,source_limits=[-2.356194,0.,14.6608],effort_cap_nm=20.)
+            row=dict(generation=1,process_pid=process_pid,host_monotonic_ns=13000000000,joints={'right_elbow_joint':dict(q=-2.25,qvel=0.,bias_force=0.)})
+            (root/'pre_raise_forearm_request.json').write_text(json.dumps(req))
+            (root/'native_latest.json').write_text(json.dumps(row))
+            owner=SimpleNamespace(forearm_request={**req,'created_host_ns':7000000000,'target_rad':-2.15},forearm_read_at=0.,forearm_report_at=0.)
+            real_open=open;real_replace=os.replace
+            def local_open(path,*args,**kwargs):return real_open(root/Path(path).name,*args,**kwargs)
+            def local_replace(a,b):return real_replace(root/Path(a).name,root/Path(b).name)
+            with patch('builtins.open',side_effect=local_open),patch.object(w.os,'replace',side_effect=local_replace),patch.object(w.time,'monotonic',return_value=13.),patch.object(w.time,'monotonic_ns',return_value=13000000000),patch.object(w,'GAINS',{'right_elbow_joint':(20.,2.)},create=True),patch.object(w,'position_mode_setpoint',side_effect=lambda desired,*args:desired):
+                target=w.override_forearm(owner,0.,'right_elbow_joint')
+            return target,json.loads((root/'pre_raise_forearm_feedback.json').read_text()),owner
+
+    def test_same_owner_accepts_new_screened_target_and_feedback_binds_request(self):
+        target,feedback,owner=self.run_retarget()
+        self.assertEqual(target,-2.25)
+        self.assertEqual(owner.forearm_request['target_rad'],-2.25)
+        self.assertEqual(feedback['request_created_host_ns'],10000000000)
+        self.assertEqual(feedback['target_rad'],-2.25)
+
+    def test_request_cannot_drive_a_different_physics_process(self):
+        with self.assertRaisesRegex(RuntimeError,'PRE_RAISE_FEEDBACK_STALE'):
+            self.run_retarget(process_pid=44)
+
 if __name__=="__main__":unittest.main()
 
 

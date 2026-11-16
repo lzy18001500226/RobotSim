@@ -175,18 +175,25 @@ def override_forearm(self,target,name):
     path='/workspace/evidence/pre_raise_forearm_request.json'
     if getattr(self,'forearm_request',None) is None:
         if not os.path.exists(path):return target
-        self.forearm_request=json.load(open(path));self.forearm_read_at=0.;self.forearm_report_at=0.
-    req=self.forearm_request;now=time.monotonic()
+        with open(path) as stream:self.forearm_request=json.load(stream)
+        self.forearm_read_at=0.;self.forearm_report_at=0.
+    now=time.monotonic()
+    if now-self.forearm_read_at>=.02:
+        with open(path) as stream:latest=json.load(stream)
+        if latest.get('created_host_ns',0)>self.forearm_request['created_host_ns']:
+            self.forearm_request=latest
+    req=self.forearm_request
     if req.get('schema')!='robotsim.forearm-pre-raise.v1' or req.get('duration_s')!=3. or not 0.<=(time.monotonic_ns()-req['created_host_ns'])*1e-9<=300.:raise RuntimeError('PRE_RAISE_REQUEST_INVALID')
     if now-self.forearm_read_at>=.02:
-        self.forearm_row=json.load(open('/workspace/evidence/native_latest.json'));self.forearm_read_at=now
+        with open('/workspace/evidence/native_latest.json') as stream:self.forearm_row=json.load(stream)
+        self.forearm_read_at=now
     row=self.forearm_row
-    if row['generation']!=req['generation'] or not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('PRE_RAISE_FEEDBACK_STALE')
+    if row['generation']!=req['generation'] or row['process_pid']!=req['process_pid'] or not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('PRE_RAISE_FEEDBACK_STALE')
     u=min(1.,max(0.,(time.monotonic_ns()-req['created_host_ns'])*1e-9/3.));u=u*u*(3.-2.*u)
     desired=req['start_rad']+u*(req['target_rad']-req['start_rad']);j=row['joints'][name];kp,kd=GAINS[name]
     command=position_mode_setpoint(desired,j['q'],j['qvel'],j['bias_force'],kp,kd,req['source_limits'],req['effort_cap_nm'])
     if now-self.forearm_report_at>=.10:
-        value=dict(owner_pid=os.getpid(),generation=row['generation'],source_host_ns=row['host_monotonic_ns'],fraction=u,actual_rad=j['q'],desired_rad=desired,published_rad=command,only_joint_command_changed=name)
+        value=dict(owner_pid=os.getpid(),request_created_host_ns=req['created_host_ns'],target_rad=req['target_rad'],generation=row['generation'],source_host_ns=row['host_monotonic_ns'],fraction=u,actual_rad=j['q'],desired_rad=desired,published_rad=command,only_joint_command_changed=name)
         with open('/workspace/evidence/pre_raise_forearm_feedback.tmp','w') as f:json.dump(value,f)
         os.replace('/workspace/evidence/pre_raise_forearm_feedback.tmp','/workspace/evidence/pre_raise_forearm_feedback.json');self.forearm_report_at=now
     return command
@@ -331,16 +338,18 @@ def pre_raise_forearm(output, proposal, limits, effort_cap, *, elbow_only=False)
     previous=output/'pre_raise_forearm_result.json'
     if previous.exists():
         old=json.loads(previous.read_text());actual=read_native(output/'native_latest.json');req=old.get('request',{})
-        if not old.get('pass_result') or req.get('generation')!=actual['generation'] or req.get('process_pid')!=actual['process_pid'] or req.get('target_rad')!=target:
-            raise RuntimeError('PRE_RAISE_REUSE_NOT_SAME_EPISODE_AND_TARGET')
+        if not old.get('pass_result') or req.get('generation')!=actual['generation'] or req.get('process_pid')!=actual['process_pid']:
+            raise RuntimeError('PRE_RAISE_REUSE_NOT_SAME_EPISODE')
         fault=physical_fault(actual,native_pose(actual),limits,robot_bodies=proposal['robot_bodies'],review_incidental_contacts=True)
         if fault:raise RuntimeError('PRE_RAISE_REUSE_PHYSICAL:'+fault)
         for c in actual['contacts']:
             if 'test_cylinder' in (c['body1'],c['body2']) and any(n in proposal['robot_bodies'] for n in (c['body1'],c['body2'])) and c['local_force_torque'][0]>.1:raise RuntimeError('PRE_RAISE_REUSE_UNINTENDED_OBJECT_CONTACT')
-        if abs(actual['joints'][name]['q']-target)>=.025 or abs(actual['joints'][name]['qvel'])>=.05:raise RuntimeError('PRE_RAISE_REUSE_NOT_HELD')
-        result=dict(pass_result=True,reused_source_valid_elbow=True,full_remaining_preparation_rechecked=not elbow_only,original_result=str(previous),source_host_ns=actual['host_monotonic_ns'],generation=actual['generation'],process_pid=actual['process_pid'])
-        pg.write_new_text(output/'pre_raise_forearm_revalidation.json',json.dumps(result,indent=2)+'\n')
-        return result
+        if req.get('target_rad')==target and abs(actual['joints'][name]['q']-target)<.025 and abs(actual['joints'][name]['qvel'])<.05:
+            result=dict(pass_result=True,reused_source_valid_elbow=True,full_remaining_preparation_rechecked=not elbow_only,original_result=str(previous),source_host_ns=actual['host_monotonic_ns'],generation=actual['generation'],process_pid=actual['process_pid'])
+            pg.write_new_text(output/'pre_raise_forearm_revalidation.json',json.dumps(result,indent=2)+'\n')
+            return result
+        # Fresh RGB-D may select another legal elbow posture. The full path
+        # was screened above: issue a new bounded request to the SAME owner.
     row=read_native(output/'native_latest.json');request=dict(schema='robotsim.forearm-pre-raise.v1',generation=row['generation'],process_pid=row['process_pid'],created_host_ns=time.monotonic_ns(),duration_s=3.,start_rad=row['joints'][name]['q'],target_rad=target,source_limits=limits[name],effort_cap_nm=effort_cap)
     temp=output/'pre_raise_forearm_request.tmp';pg.write_new_text(temp,json.dumps(request)+'\n');os.replace(temp,output/'pre_raise_forearm_request.json')
     deadline=time.monotonic()+12.
@@ -352,8 +361,10 @@ def pre_raise_forearm(output, proposal, limits, effort_cap, *, elbow_only=False)
         f=output/'pre_raise_forearm_feedback.json'
         if f.exists():
             value=json.loads(f.read_text())
-            if value['generation']==row['generation'] and value['fraction']>=1. and 0.<=(time.monotonic_ns()-value['source_host_ns'])*1e-9<=.20 and abs(actual['joints'][name]['q']-target)<.025 and abs(actual['joints'][name]['qvel'])<.05:
-                result=dict(pass_result=True,request=request,feedback=value,only_joint_command_changed=name);pg.write_new_text(output/'pre_raise_forearm_result.json',json.dumps(result,indent=2)+'\n');return result
+            if value.get('request_created_host_ns')==request['created_host_ns'] and value['generation']==row['generation'] and value['fraction']>=1. and 0.<=(time.monotonic_ns()-value['source_host_ns'])*1e-9<=.20 and abs(actual['joints'][name]['q']-target)<.025 and abs(actual['joints'][name]['qvel'])<.05:
+                result=dict(pass_result=True,request=request,feedback=value,only_joint_command_changed=name)
+                result_path=output/('pre_raise_forearm_result_'+str(request['created_host_ns'])+'.json') if previous.exists() else previous
+                pg.write_new_text(result_path,json.dumps(result,indent=2)+'\n');return result
         time.sleep(.02)
     raise RuntimeError('PRE_RAISE_ACTUAL_ELBOW_NOT_REACHED')
 
