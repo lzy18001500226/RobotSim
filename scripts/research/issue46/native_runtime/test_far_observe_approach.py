@@ -133,7 +133,7 @@ class FarApproachTests(unittest.TestCase):
         import ast,inspect
         from scripts.research.issue46.native_runtime import native_task_grasp_region as task
         tree=ast.parse(inspect.getsource(task.execute))
-        snapshot=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="make_stationary_snapshot")
+        snapshot=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="acquire_stationary_control_snapshot")
         failures=[n for n in ast.walk(tree) if isinstance(n,ast.ExceptHandler)]
         abort_nodes={id(n) for branch in failures for n in ast.walk(branch)}
         png=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=="save" and id(n) not in abort_nodes]

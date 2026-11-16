@@ -139,6 +139,26 @@ class OwnerFeedbackSafetyTests(unittest.TestCase):
         self.assertTrue(self.owner.mc_waist_abort_frozen)
         self.assertEqual(self.sent, [])
 
+    def test_stationary_delivery_does_not_require_unused_mc_relay(self):
+        self.owner.stationary_delivery_waist_target={n:0. for n in restore.WAIST}
+        with patch('os.path.exists',return_value=False),patch.object(restore,'await_fresh_waist_relay') as fresh:
+            restore.request_native_waist_handoff(self.owner)
+        fresh.assert_not_called()
+
+    def test_active_mc_ownership_still_requires_fresh_relay(self):
+        with patch('os.path.exists',return_value=False),patch.object(restore,'await_fresh_waist_relay',side_effect=RuntimeError('stale')) as fresh:
+            with self.assertRaisesRegex(RuntimeError,'stale'):
+                restore.request_native_waist_handoff(self.owner)
+        fresh.assert_called_once_with(self.owner)
+
+    def test_inactive_mc_gap_cannot_kill_stationary_waist_owner(self):
+        self.owner.stationary_delivery_waist_target={n:0. for n in restore.WAIST}
+        with patch('time.monotonic',return_value=15.):
+            restore.receive_owner_waist(self.owner,self.message)
+        self.assertEqual(self.sent,[])
+        self.assertEqual(self.owner.mc_waist_receipt,15.)
+        self.assertEqual(self.owner.stationary_delivery_waist_target,{n:0. for n in restore.WAIST})
+
     def test_executor_failure_is_a_control_loop_failure(self):
         self.owner.owner_feedback_errors = ['invalid source command']
         self.owner.owner_feedback_thread = S(is_alive=lambda: False)

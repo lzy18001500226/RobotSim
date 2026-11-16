@@ -62,6 +62,7 @@ def receive_owner_waist(owner, message):
     # otherwise this callback killed the executor before recovery was possible.
     with owner.owner_waist_lock:
         if (getattr(owner, "mc_waist_blend_started", None) is not None
+                and getattr(owner, "stationary_delivery_waist_target", None) is None
                 and not getattr(owner, "mc_waist_abort_frozen", False)
                 and time.monotonic() - owner.mc_waist_receipt > .25):
             raise RuntimeError("MC_WAIST_RELAY_GAP:"
@@ -267,7 +268,12 @@ def request_native_waist_handoff(self):
         with open('/workspace/evidence/native_waist_source_before_handoff.json','x') as f:json.dump(initial,f)
         self.mc_waist_blend_from={j.name:float(j.position) for j in self.last_waist_message.joints}
         self.mc_waist_blend_started=time.monotonic()
-    if getattr(self,"mc_waist_blend_started",None) is not None:await_fresh_waist_relay(self)
+    # Stationary delivery has explicitly reclaimed waist command ownership.
+    # Its source-checked native-state position hold no longer consumes MC
+    # commands; keep relay freshness mandatory only while that relay is active.
+    if (getattr(self,"mc_waist_blend_started",None) is not None
+            and getattr(self,"stationary_delivery_waist_target",None) is None):
+        await_fresh_waist_relay(self)
 
 def extend_existing_owner(script):
     """Same arm/hand/waist publishers; only the waist source changes after proof."""
