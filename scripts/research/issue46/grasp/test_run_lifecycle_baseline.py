@@ -45,6 +45,19 @@ class CompletionAndBaselineTests(unittest.TestCase):
             life.observe_episode(root,seen,destination=root)
             self.assertEqual(len(seen),1)
 
+    def test_controller_fault_surfaces_before_parent_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);seen=set()
+            (root/"native_tracking_target.json").write_text('{"pass":true}')
+            life.observe_episode(root,seen,destination=root)
+            self.assertFalse(seen)
+            (root/"native_tracking_target.json").write_text('{"pass":false,"failure":"IK_NOT_CONVERGED"}')
+            life.observe_episode(root,seen,destination=root)
+            event=json.loads((root/"controller_failure_recorded.json").read_text())
+            self.assertEqual(event["failure"],"IK_NOT_CONVERGED")
+            self.assertFalse(event["physics_stopped"])
+            self.assertFalse((root/"result.json").exists())
+
     def test_pinned_profile_and_strategy_with_current_guards(self):
         raw=json.loads((ROOT/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
         profile=baseline.task_route_profile(raw,fast_task_timing=True)

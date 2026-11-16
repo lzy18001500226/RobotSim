@@ -39,7 +39,9 @@ def forward_process(argv, *, cwd, log_path):
 def observe_episode(episode, seen, *, destination):
     """Separate route termination from episode termination and safe teardown."""
     episode = Path(episode)
-    for name, event in (("native_carry_route_result.json", "CARRY_ROUTE_FINISHED"),
+    for name, event in (("native_tracking_target.json", "CONTROLLER_FAILURE_RECORDED"),
+                        ("native_carry_route_result.json", "CARRY_ROUTE_FINISHED"),
+                        ("native_table_place_result.json", "PLACEMENT_CONTROLLER_FINISHED"),
                         ("task_execution_finished.json", "TASK_EXECUTION_FINISHED")):
         if event in seen:
             continue
@@ -47,6 +49,8 @@ def observe_episode(episode, seen, *, destination):
         try:
             result = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
+            continue
+        if event=="CONTROLLER_FAILURE_RECORDED" and result.get("pass") is not False:
             continue
         seen.add(event)
         publish(destination, event, episode=str(episode), source_path=str(path),
