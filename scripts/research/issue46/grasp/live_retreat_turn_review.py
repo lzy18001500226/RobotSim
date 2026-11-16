@@ -171,7 +171,11 @@ def main():
     try:
         with (out/"runtime.stdout").open("x") as log:
             native=subprocess.Popen(CMD,cwd=REPO,stdout=log,stderr=subprocess.STDOUT,env={**os.environ,"DISPLAY":":0","MUJOCO_GL":"glfw"})
-            deadline=time.monotonic()+(650. if args.bottle_height_m==.22 else 500.)
+            # Includes bootstrap and final trace/hash persistence as well as
+            # the physical episode. Point0 physically passed on 2026-11-16,
+            # but 650 s expired during evidence finalization. Route/motion
+            # budgets remain independent and unchanged.
+            deadline=time.monotonic()+(1000. if args.bottle_height_m==.22 else 500.)
             while native.poll() is None:
                 if time.monotonic()>deadline:raise RuntimeError("bounded full-episode runtime ended")
                 owned=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"))-old
