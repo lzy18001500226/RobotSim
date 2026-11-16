@@ -59,6 +59,17 @@ class ToolEstimatedLowReleaseTests(unittest.TestCase):
         self.assertIn("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED",code)
         self.assertNotIn(".qpos[",code)
 
+    def test_pinned_transport_profile_retains_current_release_policy(self):
+        import json
+        from pathlib import Path
+        from . import carry_baseline_78df5bd as baseline
+        from .native_task_grasp_region import task_route_profile
+        profile=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        for build in (baseline.task_route_profile,task_route_profile):
+            selected=build(profile,fast_task_timing=True)
+            self.assertTrue(p.low_release_enabled(selected))
+            self.assertEqual(selected["placement_release_height_m"],.02)
+
 class PlacementAxisTaskToleranceTests(unittest.TestCase):
     def test_legacy_default_and_explicit_subdegree_target(self):
         self.assertAlmostEqual(.2*__import__('math').sin(p.placement_axis_tolerance({})/2.),.001)

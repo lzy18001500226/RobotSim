@@ -135,6 +135,10 @@ def main():
         pg.write_new_text(task_profile/"config.json",json.dumps(task_route_profile(json.loads(profile.read_text()),fast_task_timing=args.fast_task_timing),indent=2)+"\n")
         profile=task_profile/"config.json"
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
+    if args.task_grasp_region and args.fast_task_timing:
+        from scripts.research.issue46.native_runtime.native_carry_placement import low_release_enabled
+        if not low_release_enabled(json.loads(profile.read_text())):
+            raise RuntimeError("CURRENT_LOW_RELEASE_TASK_POLICY_NOT_PROPAGATED_BEFORE_PHYSICS")
     CMD[CMD.index("--right-claw-kp")+1]=str(args.right_claw_kp)
     if args.to_delivery_table:
         CMD[CMD.index("--carry-compact-angular-cap")+1]=str(args.carry_angular_cap)

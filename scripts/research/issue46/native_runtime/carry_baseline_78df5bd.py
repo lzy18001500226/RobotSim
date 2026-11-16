@@ -44,6 +44,10 @@ def task_route_profile(profile, *, fast_task_timing=False):
     result = namespace["task_route_profile"](profile, fast_task_timing=True)
     # Keep the maintainer-approved diagnostic speed policy, not a model limit.
     result["planar_speed_warning_only"] = True
+    # This option restores transport only, never the historical placement
+    # task. Retain the separately approved current20mm low-release policy.
+    result["placement_release_policy"] = "TOOL_ESTIMATED_LOW_DROP"
+    result["placement_release_height_m"] = .02
     result["carry_baseline"] = provenance()
     return result
 
@@ -57,6 +61,7 @@ def provenance():
                           "current owner feedback and clock handling",
                           "carry_motion_handshake", "current physical_fault",
                           "current source joint and collision gates",
+                          "current tool-estimated10-30mm low-release placement",
                           "maintainer-approved planar-speed warning policy"],
         "not_a_whole_commit_replay": True,
     }
