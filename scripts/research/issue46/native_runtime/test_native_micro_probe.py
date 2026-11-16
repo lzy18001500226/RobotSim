@@ -24,6 +24,36 @@ def rows():
 
 
 class MicroTests(unittest.TestCase):
+
+    def test_delivery_heading_recovery_requires_actual_stop_and_shared_budget(self):
+        stopped=dict(pose=dict(x=.3,y=-1.,yaw=0.),sample_monotonic_s=20.)
+        for stop_state,remaining,mission in [
+            ({"pass":False},40.,{}),({"pass":True},24.,{}),
+            ({"pass":True},40.,{"delivery_heading_recovery_count":2})]:
+            with self.assertRaises(RuntimeError):
+                micro.delivery_heading_recovery(mission,stopped,[0.,1.],stop_state,remaining)
+
+    def test_delivery_heading_recovery_reuses_actual_pose_and_shortest_turn(self):
+        stopped=dict(pose=dict(x=.3,y=-1.,yaw=3.1),sample_monotonic_s=20.)
+        state=micro.delivery_heading_recovery({},stopped,[-1.,-1.1],{"pass":True},40.)
+        self.assertEqual(state["phase"],"TURN")
+        self.assertEqual(state["turn_origin_pose"],stopped["pose"])
+        self.assertLess(abs(state["target_unwrapped_yaw"]-3.1),.2)
+        self.assertEqual(state["delivery_heading_recovery_count"],1)
+        self.assertEqual(state["previous_source_s"],20.)
+        self.assertIsNone(state["delivery_forward_progress"])
+        self.assertFalse(state["turn_source_and_mode_observed"])
+
+    def test_delivery_heading_recovery_preserves_prior_stops_and_rejects_nan(self):
+        stopped=dict(pose=dict(x=0.,y=0.,yaw=0.),sample_monotonic_s=20.)
+        first=micro.delivery_heading_recovery({},stopped,[0.,1.],{"pass":True},90.)
+        second=micro.delivery_heading_recovery(first,stopped,[0.,1.],{"pass":True},60.)
+        self.assertEqual(len(second["delivery_heading_recoveries"]),2)
+        self.assertEqual(second["delivery_heading_recovery_count"],2)
+        stopped["pose"]["x"]=float("nan")
+        with self.assertRaises(RuntimeError):
+            micro.delivery_heading_recovery({},stopped,[0.,1.],{"pass":True},90.)
+
     def test_duplicates_never_refresh_last_unique_age(self):
         store={}
         self.assertTrue(micro.advancing_stamp(store,"odom",100,1.))

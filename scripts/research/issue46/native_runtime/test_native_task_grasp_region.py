@@ -137,7 +137,10 @@ class ClockRecoveryTests(unittest.TestCase):
         profile=json.loads((Path(task.__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
         cfg=task.task_route_profile(profile,fast_task_timing=True)
         self.assertLess(.4435328669681766,cfg["intermediate_turn_heading_tolerance_rad"])
-        self.assertLess(cfg["intermediate_turn_heading_tolerance_rad"],cfg["delivery_align_reentry_rad"])
+        # Coarse initial turns can request a physical-stop alignment recovery;
+        # the corrective turn finishes inside the tighter forward region.
+        self.assertLess(.40,cfg["delivery_align_reentry_rad"])
+        self.assertLess(cfg["delivery_align_reentry_rad"],cfg["intermediate_turn_heading_tolerance_rad"])
         self.assertEqual(cfg["delivery_tracking_angular_cap_rad_s"],.20)
         self.assertEqual(profile["intermediate_turn_heading_tolerance_rad"],.40)
 

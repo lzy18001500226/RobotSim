@@ -215,7 +215,7 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Measured transit stopped at31deg bearing error with positive forward
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.
-        result["delivery_align_reentry_rad"]=.75
+        result["delivery_align_reentry_rad"]=.45
         # A stopped turn is an intermediate navigation pose, not placement IK.
         # Saved25.4deg error has a collision-clear nominal forward correction.
         # Allow34.4deg here, still inside the existing43deg DRIVE region.

@@ -225,13 +225,26 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
     import os,json,time
     from pathlib import Path
     name=cfg.get("permit_filename","carry_transit_permit.json")
-    if name not in ("carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json","carry_transit_turn_refinement_1.json",*[f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)],*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)]):raise ValueError("CARRY_PERMIT_PATH")
+    recovery_names=([f"carry_transit_heading_recovery_{i}.json" for i in (1,2)]
+                    +[f"carry_transit_delivery_after_alignment_{i}.json" for i in (1,2)]
+                    +[f"carry_transit_recovery_turn_refinement_{i}.json" for i in (1,2)])
+    if name not in (*recovery_names,"carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json","carry_transit_turn_refinement_1.json",*[f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)],*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)]):raise ValueError("CARRY_PERMIT_PATH")
     path=Path(evidence)/name;now=time.monotonic_ns()
     if phase=="TRANSIT":
         if record is not None or path.exists():raise RuntimeError("CARRY_TRANSIT_REARM_FORBIDDEN")
         seconds=float(cfg["timeout_s"])
         limit=180. if cfg.get("delivery") and cfg.get("straight_retreat_turn") and cfg.get("away_1m") and cfg.get("transit_policy_050") else 90.
         if not 5.<=seconds<=limit:raise ValueError("CARRY_TRANSIT_TIMEOUT")
+        if name in recovery_names:
+            previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
+            gate=("delivery_alignment_stop_pass" if name.startswith("carry_transit_heading_recovery_")
+                  else "turn_refinement_stop_pass" if name.startswith("carry_transit_recovery_turn_refinement_")
+                  else "delivery_turn_stop_pass")
+            if (not cfg.get("delivery") or cfg.get(gate) is not True
+                    or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"]
+                    or previous["generation"]!=native_row["generation"]
+                    or cfg.get("absolute_command_deadline_ns")!=previous["command_deadline_ns"]):
+                raise RuntimeError("DELIVERY_HEADING_RECOVERY_REARM_NOT_QUALIFIED")
         if name=="carry_transit_delivery_permit.json":
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
             if not cfg.get("delivery") or cfg.get("delivery_turn_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
@@ -1327,6 +1340,39 @@ def measured_turn_refinement(mission, stopped, bearing, stop):
     return dict(turn_refinement_count=1,turn_refinement_stops=history,turn_observed_stop_delta_rad=delta,unwrapped_yaw=unwrapped,previous_yaw=pose['yaw'],previous_source_s=stopped['sample_monotonic_s'],target_unwrapped_yaw=unwrapped+error,away_heading_rad=bearing,turn_source_and_mode_observed=False,turn_yaw_history=[])
 
 
+
+def delivery_heading_recovery(mission, stopped, goal, qualified_stop, remaining_s):
+    """Resume the existing measured TURN phase after a real delivery stop.
+
+    Two recoveries share the original route deadline and seven-interval budget. A policy steering
+    shortfall never authorizes motion on a stale pose or an unqualified stop.
+    """
+    if qualified_stop.get("pass") is not True:
+        raise RuntimeError("DELIVERY_HEADING_RECOVERY_STOP_NOT_QUALIFIED")
+    count=mission.get("delivery_heading_recovery_count",0)+1
+    if count>2 or remaining_s<25.:
+        raise RuntimeError("DELIVERY_HEADING_RECOVERY_BUDGET_EXHAUSTED")
+    pose=stopped["pose"];stamp=stopped["sample_monotonic_s"]
+    if not all(math.isfinite(v) for v in (pose["x"],pose["y"],pose["yaw"],stamp,*goal)):
+        raise RuntimeError("DELIVERY_HEADING_RECOVERY_NONFINITE_POSE")
+    bearing=math.atan2(goal[1]-pose["y"],goal[0]-pose["x"])
+    error=(bearing-pose["yaw"]+math.pi)%(2*math.pi)-math.pi
+    history=list(mission.get("delivery_heading_recoveries",[]))
+    history.append(dict(index=count,stopped_pose=dict(pose),
+                        target_bearing_rad=bearing,heading_error_rad=error,
+                        composite_stop_pass=True))
+    return dict(phase="TURN",delivery_heading_recovery_count=count,
+        delivery_heading_recoveries=history,delivery_heading_recovery_active=True,
+        turn_origin_pose=dict(pose),unwrapped_yaw=pose["yaw"],
+        previous_yaw=pose["yaw"],previous_source_s=stamp,
+        target_unwrapped_yaw=pose["yaw"]+error,turn_start_source_s=stamp,
+        away_heading_rad=bearing,turn_yaw_history=[],
+        turn_source_and_mode_observed=False,turn_refinement_count=0,
+        turn_observed_stop_delta_rad=0.,turn_max_center_excursion_m=0.,
+        turn_centre_recovery=False,delivery_alignment_state=None,
+        delivery_forward_progress=None)
+
+
 def recovered_turn_stop(mission, row, commands, now, heading_tolerance):
     """Reuse a measured recovery stop only before any new nonzero command."""
     cached=mission.get("clock_recovery_turn_stop")
@@ -2137,13 +2183,17 @@ def run_carry_navigation(n,contract):
                         heading_tolerance=float(cfg["delivery"].get("intermediate_turn_heading_tolerance_rad",.12)) if cfg.get("delivery") else .12
                         mission["intermediate_heading_tolerance_rad"]=heading_tolerance
                         mission["legacy_strict_heading012_pass"]=abs(heading_error)<=.12
+                        if mission.get("delivery_heading_recovery_active"):
+                            heading_tolerance=min(heading_tolerance,.40)
                         if abs(heading_error)>heading_tolerance:
-                            if not (cfg.get('delivery') or {}).get('one_measured_turn_refinement') or mission.get('turn_refinement_count',0)>=1:raise RuntimeError("AWAY_TURN_STOP_HEADING_NOT_QUALIFIED")
+                            refinement_enabled=((cfg.get('delivery') or {}).get('one_measured_turn_refinement')
+                                                or mission.get("delivery_heading_recovery_active"))
+                            if not refinement_enabled or mission.get('turn_refinement_count',0)>=1:raise RuntimeError("AWAY_TURN_STOP_HEADING_NOT_QUALIFIED")
                             new_bearing,_=table_turn_target(stopped['pose'],cfg['delivery']['base_goal_world_xy'])
                             mission.update(measured_turn_refinement(mission,stopped,new_bearing,result['turn_stop_composite']))
                             transit_permit=carry_transit_phase(transit_permit,'REVOKED',cfg,n.latest_row)
                             closed_permits.append(transit_permit)
-                            cfg['previous_permit_filename']=cfg['permit_filename'];cfg['permit_filename']='carry_transit_turn_refinement_1.json';cfg['turn_refinement_stop_pass']=True
+                            cfg['previous_permit_filename']=cfg['permit_filename'];cfg['permit_filename']=('carry_transit_recovery_turn_refinement_'+str(mission["delivery_heading_recovery_count"])+'.json' if mission.get("delivery_heading_recovery_count") else 'carry_transit_turn_refinement_1.json');cfg['turn_refinement_stop_pass']=True
                             transit_permit=carry_transit_phase(None,'TRANSIT',cfg,n.latest_row)
                             n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                             progress_state=None;progress_best=None;progress_at=activation_started
@@ -2182,7 +2232,9 @@ def run_carry_navigation(n,contract):
                                 transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                                 closed_permits.append(transit_permit);transit_permit=None
                                 cfg["previous_permit_filename"]=cfg["permit_filename"]
-                                cfg["permit_filename"]="carry_transit_delivery_permit.json";cfg["delivery_turn_stop_pass"]=True
+                                recovery_index=mission.get("delivery_heading_recovery_count",0)
+                                cfg["permit_filename"]=("carry_transit_delivery_after_alignment_"+str(recovery_index)+".json" if recovery_index else "carry_transit_delivery_permit.json");cfg["delivery_turn_stop_pass"]=True
+                                mission["delivery_heading_recovery_active"]=False
                                 egress=float(cfg["delivery"].get("post_turn_egress_m",0.))
                                 if egress:
                                     goal=[stopped["pose"]["x"]+(egress+.10)*math.cos(bearing),stopped["pose"]["y"]+(egress+.10)*math.sin(bearing)]
@@ -2353,7 +2405,29 @@ def run_carry_navigation(n,contract):
                             result['goal_triggered_stop']=True;mission['delivery_stop_trigger_pose']=p
                             mission['terminal_heading_stop_request']=terminal_stop
                             break
-                        raise RuntimeError("DELIVERY_STEP_HEADING_REQUIRES_STOP:"+str(output.yaw_error_rad))
+                        # STEP steering has a measured loaded response shortfall.
+                        # Stop physically, then reuse the existing DEFAULT turn;
+                        # neither reverse-drive to the table nor abort on yaw alone.
+                        n.deadline_zero();n.stop_started=True
+                        transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        stand_transition()
+                        heading_stop=n.observe(stop_wait_s,baseline=baseline,require_stop=True)
+                        result.setdefault("delivery_heading_stop_composites",[]).append(heading_stop)
+                        stopped=stationary_carry_sample(n,baseline,until,heading_stop)
+                        recovery=delivery_heading_recovery(mission,stopped,goal,heading_stop,until-time.monotonic())
+                        transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+                        closed_permits.append(transit_permit);transit_permit=None
+                        cfg["previous_permit_filename"]=cfg["permit_filename"]
+                        cfg["permit_filename"]="carry_transit_heading_recovery_"+str(recovery["delivery_heading_recovery_count"])+".json"
+                        cfg["delivery_alignment_stop_pass"]=True
+                        cfg["motion_mode"]="LOCOMOTION_DEFAULT"
+                        mission.pop("clock_recovery_turn_stop",None)
+                        mission.update(recovery);bearing=mission["away_heading_rad"]
+                        transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                        n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
+                        progress_state=None;progress_best=None;progress_at=activation_started
+                        arm_carry_motion(n,baseline,until,heading_stop)
+                        continue
                     if output.state==NavState.DRIVE and mission.get("delivery_alignment_state") is not None:
                         # A turn is physically stopped before forward reactivation.
                         # Do not carry the pivot's transient base motion into DRIVE.
