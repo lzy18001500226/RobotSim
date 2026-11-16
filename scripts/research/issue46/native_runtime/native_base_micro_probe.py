@@ -2065,6 +2065,11 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                         closed_permits.append(transit_permit);transit_permit=None
                         cfg["motion_mode"]=cfg.get("inplace_motion_mode","LOCOMOTION_STEP")
+                        if cfg["motion_mode"]=="LOCOMOTION_DEFAULT":
+                            # SD ends the prior gait. Explicitly select the
+                            # installed turn policy before its next nonzero
+                            # input, as at normal pickup and heading recovery.
+                            prepare_delivery_turn_mode(n,cfg,result["retreat_stop_composite"])
                         state=stopped;prepared=cfg["motion_mode"]=="LOCOMOTION_DEFAULT" or bool(cfg.get("native_step_all_transit"))
                         mission["turn_mode"]=cfg["motion_mode"]
                         if cfg["motion_mode"]=="LOCOMOTION_STEP":
