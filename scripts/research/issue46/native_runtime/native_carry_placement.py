@@ -46,7 +46,11 @@ def evaluate_placed_hold(rows, request):
         if valid:tail.append(item)
         else:tail=[]
         if tail:
-            while len(tail)>1 and item["sim_time_s"]-tail[1]["sim_time_s"]>=2.:tail.pop(0)
+            # Keep both acceptance requirements achievable at variable sampling
+            # rates: >=25 distinct valid samples AND >=2 simulated seconds.
+            # Trimming unconditionally to two seconds made an otherwise valid
+            # 7Hz support trace incapable of ever retaining 25 samples.
+            while len(tail)>25 and item["sim_time_s"]-tail[1]["sim_time_s"]>=2.:tail.pop(0)
         last=item
     span=tail[-1]["sim_time_s"]-tail[0]["sim_time_s"] if len(tail)>1 else 0.
     return dict(pass_result=len(tail)>=25 and span>=2.,measured_hold_sim_s=span,unique_samples=len(tail),

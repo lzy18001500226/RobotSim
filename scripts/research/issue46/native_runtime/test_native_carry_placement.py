@@ -66,6 +66,29 @@ class PlacementTests(unittest.TestCase):
         rows=[self.row(i) for i in range(52)]
         for r in rows:r["bodies"]["test_cylinder"]["position_m"][1]=1.30
         self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+
+    def test_slower_valid_sampling_preserves25_samples_and_two_seconds(self):
+        rows=[self.row(i) for i in range(35)]
+        for i,row in enumerate(rows):
+            row['host_monotonic_ns']=1000000000+i*140000000
+            row['sim_time_s']=10.+i*.14
+        result=p.evaluate_placed_hold(rows,self.request())
+        self.assertTrue(result['pass_result'])
+        self.assertEqual(result['unique_samples'],25)
+        self.assertAlmostEqual(result['measured_hold_sim_s'],24*.14)
+        self.assertFalse(p.evaluate_placed_hold(rows[:24],self.request())['pass_result'])
+
+    def test_slower_sampling_still_rejects_gaps_and_support_loss(self):
+        for fault in ('gap','support'):
+            rows=[self.row(i) for i in range(35)]
+            for i,row in enumerate(rows):
+                row['host_monotonic_ns']=1000000000+i*140000000
+                row['sim_time_s']=10.+i*.14
+            if fault=='gap':
+                rows[-1]['host_monotonic_ns']+=201000000
+            else:
+                rows[-1]['contacts'][0]['signed_bottle_world_z_force_n']=0.
+            self.assertFalse(p.evaluate_placed_hold(rows,self.request())['pass_result'])
     def test_opt_in_preserves_the_existing_owner_and_has_no_motion_or_pose_write_path(self):
         from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
         normal=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.))
