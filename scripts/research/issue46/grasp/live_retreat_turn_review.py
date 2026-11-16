@@ -65,7 +65,11 @@ def launch_first_person_observer(episode):
     return observer
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--visual-stance-adjustment",action="store_true",help="known-table dock then RGBD-directed unloaded native stance correction");parser.add_argument("--initial-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="scenario initialization only, never a control target");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));parser.add_argument("--grasp-only",action="store_true",help="stop after measured grasp/lift/hold, no transfer");parser.add_argument("--far-observe-approach",action="store_true");parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference");parser.add_argument("--fast-task-timing",action="store_true",help="research2s closure and2sim-second load hold; physical gates unchanged");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--visual-stance-adjustment",action="store_true",help="known-table dock then RGBD-directed unloaded native stance correction");parser.add_argument("--initial-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="scenario initialization only, never a control target");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));parser.add_argument("--grasp-only",action="store_true",help="stop after measured grasp/lift/hold, no transfer");parser.add_argument("--far-observe-approach",action="store_true");parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference");parser.add_argument("--fast-task-timing",action="store_true",help="research2s closure and2sim-second load hold; physical gates unchanged");parser.add_argument("--carry-baseline-78df5bd",action="store_true");args=parser.parse_args()
+    if args.carry_baseline_78df5bd:
+        if not (args.from_start and args.task_grasp_region and args.fast_task_timing and args.to_delivery_table):
+            raise ValueError("baseline requires complete START H220 fast task")
+        CMD.append("--carry-baseline-78df5bd")
     if args.fast_task_timing:
         if not args.task_grasp_region or args.bottle_height_m!=.22:raise ValueError("fast timing requires H220 RGBD task")
         CMD.append("--fast-task-timing")
@@ -121,8 +125,12 @@ def main():
     if args.far_observe_approach:
         if not args.from_start or not args.task_grasp_region:raise ValueError("far observation requires full START RGBD task")
         CMD.append("--far-observe-approach")
+    if args.carry_baseline_78df5bd:
+        CMD[CMD.index("--carry-timeout-s")+1]="90"
     if args.task_grasp_region:
         from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
+        if args.carry_baseline_78df5bd:
+            from scripts.research.issue46.native_runtime.carry_baseline_78df5bd import task_route_profile
         task_profile=pg.create_unique_output_directory(ROOT,prefix="rgbd-task-short-turn-route").native_path
         pg.write_new_text(task_profile/"config.json",json.dumps(task_route_profile(json.loads(profile.read_text()),fast_task_timing=args.fast_task_timing),indent=2)+"\n")
         profile=task_profile/"config.json"
@@ -142,7 +150,7 @@ def main():
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
     if args.to_delivery_table:
         from scripts.research.issue46.native_runtime.native_base_micro_probe import build_carry_route_script
-        route_check=build_carry_route_script(None,{},[],carry_pid=1,timeout_s=float(CMD[CMD.index("--carry-timeout-s")+1]) if "--carry-timeout-s" in CMD else 90.,transit_policy_050=True,away_1m=True,straight_retreat_turn=True,compact_turn=True,gait_prepare=("--carry-gait-prepare" in CMD),transit_command_speed=float(CMD[CMD.index("--carry-transit-command-speed")+1]),compact_centre_feedback=True,release_source_on_stop=True,compact_angular_cap=args.carry_angular_cap,delivery=json.loads(profile.read_text()),vendor_transition_table=True)
+        route_check=build_carry_route_script(None,{},[],carry_pid=1,timeout_s=float(CMD[CMD.index("--carry-timeout-s")+1]) if "--carry-timeout-s" in CMD else 90.,transit_policy_050=True,away_1m=True,straight_retreat_turn=True,compact_turn=True,gait_prepare=("--carry-gait-prepare" in CMD),transit_command_speed=float(CMD[CMD.index("--carry-transit-command-speed")+1]),compact_centre_feedback=True,release_source_on_stop=True,compact_angular_cap=args.carry_angular_cap,delivery=json.loads(profile.read_text()),vendor_transition_table=True,baseline_78df5bd=args.carry_baseline_78df5bd)
         compile(route_check,'prephysics_route_configuration','exec')
     if args.check_only:
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return
@@ -153,6 +161,8 @@ def main():
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
     attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False;camera_endpoint_printed=False
     (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
+    from scripts.research.issue46.grasp.run_lifecycle import observe_episode,publish
+    lifecycle_seen=set()
     print("ATTEMPT",attempt,"LOG",out,flush=True)
     try:
         with (out/"runtime.stdout").open("x") as log:
@@ -163,6 +173,7 @@ def main():
                 owned=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"))-old
                 if len(owned)>1:raise RuntimeError("ambiguous live episode")
                 if owned:episode=next(iter(owned))
+                if episode:observe_episode(episode,lifecycle_seen,destination=out)
                 copy_readonly_view_state(episode)
                 if args.task_grasp_region and not args.no_viewer and episode and not camera_started and (episode/"invocation.json").exists() and review_source_ready(episode):
                     camera_started=True
@@ -193,6 +204,7 @@ def main():
                     closed=True;print("REVIEW_CLOSED_REQUESTED_SAFE_STOP",flush=True)
                 time.sleep(.05)
     finally:
+        if episode:observe_episode(episode,lifecycle_seen,destination=out)
         if native and native.poll() is None:
             native.terminate()
             try:native.wait(timeout=6)
@@ -208,15 +220,16 @@ def main():
         for d in owned:
             copy_readonly_view_state(d)
             if not (d/"live_review_finished.json").exists():(d/"live_review_finished.json").write_text(json.dumps(dict(physics_ended=True,review_only=not args.to_delivery_table)))
+        publish(out,"PHYSICS_STOPPED",episodes=[str(x) for x in owned],physics_stopped=True,cleanup_complete=True)
         (out/"execution.json").write_text(json.dumps(dict(attempt_id=attempt,returncode=None if native is None else native.returncode,episodes=[str(x) for x in owned],viewer_started=viewer_started,review_only=not args.to_delivery_table)))
     if episode and (episode/"result.json").exists() and (episode/"native_latest.json").exists():
         capture_script=REPO/"scripts/research/issue46/grasp/capture_native_run_end.py"
-        try:
-            captured=subprocess.run([sys.executable,str(capture_script),"--run",str(episode)],cwd=REPO,text=True,capture_output=True,timeout=30.,env={**os.environ,"MUJOCO_GL":"egl","MESA_D3D12_DEFAULT_ADAPTER_NAME":"NVIDIA"})
-            pg.write_new_text(out/"end_capture.stdout",captured.stdout+captured.stderr)
-            if captured.returncode==0:print("END_CAPTURE "+captured.stdout.strip().splitlines()[-1],flush=True)
-            else:print("END_CAPTURE_FAILED "+captured.stderr[-600:],flush=True)
-        except subprocess.TimeoutExpired:print("END_CAPTURE_TIMEOUT; physics result preserved",flush=True)
+        # Physics is already stopped. Rendering is a separate, read-only child;
+        # it must not delay result delivery or the next analysis.
+        with (out/"end_capture.stdout").open("x") as capture_log:
+            captured=subprocess.Popen([sys.executable,str(capture_script),"--run",str(episode)],cwd=REPO,stdout=capture_log,stderr=subprocess.STDOUT,start_new_session=True,env={**os.environ,"MUJOCO_GL":"egl","MESA_D3D12_DEFAULT_ADAPTER_NAME":"NVIDIA"})
+        pg.write_new_text(out/"end_capture_process.json",json.dumps(dict(pid=captured.pid,log=str(out/"end_capture.stdout"),scope="READ_ONLY_POSTPROCESS_NO_PHYSICS")))
+        print("END_CAPTURE_BACKGROUND",captured.pid,str(out/"end_capture.stdout"),flush=True)
     if native is not None and native.returncode!=0:
         print("STARTUP_OR_RUNTIME_FAILED",native.returncode,flush=True)
         print((out/"runtime.stdout").read_text()[-6000:],flush=True)

@@ -1329,7 +1329,10 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         result["carry_route_profile"]["delivery_forward_cap_m_s"]=float(profile.get("delivery_forward_command_m_s",.20))
         result["carry_route_profile"]["active_transit_and_bounded_braking_root_cap_m_s"]=float(profile.get("transit_root_cap_m_s",.50))
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=dict(json.loads(args.carry_delivery_config.read_text()),prepare_default_after_pickup=bool(args.execute_pickup_navigation)) if getattr(args,"carry_delivery_config",None) is not None else None,vendor_transition_table=getattr(args,"carry_vendor_transition_table",False)))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=dict(json.loads(args.carry_delivery_config.read_text()),prepare_default_after_pickup=bool(args.execute_pickup_navigation)) if getattr(args,"carry_delivery_config",None) is not None else None,vendor_transition_table=getattr(args,"carry_vendor_transition_table",False),baseline_78df5bd=getattr(args,"carry_baseline_78df5bd",False)))
+    if getattr(args,"carry_baseline_78df5bd",False):
+        from scripts.research.issue46.native_runtime.carry_baseline_78df5bd import provenance
+        result["carry_baseline"]=provenance()
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1542,6 +1545,7 @@ def main() -> None:
     parser.add_argument("--carry-compact-centre-feedback",action="store_true",help="existing world-centre P feedback, <=.20m/s norm, during compact turn only")
     parser.add_argument("--carry-vendor-transition-table",action="store_true",help="comparison with unchanged delivered SD/LD action table; no extra500ms rules")
     parser.add_argument("--carry-delivery-config",type=Path,help="explicit approved two-table transfer task; not the legacy one-metre test")
+    parser.add_argument("--carry-baseline-78df5bd",action="store_true",help="pinned successful carry strategy, retaining current IO and physical guards")
     parser.add_argument("--carry-gait-prepare",action="store_true",help="bounded native yaw gait wakeup; require measured alternating foot loads before retreat")
     parser.add_argument("--carry-inplace-centre-hold",action="store_true")
     parser.add_argument("--carry-compact-turn",action="store_true",help="SIMULATION_ONLY .30rad/s pure yaw; .30m active radius / .20m final centre bound")
@@ -3002,6 +3006,11 @@ def main() -> None:
         if result.get("failure") is not None:result.setdefault("secondary_failures",[]).append(observed_failure)
         else:result["failure"]=observed_failure
     finally:
+        from scripts.research.issue46.grasp.run_lifecycle import publish
+        publish(output,"TASK_EXECUTION_FINISHED",
+                status="FAIL" if result.get("failure") else "EXECUTION_FINISHED_PENDING_FINAL_EVIDENCE",
+                gates=dict(result["gates"]),failure=result.get("failure"),
+                physics_stopped=False,cleanup_complete=False)
         if args.native_circle_tracking:
             marker=output/'native_tracking_target.stop'
             if not marker.exists():pg.write_new_text(marker,'stop before native runtime teardown\n')

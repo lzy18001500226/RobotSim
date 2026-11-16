@@ -43,7 +43,7 @@ def summarize_transfer(result):
     return record
 
 
-def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False,complete_transfer=False):
+def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False,complete_transfer=False,baseline_78df5bd=False):
     if complete_transfer and not far_observe:raise ValueError("complete transfer requires full START far RGBD task")
     output=output.resolve(strict=True)
     if not output.is_relative_to(base.REVIEW_ROOT.resolve(strict=True)) or not (output/"task.json").is_file():raise ValueError("owned governed task root required")
@@ -57,6 +57,7 @@ def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False
     if complete_transfer:argv.remove("--grasp-only")
     if far_observe:argv.extend(["--from-start","--far-observe-approach"])
     if fast_task_timing:argv.append("--fast-task-timing")
+    if baseline_78df5bd:argv.append("--carry-baseline-78df5bd")
     if not visible:argv.append("--no-viewer")
     identity=base.source_identity()
     import tarfile
@@ -64,8 +65,8 @@ def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False
         for rel in identity["files"]:archive.add(REPO/rel,arcname=rel)
     pg.write_new_text(case/"command.json",json.dumps({"argv":argv,"cwd":str(REPO),"source":identity,"initialization":point,"scope":"FULL_START_FAR_RGBD_COMMON_TRANSFER_PLACE" if complete_transfer else "FULL_START_FAR_RGBD_DIAGONAL_GRASP_ONLY" if far_observe else "GRASP_ONLY_NO_START_NAVIGATION_OR_TRANSFER"},indent=2)+"\n")
     began=time.monotonic()
-    with (case/"wrapper.stdout").open("x") as stream:
-        process=subprocess.run(argv,cwd=REPO,stdout=stream,stderr=subprocess.STDOUT)
+    from scripts.research.issue46.grasp.run_lifecycle import forward_process
+    returncode=forward_process(argv,cwd=REPO,log_path=case/"wrapper.stdout")
     try:
         wrapper,episode=base.owned_episode((case/"wrapper.stdout").read_text())
         result=json.loads((episode/"result.json").read_text());overlay=json.loads(Path(result["claw_control_overlay"]["path"]).read_text())
@@ -85,8 +86,8 @@ def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False
     if after["branch"]!=identity["branch"] or after["head"]!=identity["head"] or changed or any(not Path(p).name.startswith("test_") for p in extra):
         record.update(status="BLOCKED",failure="SOURCE_CHANGED_DURING_RUN")
     record["source_verification"]={"changed_original_files":changed,"extra_offline_tests":sorted(extra)}
-    if process.returncode and record["status"]=="PASS":record.update(status="BLOCKED",failure="RUNNER_EXIT_NONZERO")
-    record.update(id=index,returncode=process.returncode,wall_s=time.monotonic()-began,case=str(case))
+    if returncode and record["status"]=="PASS":record.update(status="BLOCKED",failure="RUNNER_EXIT_NONZERO")
+    record.update(id=index,returncode=returncode,wall_s=time.monotonic()-began,case=str(case))
     pg.write_new_text(case/"result.json",json.dumps(record,indent=2)+"\n");pg.write_artifact_manifest(case)
     matrix_path=output/("transfer_matrix.json" if complete_transfer else "matrix.json")
     matrix=json.loads(matrix_path.read_text()) if matrix_path.exists() else {"scope":"UNIFORM_FULL_START_COMMON_TRANSFER_PLACE" if complete_transfer else "11 independent 200g physical grasps, not complete transfers","cases":[{"id":i,"status":"NOT_RUN"} for i in range(11)],"attempts":[]}
@@ -96,7 +97,7 @@ def run_case(output,index,visible=False,far_observe=False,fast_task_timing=False
     return record
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument("--output-dir",type=Path,required=True);p.add_argument("--case",type=int,choices=range(11),required=True);p.add_argument("--visible",action="store_true");p.add_argument("--far-observe",action="store_true");p.add_argument("--fast-task-timing",action="store_true");p.add_argument("--complete-transfer",action="store_true");a=p.parse_args()
-    r=run_case(a.output_dir,a.case,a.visible,a.far_observe,a.fast_task_timing,a.complete_transfer)
+    p=argparse.ArgumentParser();p.add_argument("--output-dir",type=Path,required=True);p.add_argument("--case",type=int,choices=range(11),required=True);p.add_argument("--visible",action="store_true");p.add_argument("--far-observe",action="store_true");p.add_argument("--fast-task-timing",action="store_true");p.add_argument("--complete-transfer",action="store_true");p.add_argument("--carry-baseline-78df5bd",action="store_true");a=p.parse_args()
+    r=run_case(a.output_dir,a.case,a.visible,a.far_observe,a.fast_task_timing,a.complete_transfer,a.carry_baseline_78df5bd)
     if r["status"]!="PASS":raise SystemExit(1)
 if __name__=="__main__":main()
