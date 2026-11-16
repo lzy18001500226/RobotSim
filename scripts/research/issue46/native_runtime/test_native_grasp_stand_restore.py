@@ -91,12 +91,21 @@ class OwnerFeedbackSafetyTests(unittest.TestCase):
         self.owner.owner_waist_lock = threading.RLock()
         self.owner.mc_waist_receipt = 14.
 
-    def test_recovered_callback_cannot_hide_a_substantial_relay_gap(self):
-        with patch('time.monotonic', return_value=14.251):
-            with self.assertRaisesRegex(RuntimeError, 'MC_WAIST_RELAY_GAP'):
-                restore.receive_owner_waist(self.owner, self.message)
-        self.assertEqual(self.sent, [])
-        self.assertEqual(self.owner.mc_waist_receipt, 14.)
+    def test_fresh_callback_recovers_and_records_the_actual271ms_gap(self):
+        with patch('time.monotonic', return_value=14.271):
+            restore.receive_owner_waist(self.owner, self.message)
+        self.assertEqual(len(self.sent),1)
+        self.assertEqual(self.owner.mc_waist_receipt,14.271)
+        self.assertAlmostEqual(self.owner.mc_waist_last_recovered_gap_s,.271)
+        self.assertEqual(self.owner.mc_waist_recovered_gap_count,1)
+
+    def test_old_packet_after_gap_cannot_refresh_or_publish(self):
+        self.owner.get_clock=lambda:S(now=lambda:S(nanoseconds=2000000000))
+        with patch('time.monotonic', return_value=14.5):
+            restore.receive_owner_waist(self.owner, self.message)
+        self.assertEqual(self.sent,[])
+        self.assertEqual(self.owner.mc_waist_receipt,14.)
+        self.assertFalse(hasattr(self.owner,"mc_waist_last_recovered_gap_s"))
 
     def test_fresh_callback_can_recover_the_recorded225ms_gap(self):
         with patch("time.monotonic",return_value=14.225):

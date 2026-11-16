@@ -56,18 +56,17 @@ def stop_owner_feedback(owner):
 
 
 def receive_owner_waist(owner, message):
-    # Serialize abort freeze with a possible in-flight waist publication.
-    # Preserve200ms source-message age validation in receive_native_waist.
-    # Allow its existing50ms recovery window to receive a genuinely fresh packet;
-    # otherwise this callback killed the executor before recovery was possible.
+    # Judge the packet being received, not a past scheduling interruption.
+    # receive_native_waist still rejects stale/repeated stamps and invalid or
+    # out-of-range source commands. Record recovered gaps without killing the
+    # independent executor before it can deliver the fresh packet.
     with owner.owner_waist_lock:
-        if (getattr(owner, "mc_waist_blend_started", None) is not None
-                and getattr(owner, "stationary_delivery_waist_target", None) is None
-                and not getattr(owner, "mc_waist_abort_frozen", False)
-                and time.monotonic() - owner.mc_waist_receipt > .25):
-            raise RuntimeError("MC_WAIST_RELAY_GAP:"
-                               + str(time.monotonic() - owner.mc_waist_receipt))
+        previous=getattr(owner,"mc_waist_receipt",None)
         receive_native_waist(owner, message)
+        current=getattr(owner,"mc_waist_receipt",None)
+        if previous is not None and current is not None and current-previous>.25:
+            owner.mc_waist_last_recovered_gap_s=current-previous
+            owner.mc_waist_recovered_gap_count=getattr(owner,"mc_waist_recovered_gap_count",0)+1
 
 
 def await_fresh_waist_relay(owner):
@@ -366,7 +365,13 @@ def restore_postured_hold(run,container,environment,output,ready,result):
     while time.monotonic()<deadline:
         read_fresh_native_row(output/"native_latest.json")
         health=json.loads((output/"carry_heartbeat.json").read_text())
-        if not health.get("healthy") or health.get("pid")!=ready["pid"] or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("RESTORE_GRIP_OWNER_NOT_FRESH:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation")}))
+        if not health.get("healthy") or health.get("pid")!=ready["pid"]:
+            raise RuntimeError("RESTORE_GRIP_OWNER_NOT_FRESH:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation")}))
+        if not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20:
+            # No new action: wait within the existing handoff deadline for a
+            # current healthy owner heartbeat instead of rejecting one old read.
+            time.sleep(.02)
+            continue
         path=output/"native_waist_handoff_feedback.json"
         if path.exists():
             feedback=json.loads(path.read_text())

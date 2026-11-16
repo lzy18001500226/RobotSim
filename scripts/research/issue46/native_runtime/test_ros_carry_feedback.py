@@ -88,14 +88,16 @@ class CarryFeedbackTransportTests(unittest.TestCase):
                 time.sleep(.25)
                 with self.assertRaisesRegex(RuntimeError, "MC_WAIST_RELAY_STALE"):
                     relay.request_native_waist_handoff(owner)
-                # A resumed source cannot erase the real gap.
+                # A real new packet resumes forwarding; the old gap remains
+                # diagnostic instead of killing the callback executor.
+                previous=owner.mc_waist_receipt
                 enabled[0] = True
                 deadline = time.monotonic() + 1.
-                while not owner.owner_feedback_errors and time.monotonic() < deadline:
+                while owner.mc_waist_receipt==previous and time.monotonic()<deadline:
                     time.sleep(.005)
-                with self.assertRaisesRegex(RuntimeError, "CARRY_FEEDBACK_EXECUTOR_FAILED"):
-                    relay.check_owner_feedback(owner)
-                self.assertIn("MC_WAIST_RELAY_GAP", str(owner.owner_feedback_errors))
+                relay.check_owner_feedback(owner)
+                self.assertGreater(owner.mc_waist_receipt,previous)
+                self.assertGreater(owner.mc_waist_last_recovered_gap_s,.25)
                 print({"isolated_generated_transport": "PASS",
                        "main_loop_block_s": .40, "forwarded_samples_during_block": len(samples),
                        "max_forward_gap_s": max_gap, "source_loss_hard_stop_s": .20,
