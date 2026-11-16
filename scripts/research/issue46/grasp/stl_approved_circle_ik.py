@@ -541,6 +541,34 @@ def released_withdrawal_axis_free(row, phase):
     return True
 
 
+def placement_release_region(section, axis, phase):
+    """A valid low-release region replaces a point target only at placement end.
+
+    This qualifies an IK candidate, never a physical release or placement PASS.
+    The existing owner independently checks fresh measured hand FK before opening.
+    Joint/actuator bounds, continuation and actual collision checks are unchanged.
+    """
+    if not phase or not phase.get("placement_active"):
+        return None
+    request=phase.get("placement_request",{})
+    if (request.get("placement_release_policy")!="TOOL_ESTIMATED_LOW_DROP" or
+        phase.get("placement_execution_timing",{}).get("stage") not in
+        ("LOWER_TO_TOOL_ESTIMATED_RELEASE_BAND","RELEASE_FROM_TOOL_ESTIMATED_LOW_HEIGHT","RELEASED_SUPPORT")):
+        return None
+    from scripts.research.issue46.native_runtime.native_carry_placement import (
+        placement_geometry_estimate,low_release_ready,placement_planned_tilt_limit)
+    axis=np.asarray(axis,dtype=float)
+    if (axis.shape!=(3,) or not np.isfinite(axis).all() or
+        abs(np.linalg.norm(axis)-1.)>1e-6 or
+        axis[2]<np.cos(placement_planned_tilt_limit(request))):
+        return None
+    estimate=placement_geometry_estimate(section,axis,request)
+    estimate["generation"]=request["generation"]
+    if not low_release_ready(estimate,request):
+        return None
+    return estimate
+
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -560,6 +588,12 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         error=raw_residual(q)
         if axis_free:error[3:]=0.
         return error
+    def release_region(q):
+        if not phase or not phase.get("placement_active"):
+            return None
+        raw_residual(q)
+        R=data.xmat[hand].reshape(3,3)
+        return placement_release_region(data.xpos[hand]+R@centre,R@local_axis,phase)
     dofs=np.array([model.jnt_dofadr[j] for j in ids])
     def jacobian(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
@@ -581,7 +615,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
-        if tracking_task_converged(error,position_limit,axis_limit,phase):break
+        if tracking_task_converged(error,position_limit,axis_limit,phase) or release_region(q) is not None:break
         J=jacobian(q)*weights[:,None]
         dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error*weights)
         if phase is not None and phase.get("phase")=="CARRY_HOLD" and not phase.get("placement_active") and phase.get("carry_nominal_right_arm_rad") is not None:
@@ -592,7 +626,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         q=np.clip(q+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
     error=residual(q)
     refinement_evaluations=0
-    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:
+    if (np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit) and release_region(q) is None:
         # Bound-aware recovery can redistribute axial-roll redundancy instead
         # of repeatedly clipping the same wrist joint at its source limit.
         # The real-time consumer needs the existing task tolerance, not a fully
@@ -603,18 +637,21 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
             opt=least_squares(lambda q:residual(q)*weights,q,jac=lambda q:jacobian(q)*weights[:,None],bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=evaluation_budget,ftol=1e-9,xtol=1e-9,gtol=1e-9)
             refinement_evaluations+=int(opt.nfev)
             q=opt.x;error=residual(q)
-            if np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit:break
+            if (np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit) or release_region(q) is not None:break
             feasibility=refine_task_feasibility(residual,jacobian,q,
                 (bounds[:,0]+.001,bounds[:,1]-.001),position_limit,axis_limit)
             refinement_evaluations+=int(feasibility.nfev)
             q=feasibility.x;error=residual(q)
-            if np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit:break
-    if np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'refinement_evaluations':refinement_evaluations,'q':q.tolist()}))
+            if (np.linalg.norm(error[:3])<=position_limit and np.linalg.norm(error[3:])<=axis_limit) or release_region(q) is not None:break
+    if (np.linalg.norm(error[:3])>position_limit or np.linalg.norm(error[3:])>axis_limit) and release_region(q) is None:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'refinement_evaluations':refinement_evaluations,'q':q.tolist()}))
+    accepted_region=release_region(q)
     actual=np.array([row['joints'][n]['q'] for n in ik.ARM])
+    actual_region=release_region(actual)
     actual_error=residual(actual);J=jacobian(actual)
-    correction=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error)
+    correction=(np.zeros(len(ik.ARM)) if accepted_region is not None else
+                J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error))
     raw_error=raw_residual(q);actual_raw_error=raw_residual(actual)
-    return q,{'axis_constraint':'FREE_EMPTY_CLAW_AFTER_MEASURED_RELEASE' if axis_free else 'DIRECTED_BOTTLE_AXIS','position_tolerance_m':position_limit,'axis_tolerance_rad':None if axis_free else float(2.*np.arcsin(axis_limit/.2)),'raw_axis_residual':float(np.linalg.norm(raw_error[3:])),'actual_raw_axis_residual':float(np.linalg.norm(actual_raw_error[3:])),'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'refinement_evaluations':refinement_evaluations,'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
+    return q,{'task_acceptance':'LOW_RELEASE_REGION' if accepted_region is not None else 'POINT_TARGET','release_region_geometry':accepted_region,'actual_release_region_geometry':actual_region,'axis_constraint':'FREE_EMPTY_CLAW_AFTER_MEASURED_RELEASE' if axis_free else 'DIRECTED_BOTTLE_AXIS','position_tolerance_m':position_limit,'axis_tolerance_rad':None if axis_free else float(2.*np.arcsin(axis_limit/.2)),'raw_axis_residual':float(np.linalg.norm(raw_error[3:])),'actual_raw_axis_residual':float(np.linalg.norm(actual_raw_error[3:])),'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'refinement_evaluations':refinement_evaluations,'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
 
 
 def bounded_tracking_velocity(previous, target, dt, speed_limits):

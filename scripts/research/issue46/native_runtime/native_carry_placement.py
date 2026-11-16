@@ -33,18 +33,23 @@ def placement_tool_estimate(row,request):
     axis_local=CIRCLE_CONTRACT["local_bottle_axis_in_hand"]
     section=[hand["position_m"][i]+sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)]
     axis=[sum(H[3*i+j]*axis_local[j] for j in range(3)) for i in range(3)]
+    return dict(placement_geometry_estimate(section,axis,request),
+                source="HAND_FK_PLUS_KNOWN_GRASP_TRANSFORM_NOT_OBJECT_TRUTH",
+                assumption="RIGID_HELD_OBJECT_NO_SLIP; live placement RGB-D not yet integrated",
+                host_ns=row["host_monotonic_ns"],generation=row["generation"])
+
+
+def placement_geometry_estimate(section,axis,request):
+    """Known grasp geometry and table frame; no simulated object state."""
     offset=float(request["grasp_height_above_center_m"])
     center=[section[i]-offset*axis[i] for i in range(3)]
     radius=float(request["bottle_radius_m"]);half=.5*float(request["bottle_height_m"])
     extent=[radius*math.sqrt(max(0.,1.-v*v))+half*abs(v) for v in axis]
     lo=request["table_bounds_min_world_m"];hi=request["table_bounds_max_world_m"]
     edges=[min(center[i]-extent[i]-lo[i],hi[i]-center[i]-extent[i]) for i in (0,1)]
-    values=section+axis+center+edges
+    values=list(section)+list(axis)+center+edges
     if not all(math.isfinite(v) for v in values):raise RuntimeError("NONFINITE_TOOL_PLACEMENT_ESTIMATE")
-    return dict(source="HAND_FK_PLUS_KNOWN_GRASP_TRANSFORM_NOT_OBJECT_TRUTH",
-                assumption="RIGID_HELD_OBJECT_NO_SLIP; live placement RGB-D not yet integrated",
-                host_ns=row["host_monotonic_ns"],generation=row["generation"],
-                section_world_m=section,center_world_m=center,axis_world=axis,
+    return dict(section_world_m=list(section),center_world_m=center,axis_world=list(axis),
                 bottom_gap_m=center[2]-extent[2]-float(request["tabletop_world_z_m"]),
                 edge_clearances_m=edges)
 
@@ -287,7 +292,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,low_release_enabled,placement_tool_estimate,low_release_ready,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,placement_execution_budget,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_planned_tilt_limit,low_release_enabled,placement_geometry_estimate,placement_tool_estimate,low_release_ready,placement_contact_state,evaluate_placed_hold,observe_released_support,observe_placement_approach,placement_execution_budget,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]
