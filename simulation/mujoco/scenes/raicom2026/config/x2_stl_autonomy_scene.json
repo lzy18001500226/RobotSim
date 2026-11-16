@@ -1,10 +1,16 @@
 {
-  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v3",
+  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v4",
   "classification": "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT",
   "frame": {
     "frame_id": "raicom_scene_world",
     "units": {"position": "m", "yaw": "rad"},
     "axes": {"x": "forward", "y": "left", "z": "up", "yaw_positive": "counterclockwise_about_+z"}
+  },
+  "initial_base_pose": {
+    "frame_id": "raicom_scene_world",
+    "xyz_m": [-1.5, -1.5, 0.68],
+    "yaw_rad": 1.5707963267948966,
+    "source": "RAICOM room start_text marker at (-1.5, -1.5), with the recorded START heading from the scene-world pose contract."
   },
   "sources": {
     "raicom_room": {

@@ -158,6 +158,14 @@ def remap_hand(element: ET.Element, side: str) -> None:
 
 def add_hand(root: ET.Element, stl_root: ET.Element, *, side: str, mount: dict[str, str]) -> None:
     wrist = find_body(root, mount["parent_link"])
+    # In the RAICOM X2 mesh set, the wrist-roll mesh contains the legacy
+    # anthropomorphic hand shell.  Retaining it while appending OmniPicker
+    # creates two visible/collidable end effectors at one wrist.  Preserve the
+    # wrist body, joint and inertial record, but remove only the mesh geoms
+    # owned by that retired hand shell before attaching the frozen STL hand.
+    for geom in list(wrist.findall("geom")):
+        if geom.get("mesh") == mount["parent_link"]:
+            wrist.remove(geom)
     source = find_body(stl_root, "R_omnipicker_base_link")
     hand = copy.deepcopy(source)
     remap_hand(hand, side)
@@ -202,6 +210,18 @@ def main() -> None:
             asset.append(mesh)
         add_hand(root, stl_root, side=side, mount=mounts[side])
     add_internal_exclusions(root)
+    retired_shells = {}
+    for side in ("right", "left"):
+        mount = mounts[side]
+        wrist = find_body(root, mount["parent_link"])
+        remaining = [geom.get("name", "") for geom in wrist.findall("geom") if geom.get("mesh") == mount["parent_link"]]
+        if remaining:
+            raise RuntimeError(f"retired {side} wrist hand shell remains in the generated overlay: {remaining}")
+        retired_shells[side] = {
+            "wrist_body": mount["parent_link"],
+            "removed_mesh": mount["parent_link"],
+            "remaining_geom_names": remaining,
+        }
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-mount-audit").native_path
     overlay = output / "raicom_x2_bilateral_stl_mount_overlay.xml"
     ET.indent(tree, space="  ")
@@ -225,10 +245,11 @@ def main() -> None:
         "official_urdf": {"path": str(args.official_urdf.resolve()), "sha256": sha256(args.official_urdf)},
         "stl_model": {"id": loaded.model_id, "model_sha256": loaded.model_sha256, "trajectory_sha256": loaded.metadata["trajectory_sha256"], "path": str(stl_model)},
         "official_mounts": mounts,
+        "retired_wrist_hand_shells": retired_shells,
         "raicom_asset_path_rebindings": paths,
         "generated_overlay": {"path": str(overlay), "sha256": sha256(overlay)},
         "static_checks": checks,
-        "gates": {"OFFICIAL_WRIST_PARENT": "PASS", "OFFICIAL_FIXED_MOUNT_ORIGINS": "PASS", "BILATERAL_STL_STATIC_MJ_FORWARD": "PASS", "DYNAMICS": "NOT_RUN", "BALANCE": "NOT_RUN", "EXTERNAL_CONTACT": "NOT_RUN"},
+        "gates": {"OFFICIAL_WRIST_PARENT": "PASS", "OFFICIAL_FIXED_MOUNT_ORIGINS": "PASS", "RETIRED_WRIST_HAND_SHELL_REMOVED": "PASS", "BILATERAL_STL_STATIC_MJ_FORWARD": "PASS", "DYNAMICS": "NOT_RUN", "BALANCE": "NOT_RUN", "EXTERNAL_CONTACT": "NOT_RUN"},
         "limitations": ["The RAICOM model's wrist inertial/mesh representation differs from the v1.4 source wrist extension visual used in prior fixed-base reviews.", "Only the fixed wrist-to-base mount origins are vendor-sourced; the STL trajectory remains the human-reviewed SIMULATION_ONLY kinematic mapping.", "This overlay has not received a new RAICOM full-body visual review.", "No dynamics, collision qualification, navigation, or grasping ran."],
     }
     pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")

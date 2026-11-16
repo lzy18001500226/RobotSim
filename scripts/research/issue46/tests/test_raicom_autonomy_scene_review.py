@@ -22,6 +22,11 @@ ENVIRONMENT = {
     "retain_body": "test_cylinder",
     "table_body_after_attach": "raicom_map_table",
 }
+START_POSE = {
+    "xyz_m": [-1.5, -1.5, 0.68],
+    "yaw_rad": 1.5707963267948966,
+    "source": "test",
+}
 
 
 class RAICOMSTLAutonomySceneTests(unittest.TestCase):
@@ -36,7 +41,7 @@ class RAICOMSTLAutonomySceneTests(unittest.TestCase):
             source_path, room_path = root / "approved.xml", root / "room.xml"
             source_path.write_text(source, encoding="utf-8")
             room_path.write_text(room, encoding="utf-8")
-            payload, record = MODULE.compose_scene(source_path, room_path, ENVIRONMENT)
+            payload, record = MODULE.compose_scene(source_path, room_path, ENVIRONMENT, START_POSE)
         scene = ET.fromstring(payload)
         names = [body.get("name") for body in scene.findall(".//body")]
         self.assertIn("pelvis", names)
@@ -49,6 +54,11 @@ class RAICOMSTLAutonomySceneTests(unittest.TestCase):
         assert attached is not None
         self.assertEqual(attached.get("model"), "raicom_room")
         self.assertEqual(record["approved_scene_environment_bodies_removed"], ["raicom_table"])
+        pelvis = scene.find("./worldbody/body[@name='pelvis']")
+        self.assertIsNotNone(pelvis)
+        assert pelvis is not None
+        self.assertEqual(pelvis.get("pos"), "-1.5 -1.5 0.68")
+        self.assertEqual(pelvis.get("euler"), "0 0 1.57079632679")
 
     def test_composition_rejects_missing_approved_hand(self) -> None:
         source = "<mujoco><asset/><worldbody><body name='pelvis'/><body name='test_cylinder'/></worldbody></mujoco>"
@@ -59,7 +69,7 @@ class RAICOMSTLAutonomySceneTests(unittest.TestCase):
             source_path.write_text(source, encoding="utf-8")
             room_path.write_text(room, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "complete X2-STL"):
-                MODULE.compose_scene(source_path, room_path, ENVIRONMENT)
+                MODULE.compose_scene(source_path, room_path, ENVIRONMENT, START_POSE)
 
 
 if __name__ == "__main__":

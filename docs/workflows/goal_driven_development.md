@@ -8,7 +8,8 @@ This is RobotSim's operating convention layered on the [official Codex documenta
 
 Use a normal prompt for a one-off edit, explanation, short review, or small deterministic task with an obvious stopping point. Use a Goal for architecture exploration, uncertain debugging, performance/benchmark work, multi-step integration, dependency migration, evidence-backed research, or implementation that must continue across sessions and has explicit completion criteria.
 
-Create a Goal only when the desired end state and evidence can be stated. A vague instruction such as “improve the simulator” is not a useful Goal; first bound its scope or turn it into a research Goal that must produce a decision artifact.
+Create a Goal only when the user explicitly requests one and the desired end
+state and evidence can be stated. A vague instruction such as “improve the simulator” is not a useful Goal; first bound its scope or turn it into a research Goal that must produce a decision artifact.
 
 ## Reusable Goal template
 
@@ -52,6 +53,20 @@ Completion is evidence-based. Apply the minimum levels and status definitions in
 
 The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues if a durable backlog becomes useful. Do not build a supervisor or queue merely to imitate an issue tracker.
 
+### Keep continuation focused on delivery
+
+Use [minimum checks and evidence reuse](../engineering/validation.md#minimum-checks-and-evidence-reuse).
+A continuation should implement a justified correction, obtain new physical/
+interface evidence or finish a required deliverable. Do not turn a small
+failure into another general audit, framework, test campaign or request to
+reapprove an unchanged accepted design. Stop checking once the affected checks
+pass and the next authorized action is ready.
+
+Reuse the current human-reviewed web version for geometry/path decisions.
+Historical task lists and cleared Goals are context, not an independent queue
+or authorization. A separately requested documentation/explanation task does
+not resume physics for a cleared or paused Goal.
+
 ### Upstream research before an external blocker
 
 For debugging or integration Goals, before marking a problem `BLOCKED_HUMAN` or asking for a manufacturer/engineer, follow the [official-source-first rule](../../AGENTS.md#mandatory-official-source-first-troubleshooting). Proactively consult the relevant official manual, release-specific startup procedure, and example code when access is available; reproduce the smallest supported comparison, and distinguish documentation evidence from actual runtime proof. Keep the human/safety gates intact. For X2 MC/MuJoCo integration start with [the X2 source index](../skills/agibot_x2.md). A tool/network outage or incompatible release should be reported precisely rather than represented as an intrinsic vendor limitation.
@@ -66,7 +81,7 @@ Where the current Codex client exposes pause, resume, or clear/end controls, Rob
 
 Continue through ordinary test failures and safe alternatives. Stop for architecture acceptance, destructive operations, new credentials/authentication, irreversible dependency migrations, unsafe hardware actuation, or unresolved visual/manual assertions that affect correctness. Routine low-risk merge authorization and required checks/review follow [AGENTS.md](../../AGENTS.md); Goal continuation does not waive these meaningful gates or expand task scope.
 
-For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#closeout), including its explicit `ready_for_review`, `completed`, or `blocked` notifier call. A Goal status and a PR notification are separate records: use the notification that matches the actual task outcome and report deferred checks honestly.
+For repository PR closeout, review the scoped diff and evidence, then follow [the durable task closeout workflow](../setup/codex.md#durable-task-closeout), using its current Local/Cloud notification path and actual task status. Goal status and PR publication are separate records; report deferred checks honestly.
 
 ## Long-running-agent evidence and future decision
 

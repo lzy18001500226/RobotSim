@@ -2,6 +2,15 @@
 
 **Decision:** `HUMAN_VISUAL_REVIEW=PASS` for the exact static Option D scene and artifact set listed below. This is a visual/static acceptance record, not a physics qualification.
 
+## Historical scope
+
+This record preserves the exact 2026-10-25 Option D decision. Its use of
+"canonical" below describes that historical review and does not select the
+current active gripper. The subsequent [2026-10-30 STL selection](issue46_stl_baseline_freeze_20261030.md)
+and [current measured findings](issue46_truth_grasp_execution_findings.md)
+own the later baseline/status. Do not transfer this record's geometry or
+physics results to X2-OmniPicker-STL.
+
 ## Frozen identities
 
 - Canonical gripper: `X2-OmniPicker-Sim-Functional-v0.1`, classified `SIMULATION_ONLY_UNVERIFIED_EXPERIMENTAL_GEOMETRY_SELECTED_COUPLING`.

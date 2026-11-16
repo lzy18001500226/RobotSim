@@ -1,0 +1,81 @@
+{
+  "schema": "robotsim.raicom_scene_route.v1",
+  "scene_entrypoint": "simulation/mujoco/scenes/raicom2026/scene_workspace.xml",
+  "poses_file": "simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json",
+  "frame_id": "raicom_scene_world",
+  "units": {
+    "position": "m",
+    "yaw": "rad"
+  },
+  "axes": {
+    "x": "forward",
+    "y": "left",
+    "z": "up",
+    "yaw_positive": "counterclockwise_about_+z"
+  },
+  "robot": {
+    "model": "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml",
+    "sha256": "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3",
+    "base_body": "x2_pelvis",
+    "freejoint": "x2_floating_base_joint",
+    "local_home_xyz_m": [
+      0,
+      0,
+      0.68
+    ],
+    "local_home_yaw_rad": 0
+  },
+  "route_order": [
+    "START",
+    "START_ALIGN",
+    "WAYPOINT",
+    "TABLE_DOCKING"
+  ],
+  "route_segments": [
+    {
+      "from": "START",
+      "to": "START_ALIGN",
+      "type": "in_place_heading_alignment"
+    },
+    {
+      "from": "START_ALIGN",
+      "to": "WAYPOINT",
+      "type": "straight_translation"
+    },
+    {
+      "from": "WAYPOINT",
+      "to": "TABLE_DOCKING",
+      "type": "straight_translation"
+    }
+  ],
+  "navigation_goal_conversion": {
+    "source_frame": "raicom_scene_world",
+    "target_frame": "odom",
+    "transform_ref": "config/scene_world_poses.json#/transforms/odom_from_scene_world",
+    "status": "STATIC_RESET_ANCHOR_VERIFIED_RUNTIME_ODOMETRY_NOT_OBSERVED",
+    "rule": "Apply the configured transform; do not relabel scene-world coordinates as odom coordinates. Confirm the live odom pose at Reset before enabling a navigation goal publisher."
+  },
+  "validation": {
+    "mujoco": "3.3.6",
+    "mj_step_calls": 0,
+    "static_samples": 71,
+    "translation_step_max_m": 0.05,
+    "heading_step_max_deg": 5.0,
+    "static_collision_status": "PASS for unchanged model qpos0 posture and tested route; see external evidence JSON",
+    "minimum_swept_aabb_clearance_m": 0.09715550719989485,
+    "limiting_pair": {
+      "robot_body": "x2_left_ankle_roll_link",
+      "robot_geom_id": 29,
+      "obstacle_body": "raicom_table",
+      "obstacle_geom_id": 94
+    },
+    "other_minimums": {
+      "start_heading_turn_m": 0.24764412267351327,
+      "start_to_waypoint_m": 0.263946824376977
+    }
+  },
+  "map_frame": {
+    "status": "UNRESOLVED",
+    "map_to_raicom_scene_world_transform": null
+  }
+}

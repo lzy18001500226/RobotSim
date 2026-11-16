@@ -1,0 +1,133 @@
+{
+  "schema": "robotsim.x2.two-table-delivery.v1",
+  "classification": "SIMULATION_ONLY_H220_SECTION120_TABLE_TRANSFER",
+  "frame": "native_scene_world",
+  "table_body": "raicom_delivery_table",
+  "base_goal_world_xy": [
+    0.015,
+    0.98
+  ],
+  "base_goal_world_yaw_rad": 2.3,
+  "placement_center_world_m": [
+    -0.1,
+    1.45,
+    0.6568309428515006
+  ],
+  "table_bounds_min_world_m": [
+    -0.45089150290580626,
+    1.321745507199895,
+    -0.010973995898385547
+  ],
+  "table_bounds_max_world_m": [
+    0.45089160438871073,
+    1.87825448304453,
+    0.5468309428515006
+  ],
+  "tabletop_world_z_m": 0.5468309428515006,
+  "bottle_radius_m": 0.035,
+  "bottle_height_m": 0.22,
+  "bottle_mass_kg": 0.2,
+  "task_position_tolerance_m": 0.15,
+  "compact_turn_footprint_m": 0.3,
+  "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates",
+  "intermediate_turn_heading_tolerance_rad": 0.3,
+  "gait_prepare_angular_rad_s": -0.1,
+  "intermediate_turn_stop_reserve_rad": 0.15,
+  "turn_stop_reserve_evidence": "171657Z .40rad reserve under-turned by .318rad; .15 minimum with existing measured-rate reserve retained. 173706Z EARLY_SD rejected after actual .6655m/s brake peak; restore original >=1.05s zero before SD and full composite stop.",
+  "retreat_cross_track_limit_m": 0.15,
+  "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification",
+  "turn_braking_footprint_m": 0.35,
+  "turn_footprint_scope": "active30cm retained; table-transfer braking/settled35cm, not legacy strict pivot qualification; actual current pose replanned",
+  "gait_prepare_required_load_states": 1,
+  "gait_readiness_scope": "actual foot unloading AND measured knee motion AND live source/mode; observe full alternation during transit, not a redundant pre-motion complete cycle",
+  "carry_native_neutral_stow": {
+    "classification": "SIMULATION_ONLY_MEASURED_UPRIGHT_CARRY_POSE_WITH_NATIVE_CPG_STEP_NOT_VENDOR_CARRY_QUALIFICATION",
+    "source": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml",
+    "source_sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1",
+    "operational_right_arm_ik": {
+      "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json",
+      "sha256": "f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",
+      "source_native_frame": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/reference_native_frame.json",
+      "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
+    },
+    "arm_target_rad": {
+      "left_shoulder_pitch_joint": 0.4,
+      "left_shoulder_roll_joint": 0.15,
+      "left_shoulder_yaw_joint": 0.0,
+      "left_elbow_joint": -1.2,
+      "left_wrist_yaw_joint": 0.0,
+      "left_wrist_pitch_joint": 0.0,
+      "left_wrist_roll_joint": 0.0,
+      "right_shoulder_pitch_joint": 0.426480446125408,
+      "right_shoulder_roll_joint": -0.32510131786346647,
+      "right_shoulder_yaw_joint": -0.363785453021629,
+      "right_elbow_joint": -1.7276868974466384,
+      "right_wrist_yaw_joint": -0.6582008729633598,
+      "right_wrist_pitch_joint": -0.11454816873639194,
+      "right_wrist_roll_joint": 1.4604811268837392
+    },
+    "duration_s": 6.0,
+    "physical_validation": "NOT_RUN",
+    "reference_profile": "REVIEWED_UPRIGHT_CARRY_LEFT_MARGIN",
+    "reference_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json",
+    "reference_sha256": "6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5",
+    "carry_reference_frame": "TORSO_RIGID",
+    "operational_pose_delta": {
+      "left_shoulder_roll_joint": {
+        "source_target_rad": 0.0,
+        "target_rad": 0.15,
+        "reason": "163946Z measured -.0628346 rad at source minimum -.061; preserve limit/gains and add commanded posture margin"
+      },
+      "geometry_and_controller_gains_changed": false
+    }
+  },
+  "turn_terminal_angular_taper_angle_rad": 0.6,
+  "turn_terminal_translation_free_angle_rad": 0.0,
+  "stand_transition_strategy": "ZERO_WINDOW_THEN_SD",
+  "delivery_forward_command_m_s": 0.2,
+  "forward_response_profile": "ORIGINAL_INSTALLED_CPGWalk_FORWARD_ONLY_AFTER_QUALIFIED_FOUNDATIONWALK_TURN_STOP; no CPGStep negative-retreat retry; source model/weights/gains unchanged",
+  "carry_reference_scope": "REVIEWED_HIGH_UPRIGHT_CARRY_NO_NATIVE_ARM_TAKEOVER",
+  "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT",
+  "post_turn_egress_m": 0.0,
+  "post_turn_egress_scope": "DIRECT_EXISTING_POINT_GOAL_TO_DELIVERY_TABLE_NO_EXTRA_1M_DETOUR",
+  "native_arm_follow_scope": "DISABLED",
+  "review_prefix_only": false,
+  "transit_motion_mode": "LOCOMOTION_DEFAULT",
+  "review_contact_policy": "known pelvis-leftHip and bottle-robot touches <=5mm recorded; engine collisions retained; posture/joint/drop/freshness/environment guards unchanged",
+  "incidental_contact_diagnostic": true,
+  "approved_prefix_reference": "raicom-stl-xvfb-native-reset-stand-20261109T122146Z; user visual acceptance 2026-11-09",
+  "route_reference": {
+    "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T122146Z",
+    "native_latest_sha256": "23580171350d301333cff83441b43f15d139606f70ec2d91229845161d362491"
+  },
+  "pure_forward_direction_probe": false,
+  "direction_probe_evidence": "145703Z: pure+.30 produced+13.561mm before1s artificial30mm performance cutoff; 5mm is only initial observed direction, never route/stop PASS. Alignment centre correction+.20 displaced toward rear wall; remove this extra translation only in DELIVERY_ALIGN. Physical/source limits unchanged.",
+  "delivery_alignment_pure_yaw": true,
+  "turn_to_delivery_bearing": true,
+  "turn_translation_strategy": "REVIEWED_COMPACT_CENTRE_FEEDBACK",
+  "delivery_tracking_angular_cap_rad_s": 0.6,
+  "route_goal_scope": "Single FoundationWalk turn then CPGWalk closed-loop forward tracking; nominal docking yaw1.95 matches approach; full stop calibration after .35m progress and measured-stop rearm; no low-rate stationary ALIGN while moving.",
+  "delivery_turn_direction": "CLOCKWISE",
+  "transit_root_cap_m_s": 0.6,
+  "monitoring_policy": "SIMULATION_ONLY_TABLE_TRANSFER_ROOT060; 163201Z .5061m/s peak with source joint/actuator/pose bounds retained; .20 standing and unchanged composite stop; no model/controller gain change",
+  "restore_vendor_forward_parameter": false,
+  "delivery_motion_mode": "LOCOMOTION_STEP",
+  "delivery_align_reentry_rad": 0.45,
+  "measure_step_braking_after_progress_m": 0.35,
+  "delivery_heading_gain": 2.4,
+  "heading_response_evidence": "185743Z actual yaw rate~.05rad/s under requests~.15rad/s; task-layer gain .8->2.4 compensates measured response, unchanged nativeMC gains. Stop trigger uses measured braking peak without .35m truncation; final position.15/yaw.12/composite gates retained.",
+  "turn_drift_is_diagnostic": true,
+  "task_workspace_xy_bounds": [
+    -1.85,
+    1.85,
+    -1.9,
+    1.85
+  ],
+  "workspace_scope": "BOUNDED_SIMULATION_TASK_ENVELOPE_NOT_A_WALL_CLEARANCE_CLAIM; actual full-model environment contact/source/stop checks unchanged. 191043Z rootY-1.7697 and radius.35427 had complete source audit/stop PASS; legacy shape results retained.",
+  "docking_pose_reason": "Actual curved approach192115Z stopped yaw2.231rad; choose nominal2.3 with unchanged.12rad gate after source-scene placementIK screen. XY goal/tolerance unchanged; no terminal turn required.",
+  "grasp_height_above_center_m": 0.01,
+  "h220_fixture_scope": "Only task cylinder height300->220mm, same diameter70mm/mass200g; section120mm from bottom. Robot/environment/controller unchanged. Historical H300 aisle proof is not claimed for H220.",
+  "placement_target_note": "H220 low grasp section uses a tabletop-interior point aligned with the arm forward sector. Table/world/robot geometry unchanged; full existing IK and collision screen required before any live episode.",
+  "approach_task_position_tolerance_m": 0.25,
+  "approach_tolerance_scope": "FUNCTIONAL_TABLE_TRANSFER_ONLY; retain legacy150mm result separately; unchanged yaw120mrad, source/physical safety and composite stop; actual arrived-pose placement IK must pass before arm motion. No precision-docking claim."
+}

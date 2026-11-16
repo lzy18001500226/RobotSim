@@ -1,0 +1,411 @@
+"""Focused table-support and existing-owner extension checks; no physics."""
+import unittest
+from scripts.research.issue46.native_runtime import native_carry_placement as p
+
+class ToolEstimatedLowReleaseTests(unittest.TestCase):
+    def config(self):
+        return dict(placement_release_policy="TOOL_ESTIMATED_LOW_DROP",placement_release_height_m=.02,
+                    generation=1,grasp_height_above_center_m=.01,bottle_height_m=.22,bottle_radius_m=.035,
+                    table_bounds_min_world_m=[-.45,1.32,0.],table_bounds_max_world_m=[.45,1.88,.547],tabletop_world_z_m=.547)
+
+    def estimate(self,config,*,gap=.02,axis=(0.,0.,1.)):
+        from unittest.mock import patch
+        import math
+        # FK contains only the hand. No simulated bottle or contact data exists.
+        z=p.low_release_center_height({**config,"placement_release_height_m":gap},axis)+config["grasp_height_above_center_m"]*axis[2]
+        angle=math.atan2(axis[1],axis[2]);c=math.cos(angle);s=math.sin(angle)
+        row=dict(generation=1,host_monotonic_ns=10,bodies={"R_omnipicker_base_link":dict(
+            position_m=[.15,1.52,z],rotation=[1.,0.,0.,0.,c,s,0.,-s,c])})
+        with patch.object(p,"CIRCLE_CONTRACT",dict(circle_center_local_m=[0.,0.,0.],local_bottle_axis_in_hand=[0.,0.,1.]),create=True):
+            return p.placement_tool_estimate(row,config)
+
+    def test_hand_only_estimate_needs_no_object_truth(self):
+        cfg=self.config();estimated=self.estimate(cfg)
+        self.assertAlmostEqual(estimated["bottom_gap_m"],.02)
+        self.assertTrue(p.low_release_ready(estimated,cfg))
+        self.assertIn("NOT_OBJECT_TRUTH",estimated["source"])
+
+    def test_tilted_cylinder_uses_full_projected_bottom_and_edges(self):
+        import math
+        cfg=self.config();axis=[0.,math.sin(math.radians(13.)),math.cos(math.radians(13.))]
+        estimated=self.estimate(cfg,axis=axis)
+        self.assertAlmostEqual(estimated["bottom_gap_m"],.02)
+        self.assertTrue(p.low_release_ready(estimated,cfg))
+        estimated["edge_clearances_m"]=[.001,.1]
+        self.assertFalse(p.low_release_ready(estimated,cfg))
+
+    def test_only_approved_height_and_current_generation_can_release(self):
+        cfg=self.config()
+        for gap in (.009,.031):self.assertFalse(p.low_release_ready(self.estimate(cfg,gap=gap),cfg))
+        estimate=self.estimate(cfg);estimate["generation"]=2
+        self.assertFalse(p.low_release_ready(estimate,cfg))
+        for height in (0.,.009,.031,float("nan"),float("inf")):
+            with self.assertRaises(ValueError):p.low_release_enabled({**cfg,"placement_release_height_m":height})
+        self.assertFalse(p.low_release_enabled({}))
+
+    def test_low_release_authority_does_not_claim_independent_placement(self):
+        fixture=PlacementTests()
+        rows=[fixture.row(i,pad=2.) for i in range(60)]
+        self.assertFalse(p.evaluate_placed_hold(rows,fixture.request())["pass_result"])
+        rows=[fixture.row(i,side="world") for i in range(60)]
+        self.assertFalse(p.evaluate_placed_hold(rows,fixture.request())["pass_result"])
+
+    def test_generated_owner_has_explicit_bounded_release_and_no_pose_write(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.,delivery_table_placement=True,robot_bodies=["pelvis"]))
+        compile(code,"low_release_existing_owner","exec")
+        self.assertIn("placement_low_release_authorized",code)
+        self.assertIn("if len(release_samples)>=3:",code)
+        self.assertIn("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED",code)
+        self.assertNotIn(".qpos[",code)
+
+    def test_pinned_transport_profile_retains_current_release_policy(self):
+        import json
+        from pathlib import Path
+        from . import carry_baseline_78df5bd as baseline
+        from .native_task_grasp_region import task_route_profile
+        profile=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        for build in (baseline.task_route_profile,task_route_profile):
+            selected=build(profile,fast_task_timing=True)
+            self.assertTrue(p.low_release_enabled(selected))
+            self.assertEqual(selected["placement_release_height_m"],.02)
+
+class PlacementAxisTaskToleranceTests(unittest.TestCase):
+    def test_legacy_default_and_explicit_subdegree_target(self):
+        self.assertAlmostEqual(.2*__import__('math').sin(p.placement_axis_tolerance({})/2.),.001)
+        self.assertEqual(p.placement_axis_tolerance({'placement_axis_tolerance_rad':.005}),.005)
+        for value in [0.,.02,float('nan'),float('inf')]:
+            with self.assertRaises(ValueError):p.placement_axis_tolerance({'placement_axis_tolerance_rad':value})
+
+class PlacementTiltEnvelopeTests(unittest.TestCase):
+    def test_task_envelope_is_explicit_and_legacy_stays_twelve_degrees(self):
+        import math
+        self.assertAlmostEqual(p.placement_planned_tilt_limit({}),math.radians(12.))
+        self.assertAlmostEqual(p.placement_planned_tilt_limit(
+            {"maximum_planned_bottle_tilt_rad":math.radians(16.5)}),math.radians(16.5))
+        for value in [0.,-1.,float("nan"),float("inf"),math.pi/2.]:
+            with self.assertRaises(ValueError):
+                p.placement_planned_tilt_limit({"maximum_planned_bottle_tilt_rad":value})
+
+    def test_tilted_finite_cylinder_checks_entire_projection_not_only_bottom(self):
+        import math
+        cfg=dict(bottle_radius_m=.035,bottle_height_m=.22,
+            table_bounds_min_world_m=[-.45,1.32,0.],
+            table_bounds_max_world_m=[.45,1.88,.55])
+        axis=[0.,math.sin(math.radians(16.)),math.cos(math.radians(16.))]
+        center=[0.,1.389,.66]
+        edge=p.tabletop_bottle_edge_clearances(center,axis,cfg)
+        self.assertGreater(edge[0],.4)
+        self.assertLess(edge[1],.006)
+        center[1]+=.01
+        self.assertGreater(p.tabletop_bottle_edge_clearances(center,axis,cfg)[1],.006)
+
+class ArrivedPoseRouteTests(unittest.TestCase):
+    def test_zero_translation_does_not_invent_rotation_to_world_zero(self):
+        import inspect,numpy as np,math
+        text=inspect.getsource(p.prepare_delivery_scene)
+        text=text[text.index('    waypoints=[old[:2]]'):text.index('    for xy,yaw in poses:')]
+        text='\n'.join(x[4:] for x in text.splitlines())
+        scope=dict(old=np.array([.04,1.03,.65]),oldyaw=2.30,goal=np.array([.04,1.03]),cfg={'base_goal_world_yaw_rad':2.30},egress=0.,np=np,math=math)
+        exec(text,scope)
+        self.assertEqual(len(scope['poses']),9)
+        self.assertTrue(all(abs(yaw-2.30)<1e-10 for _,yaw in scope['poses']))
+        scope.update(goal=np.array([0.,0.]))
+        exec(text,scope)
+        self.assertEqual(len(scope['poses']),35)
+
+class PlacementTests(unittest.TestCase):
+    def request(self):
+        return dict(generation=1,bottle_height_m=.30,bottle_radius_m=.035,bottle_mass_kg=.2,
+                    table_bounds_min_world_m=[-.45089,1.32174,-.011],table_bounds_max_world_m=[.45089,1.87825,.54683],tabletop_world_z_m=.54683)
+    def row(self,i,pad=0.,side="raicom_delivery_table"):
+        return dict(host_monotonic_ns=1000000000+i*40000000,sim_time_s=10.+i*.04,generation=1,
+                    bodies={"test_cylinder":dict(position_m=[.15,1.52,.69683],rotation=[1.,0.,0.,0.,1.,0.,0.,0.,1.],origin_velocity_world_angular_linear=[0.]*6)},
+                    contacts=[dict(efc_address=0,body1=side,body2="test_cylinder",local_force_torque=[1.962,0.,0.,0.,0.,0.],signed_bottle_world_z_force_n=1.962),
+                              dict(efc_address=1,body1="R_hand_narrow3_Link",body2="test_cylinder",local_force_torque=[pad,0.,0.,0.,0.,0.],signed_bottle_world_z_force_n=0.)])
+    def test_actual_released_support_contract_is_separate_from_grip(self):
+        result=p.evaluate_placed_hold([self.row(i) for i in range(52)],self.request())
+        self.assertTrue(result["pass_result"]);self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+        for rows in ([self.row(i,pad=2.) for i in range(52)],[self.row(i,side="world") for i in range(52)],[self.row(i) for i in range(20)]):
+            self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+    def test_stale_duplicate_or_off_table_data_cannot_pass(self):
+        rows=[self.row(i) for i in range(52)];rows[-1]=rows[-2]
+        self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+        rows=[self.row(i) for i in range(52)]
+        for r in rows:r["bodies"]["test_cylinder"]["position_m"][1]=1.30
+        self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+
+    def test_slower_valid_sampling_preserves25_samples_and_two_seconds(self):
+        rows=[self.row(i) for i in range(35)]
+        for i,row in enumerate(rows):
+            row['host_monotonic_ns']=1000000000+i*140000000
+            row['sim_time_s']=10.+i*.14
+        result=p.evaluate_placed_hold(rows,self.request())
+        self.assertTrue(result['pass_result'])
+        self.assertEqual(result['unique_samples'],25)
+        self.assertAlmostEqual(result['measured_hold_sim_s'],24*.14)
+        self.assertFalse(p.evaluate_placed_hold(rows[:24],self.request())['pass_result'])
+
+    def test_slower_sampling_still_rejects_gaps_and_support_loss(self):
+        for fault in ('gap','support'):
+            rows=[self.row(i) for i in range(35)]
+            for i,row in enumerate(rows):
+                row['host_monotonic_ns']=1000000000+i*140000000
+                row['sim_time_s']=10.+i*.14
+            if fault=='gap':
+                rows[-1]['host_monotonic_ns']+=201000000
+            else:
+                rows[-1]['contacts'][0]['signed_bottle_world_z_force_n']=0.
+            self.assertFalse(p.evaluate_placed_hold(rows,self.request())['pass_result'])
+    def test_opt_in_preserves_the_existing_owner_and_has_no_motion_or_pose_write_path(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        normal=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.))
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.,delivery_table_placement=True,robot_bodies=["pelvis"]))
+        compile(code,"actual_placement_owner","exec")
+        self.assertNotIn("perform_native_placement",normal)
+        self.assertIn("perform_native_placement(n,request)",code)
+        self.assertIn("PLACEMENT_PHYSICAL_SAFETY",code)
+        self.assertIn("TABLE_SUPPORT_LOST_BEFORE_CLOSEOUT",code)
+        self.assertNotIn("create_publisher(Twist",code)
+        self.assertNotIn("mj_step(",code)
+        self.assertNotIn(".qpos[",code)
+
+    def test_final_mode_observer_has_no_control_or_velocity_interface(self):
+        import ast
+        code=p.placement_mode_observer_script();compile(code,"placement_observe_only","exec")
+        imports=[n.module for n in ast.walk(ast.parse(code)) if isinstance(n,ast.ImportFrom)]
+        self.assertNotIn("SetMcAction",code)
+        self.assertNotIn("create_publisher",code)
+        self.assertNotIn("SetMcInputSource",code)
+        self.assertIn("GetMcAction",code)
+        self.assertIn("McCommonState",code)
+
+    def test_neutral_stow_and_placement_share_existing_owner_and_release_contract(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference
+        settings=native_stand_arm_reference()
+        self.assertEqual(len(settings["arm_target_rad"]),14)
+        self.assertEqual(settings["duration_s"],6.)
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=160.,delivery_table_placement=True,
+             carry_native_neutral_stow=settings,robot_bodies=["pelvis"]))
+        compile(code,"stow_and_placement_owner","exec")
+        self.assertEqual(code.count("carry_target=perform_native_neutral_stow(n,NATIVE_STOW_SETTINGS)"),1)
+        force_line=next(l for l in code.splitlines() if "if (sum(forces.values()) if stage" in l)
+        self.assertIn("placement_release",force_line)
+        self.assertIn("STOW_PHYSICAL_SAFETY",code)
+        self.assertIn("STOW_TRACKER_REVISION_UNCONFIRMED",code)
+        self.assertIn("TABLE_SUPPORT_LOST_BEFORE_CLOSEOUT",code)
+        self.assertNotIn(".qpos[",code)
+        self.assertNotIn("mj_step(",code)
+
+    def test_neutral_stow_validates_all_arm_limits_before_first_publication(self):
+        import ast,math
+        from pathlib import Path
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference,perform_native_neutral_stow
+        source=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261108T215555Z/native_hal_bilateral_arm_pregrasp.py")
+        values={}
+        for node in ast.parse(source.read_text()).body:
+            if isinstance(node,ast.Assign):
+                for name in node.targets:
+                    if isinstance(name,ast.Name) and name.id in ("LIFT_CONTRACT","LEFT","RIGHT"):
+                        values[name.id]=ast.literal_eval(node.value)
+        settings=native_stand_arm_reference()
+        class BeforePublish(Exception):pass
+        class Node:
+            def refresh_native(self):raise BeforePublish()
+        scope={**values,"math":math}
+        import inspect
+        exec(inspect.getsource(perform_native_neutral_stow),scope)
+        with self.assertRaises(BeforePublish):scope["perform_native_neutral_stow"](Node(),settings)
+
+    def test_native_fullbody_reference_is_source_matched_and_opt_in(self):
+        from pathlib import Path
+        import json,yaml
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference
+        settings=native_stand_arm_reference()
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        source=yaml.safe_load(Path(settings["source"]).read_text())
+        nominal=dict(zip(source["BaseConfig"]["seq"],source["ACConfig"]["robot"]["default_dof_pos"]))
+        self.assertEqual(settings,cfg["carry_native_neutral_stow"])
+        self.assertTrue(all(q==nominal[n] for n,q in settings["arm_target_rad"].items()))
+        self.assertEqual(settings["native_arm_follow_scope"],"FULL_SOURCE")
+        self.assertEqual(settings["duration_s"],6.)
+        self.assertEqual(settings["physical_validation"],"NOT_RUN")
+
+    def test_pelvis_carry_reference_does_not_follow_independent_waist_sway(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import tracking_task
+        identity=[1.,0.,0.,0.,1.,0.,0.,0.,1.]
+        row=dict(generation=1,bodies={"pelvis":dict(position_m=[1.,2.,.6],rotation=identity),
+             "torso_link":dict(position_m=[1.10,2.,.8],rotation=identity),
+             "R_omnipicker_base_link":dict(position_m=[1.2,2.,.8],rotation=identity),
+             "test_cylinder":dict(position_m=[1.2,2.,.7],rotation=identity)})
+        phase=dict(phase="CARRY_HOLD",native_arrival_pass=True,post_retract_physical_hold_pass=True,generation=1,
+             carry_heading_xy_m=[.2,0.],carry_world_z_m=.8,initial_object_in_hand_m=[0.,0.,0.],slip_reference="GRASP_SECTION",
+             carry_retention_only=True,allow_carried_bottle_tilt=True,carry_pose_frame="PELVIS_RIGID",
+             carry_rigid_offset_base_m=[.2,0.,.2],carry_rigid_axis_base=[0.,0.,1.])
+        target,axis=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        np.testing.assert_allclose(target,[1.2,2.,.8])
+        row["bodies"]["torso_link"]["position_m"]=[1.2,2.,.55]
+        again,_=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        np.testing.assert_allclose(again,target)
+        phase["carry_pose_frame"]="TORSO_RIGID"
+        torso,_=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        self.assertGreater(np.linalg.norm(torso-target),.1)
+
+    def test_carry_nullspace_prefers_interior_without_changing_constrained_coordinates(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import carry_posture_nullspace_direction
+        J=np.zeros((6,7));J[:5,:5]=np.eye(5)
+        q=np.ones(7);nominal=np.zeros(7)
+        delta=carry_posture_nullspace_direction(J,q,nominal)
+        self.assertLess(np.linalg.norm(J@delta),1e-5)
+        self.assertLess(delta[-1],0.)
+        self.assertLess(np.max(np.abs(delta)),.03)
+        with self.assertRaisesRegex(RuntimeError,"INVALID_CARRY_POSTURE_REFERENCE"):
+            carry_posture_nullspace_direction(J,q,np.full(7,np.nan))
+
+
+class InstalledModeSchemaTests(unittest.TestCase):
+    def test_observer_uses_get_action_header_not_set_action_response(self):
+        import ast
+        from types import SimpleNamespace
+        code=p.placement_mode_observer_script()
+        tree=ast.parse(code)
+        expr=next(n.value for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=="passed" for x in n.targets))
+        mode=dict(action_desc="STAND_DEFAULT",status=dict(value=100))
+        reply=dict(header=dict(code=0),info=mode)
+        common=dict(action_info=mode,body_status=dict(value=1))
+        clock=SimpleNamespace(monotonic_ns=lambda:1_000_000_000)
+        state=dict(received_ns=950_000_000)
+        def check():return eval(compile(ast.Expression(expr),"<actual placement schema gate>","eval"),dict(reply=reply,common=common,state=state,time=clock))
+        self.assertTrue(check())
+        reply["header"]["code"]=1;self.assertFalse(check());reply["header"]["code"]=0
+        common["action_info"]=dict(action_desc="LOCOMOTION_STEP",status=dict(value=100));self.assertFalse(check())
+        common["action_info"]=mode;state["received_ns"]=700_000_000;self.assertFalse(check())
+        self.assertNotIn("create_publisher",code)
+
+class ToolProjectedTableTargetTests(unittest.TestCase):
+    def test_existing_tool_projection_is_kept_and_edge_point_has_radius_clearance(self):
+        cfg={'grasp_height_above_center_m':.01,'bottle_radius_m':.035,'bottle_height_m':.22,'table_bounds_min_world_m':[-.45,1.32,-.01],'table_bounds_max_world_m':[.45,1.88,.547],'tabletop_world_z_m':.547}
+        self.assertEqual(p.tool_projected_table_target([-.06,1.42,.8],[0.,0.,1.],cfg),[-.06,1.42,.657])
+        target=p.tool_projected_table_target([0.,1.33,.8],[0.,0.,1.],cfg)
+        self.assertAlmostEqual(target[1],1.38)
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.0,.8],[0.,0.,1.],cfg)
+    def test_measured_snapshot_never_replaced_by_legacy_fixture_adjustment(self):
+        import ast,inspect
+        node=next(n for n in ast.walk(ast.parse(inspect.getsource(p.prepare_delivery_scene))) if isinstance(n,ast.If) and 'fixture_height_delta' in ast.unparse(n.test))
+        condition=compile(ast.Expression(body=node.test),'actual_fixture_reprojection_guard','eval')
+        self.assertFalse(eval(condition,{'record':{'fixture_height_delta':{'height_m':.22}},'cfg':{'route_reference':{'path':'actual_native_snapshot'}}}))
+
+class TableTargetBodyRightTests(unittest.TestCase):
+    def test_explicit_body_right_and_50mm_bound(self):
+        cfg={'grasp_height_above_center_m':.01,'bottle_radius_m':.035,'bottle_height_m':.22,'table_bounds_min_world_m':[-.45,1.32,-.01],'table_bounds_max_world_m':[.45,1.88,.547],'tabletop_world_z_m':.547,'placement_tool_right_offset_m':.05}
+        target=p.tool_projected_table_target([-.03,1.42,.8],[0.,0.,1.],cfg,[.8,.6,0.])
+        self.assertAlmostEqual(target[0],.01);self.assertAlmostEqual(target[1],1.45)
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.42,.8],[0.,0.,1.],cfg)
+        cfg['placement_tool_right_offset_m']=.051
+        with self.assertRaises(ValueError):p.tool_projected_table_target([0.,1.42,.8],[0.,0.,1.],cfg,[.8,.6,0.])
+
+class ScaledAxisAngleUnitsTests(unittest.TestCase):
+    def test_real_one_degree_is_scaled_chord_not_raw_radians(self):
+        import math,numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import axis_grasp_error
+        theta=math.radians(1.)
+        R=np.array([[math.cos(theta),0.,math.sin(theta)],[0.,1.,0.],[-math.sin(theta),0.,math.cos(theta)]])
+        e=axis_grasp_error(np.zeros(3),R,np.zeros(3),np.zeros(3),np.array([0.,0.,1.]),np.array([0.,0.,1.]))
+        self.assertAlmostEqual(np.linalg.norm(e[3:]),.2*math.sin(theta/2.))
+        self.assertAlmostEqual(2.*math.asin(np.linalg.norm(e[3:])/.2),theta)
+        self.assertGreater(2.*math.asin(.017453292519943295/.2),math.radians(10.))
+
+
+class MeasuredPlacementApproachTests(unittest.TestCase):
+    def run_observation(self, errors, *, stale=False, generation=1):
+        from types import SimpleNamespace
+        state=SimpleNamespace(now=10.,index=0)
+        def tick(*args):state.now+=.02;state.index+=1
+        def observation():
+            return dict(source_host_ns=round((state.now-(1. if stale else 0.))*1e9),
+                actual_position_error_m=errors[min(state.index-1,len(errors)-1)],generation=generation)
+        return p.observe_placement_approach(tick,[0.,0.,0.],[0.,0.,1.],0.,observation,
+            generation=1,deadline_s=11.,clock=lambda:state.now)
+
+    def test_lag_can_settle_without_relaxing_five_mm(self):
+        result=self.run_observation([.00562]*10+[.004]*40)
+        self.assertTrue(result['pass_result'])
+        self.assertGreaterEqual(result['measured_window_s'],.20)
+        self.assertLessEqual(result['maximum_position_error_m'],.005)
+
+    def test_peaks_reset_window_and_unreached_or_stale_data_fail(self):
+        result=self.run_observation([.004]*5+[.006]+[.003]*40)
+        self.assertEqual(result['maximum_position_error_m'],.003)
+        for errors,options in [([.00562],{}),([.0],{'stale':True}),([.0],{'generation':2}),([float('nan')],{})]:
+            with self.assertRaisesRegex(RuntimeError,'PLACEMENT_APPROACH_NOT_REACHED'):
+                self.run_observation(errors,**options)
+
+
+class PlacementHostBudgetRegressionTests(unittest.TestCase):
+    def execute_owner(self, tick_wall_s):
+        # Offline owner contract test: fresh feedback and synthetic support;
+        # this does not run MuJoCo or establish a physical placement PASS.
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        state=SimpleNamespace(now=100.,writes={},calls=0)
+        fixture=PlacementTests();request=fixture.request()
+        request.update(schema="robotsim.x2.table-place-request.v1",owner_pid=os.getpid(),
+                       created_host_ns=round(state.now*1e9),navigation_and_composite_stop_pass=True,
+                       confirmed_stand=True,section_target_world_m=[.15,1.52,.70])
+        clock=SimpleNamespace(monotonic=lambda:state.now,monotonic_ns=lambda:round(state.now*1e9))
+        class Owner:
+            native_generation=1
+            last_published_arm_target={}
+            lift_phase={}
+            grip_command=0.
+            tracking_metrics={}
+            hand_command=0.
+            def refresh_native(self):
+                row=fixture.row(state.calls,pad=0. if self.hand_command==1. else 2.)
+                row.update(host_monotonic_ns=round(state.now*1e9),sim_time_s=state.now)
+                row["bodies"].update(pelvis=dict(position_m=[0.,0.,.65]),
+                    R_omnipicker_base_link=dict(position_m=[.15,1.52,.80],rotation=[1.,0.,0.,0.,1.,0.,0.,0.,1.]))
+                row["joints"]={"R_claw_joint":{"q":-1.}}
+                point=self.lift_phase.get("placement_target_world_m",[.15,1.52,.80])
+                if point[2]>.70 and self.hand_command!=1.:
+                    row["contacts"]=[c for c in row["contacts"] if c["body1"]!="raicom_delivery_table"]
+                self.native_row=row
+                self.tracking_metrics=dict(source_host_ns=row["host_monotonic_ns"],generation=1,actual_position_error_m=0.)
+            def write_phase(self,phase):pass
+            def send(self,target,seconds,stage,hand_command):
+                state.now+=tick_wall_s;state.calls+=1;self.hand_command=hand_command
+        n=Owner();n.lift_phase={}
+        original_approach=p.observe_placement_approach;original_support=p.observe_released_support
+        def approach(*args,**kw):return original_approach(*args,**kw,clock=clock.monotonic)
+        def support(*args,**kw):return original_support(*args,**kw,clock=clock.monotonic)
+        with patch.object(p,"time",clock),patch.object(p,"CIRCLE_CONTRACT",
+                {"circle_center_local_m":[.10,0.,0.],"local_bottle_axis_in_hand":[0.,0.,1.]},create=True), \
+             patch.object(p,"HAND_RIGHT",0.,create=True),patch.object(p,"HAND_OPEN",1.,create=True), \
+             patch.object(p,"RIGHT",[],create=True), \
+             patch.object(p,"write_durable_milestone",lambda path,value:state.writes.update({path:value}),create=True), \
+             patch.object(p,"observe_placement_approach",approach),patch.object(p,"observe_released_support",support):
+            return p.perform_native_placement(n,request),state
+
+    def test_recorded_host_overhead_completes_all_stages_without_relaxing_support(self):
+        # Saved runtime: 375 approach ticks + convergence consumed29.089s.
+        result,state=self.execute_owner(.077)
+        self.assertTrue(result["pass_result"])
+        self.assertGreater(result["elapsed_wall_s"],35.)
+        self.assertLess(result["elapsed_wall_s"],p.placement_execution_budget()["total_wall_s"])
+        self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+        self.assertEqual(result["maximum_pad_normal_force_n"],0.)
+        self.assertEqual(result["execution_timing"]["stage"],"FINAL_RELEASED_SUPPORT")
+        self.assertGreaterEqual(result["execution_timing"]["command_ticks"],925)
+
+    def test_wall_deadline_still_stops_and_source_freshness_is_not_relaxed(self):
+        from unittest.mock import patch
+        budget=p.placement_execution_budget()
+        with patch.object(p,"placement_execution_budget",return_value={**budget,"total_wall_s":1.}):
+            with self.assertRaisesRegex(RuntimeError,"PLACEMENT_WATCHDOG"):
+                self.execute_owner(.077)
+        with self.assertRaisesRegex(RuntimeError,"PLACEMENT_APPROACH_NOT_REACHED"):
+            self.execute_owner(.30)

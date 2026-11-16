@@ -46,6 +46,42 @@ The goal is to provide a reusable simulation and system-integration framework fo
 
 ## Current status
 
-RobotSim is currently in early platform bring-up.
+As of 2026-11-10, X2 research has progressed into real MuJoCo/MC standing,
+bounded locomotion, table-approach and manipulation integration. These are
+experiment-specific capabilities, not a blanket qualification of navigation,
+perception, manipulation or hardware deployment. Unity remains the intended
+high-fidelity frontend; its planned role is not evidence of completed integration.
 
-The current focus is validating the development environment and the MuJoCo, Unity, and ROS 2 integration architecture before implementing higher-level robot tasks.
+The active Issue #46 milestone uses the reviewed `X2-OmniPicker-STL` lower
+concave-pad support circle. Actual H300/D70/.200kg fixed-stance truth and fresh
+RGB-D grasps have passed bilateral load transfer, >=50 mm lift and >=1 s
+unsupported hold in the explicitly labeled SIMULATION_ONLY source-derived
+collision/control profile. The native interactive review entry is available.
+A bounded post-lift retract has passed actual native physics. The current task
+uses the human-approved two-table scene. Real carry episode20261108T190527Z
+measured0.346m retreat, about186.2deg signed turn,0.264m peak turn/braking
+excursion and a passing1.984s composite physical/controller-target stop;
+the independent native source-joint audit passed. Its legacy200mm settled
+centre check remained FAIL (213.5mm), which is preserved. A later turn measured
+about184.9deg with the source audit/stop passing and316.7mm braking excursion.
+These observations do not qualify strict pivot precision or full delivery.
+
+The separately labeled functional table-transfer profile replans from actual
+stopped pose and keeps the physical/source-joint/contact/freshness/stop gates.
+It now includes an actual-scene-screened second-table target and existing-owner
+contact-transfer/release code; end-to-end dynamic qualification is in progress.
+A complete H300 START-to-second-table physical transfer passed once in native
+MuJoCo/MC (episode20261109T221003Z); independent repeatability is still in
+progress. H300 fixed-table transfer passed with the opt-in MULTICCD numerical
+profile (episode20261110T053739Z); the current full START attempt was interrupted.
+H220 fresh RGB-D postured grasp/lift passed (episode20261110T035240Z); its restored
+standing, carry and placement remain unqualified. Unknown-bottle stance-adjustment, LiDAR-based
+grasp and hardware acceptance are not established by these results.
+The older chair outline and platform P0–P7 labels are historical scope.
+
+Read the [X2 task workflow](docs/workflows/06_X2_AUTONOMY_TASK.md) for task-stage
+scope and the [measured grasp findings](docs/research/issue46_truth_grasp_execution_findings.md)
+for exact evidence and limitations. The [project plan](docs/00_PROJECT_PLAN.md)
+P0–P7 labels are platform workstreams, not the user's X2 task Stage 2/3 labels.
+
+Current branch, evidence and next work: [Local02 handoff](docs/workflows/X2_TRANSFER_HANDOFF.md).

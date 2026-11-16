@@ -1,0 +1,30 @@
+<mujoco model="RAICOM X2 room workspace (MC runtime X2)">
+  <statistic center="0 0 0.6" extent="3.2"/>
+  <visual>
+    <headlight diffuse="0.5 0.5 0.5" ambient="0.2 0.2 0.2" specular="0.9 0.9 0.9"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="200" elevation="-20"/>
+  </visual>
+  <asset>
+    <model name="x2_mc_runtime"
+           file="../../raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml"/>
+    <model name="raicom_room"
+           file="../../../../reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml"/>
+    <model name="raicom_mug" file="mug_portable.xml"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.3 0.52 0.63" rgb2="0.3 0.52 0.63" markrgb="1 1 1" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+  <worldbody>
+    <frame name="x2_start_frame" pos="-1.5 -1.5 0" quat="0.7071067811865476 0 0 0.7071067811865476">
+      <attach model="x2_mc_runtime" prefix="x2_"/>
+    </frame>
+    <frame name="raicom_room_frame" pos="0 0 0" quat="1 0 0 0">
+      <attach model="raicom_room" prefix="raicom_"/>
+    </frame>
+    <frame name="mug_frame" pos="1.5 -1.4 0.55" quat="1 0 0 0">
+      <attach model="raicom_mug" prefix="mug_"/>
+    </frame>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+  </worldbody>
+</mujoco>

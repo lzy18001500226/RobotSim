@@ -29,6 +29,42 @@ The matrix is a floor, not permission to omit a directly affected integration le
 
 Robot mechanical-model changes have a separate mandatory source and human-approval gate in the [robot model-integrity contract](model_integrity.md). Passing L0-L5 checks, including a successful simulation, does not substitute for that approval or establish that an experimental mechanism matches the manufacturer model.
 
+## Minimum checks and evidence reuse
+
+The delivery loop is **observed failure -> scoped correction -> affected checks
+-> authorized bounded execution -> measured result**. A check must resolve a
+specific uncertainty; validation is not an independent workstream or a reason
+to keep a ready runtime idle.
+
+- Select checks from the changed dependency, not repository size.
+  Documentation-only work needs scoped diff/link checks, not unit, ROS or
+  physics runs. A localized implementation change needs relevant compilation
+  and regression checks, not the entire historical research suite.
+- Once those checks pass, move to the next authorized action. Repeat them only
+  after a relevant edit, failure, dependency change or unresolved concern.
+  Do not add tests that only restate the implementation or re-prove an
+  unchanged accepted baseline.
+- Reuse an accepted result with its artifact identity and relevant configuration.
+  Check changed inputs and cheap provenance checks; do not regenerate every
+  model, 0–100% fit, startup experiment or source inventory. Fresh runtime
+  telemetry and current process ownership remain current-run requirements.
+- One properly instrumented integrated MuJoCo/ROS run may supply relevant L2
+  and L3 evidence together. Do not add a separate headless/infrastructure
+  campaign that tests the same unchanged behavior without necessary new evidence.
+- For changed contact geometry, grasp frames or route intent, prefer the
+  existing web view for early human collaboration. Show planned geometry and
+  recorded physical data separately. Record the version and visual scope of
+  acceptance; reopen it only when that scope changes or evidence contradicts it.
+- Stop an experiment at its first genuine failure, retain it, and choose the
+  next distinct correction from the measurements. Independent repeatability
+  after PASS is justified; an unchanged failed retry is not.
+- Lead reports with physical progress, the first actual failure and the next
+  correction. Counts of tests, screenshots, acknowledgements and offline
+  replays do not substitute for the requested runtime outcome.
+
+These rules reduce duplicate work. They do not lower thresholds, erase
+failures, authorize motion, or turn a geometric fit into physical validation.
+
 ## Test retention and generated evidence
 
 Permanent root `tests/` and package-local tests are maintained regression coverage. Do not remove a test because it is old. One-off debug probes, diagnostic scripts, temporary visual experiments, and ad-hoc reproduction harnesses belong in research or evidence tooling, not in the permanent test suite by default.
