@@ -290,6 +290,12 @@ def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=Fa
         time.sleep(.02)
     raise RuntimeError("WAIST_PREPOSITION_NOT_REACHED")
 
+def pre_raise_target_in_source(target, limits):
+    """Share the delivered elbow command bounds between planning/execution."""
+    lo,hi,_=limits['right_elbow_joint']
+    return math.isfinite(target) and lo+.03<=target<=hi-.03
+
+
 def pre_raise_forearm(output, proposal, limits, effort_cap, *, elbow_only=False):
     """Source-bounded same-owner elbow raise before torso lowering/turning."""
     from scripts.agent import path_governance as pg
@@ -297,7 +303,7 @@ def pre_raise_forearm(output, proposal, limits, effort_cap, *, elbow_only=False)
     from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
     import mujoco
     row=read_native(output/'native_latest.json');name='right_elbow_joint';target=float(proposal['pre_raise_forearm_target_rad']);lo,hi,speed=limits[name]
-    if not lo+.03<=target<=hi-.03:raise ValueError('PRE_RAISE_SOURCE_MARGIN')
+    if not pre_raise_target_in_source(target,limits):raise ValueError('PRE_RAISE_SOURCE_MARGIN')
     scene=json.loads((output/'live_view_scene.json').read_text())['scene'];model=mujoco.MjModel.from_xml_path(scene['path']);data=mujoco.MjData(model);apply_recorded_native_frame(model,data,row)
     root=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,'pelvis');robots={i for i in range(model.nbody) if model.body_rootid[i]==root};ids={n:mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n) for n in row['joints']};rootadr=int(model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,'floating_base_joint')]);lower=json.loads(Path(proposal['native_lowering_reference']['path']).read_text());legs=[n for n in ids if any(x in n for x in ('hip_','knee_','ankle_'))];feet={'left_ankle_pitch_link','left_ankle_roll_link','right_ankle_pitch_link','right_ankle_roll_link'}
     R=row['bodies']['pelvis']['rotation'];yaw=math.atan2(R[3],R[0]);goals={**proposal['waist_target_rad'],'waist_roll_joint':row['joints']['waist_roll_joint']['q']};goals['waist_yaw_joint']=(proposal['torso_world_yaw_target_rad']-yaw+math.pi)%(2*math.pi)-math.pi;bad=[]

@@ -752,7 +752,13 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
     yaw_adr = int(study.qadr[0])
     prepared = study.templates["prepared"].copy()
     preparation = [q.copy() for q in study.preparation]
-    if pre_raise_target_rad not in (-2.15,-2.25,-2.45):raise ValueError("unsupported source-valid pregrasp pose")
+    if pre_raise_target_rad not in (-2.15,-2.25):raise ValueError("unsupported source-valid pregrasp pose")
+    if far_observe:
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import native_leg_safety_contract
+        from scripts.research.issue46.native_runtime.standing_waist_preposition import pre_raise_target_in_source
+        source_limits,_=native_leg_safety_contract(include_upper_body=True)
+        if not pre_raise_target_in_source(pre_raise_target_rad,source_limits):
+            return None,[dict(stage="PRE_RAISE_SOURCE_MARGIN",target_rad=pre_raise_target_rad)]
     if far_observe and pre_raise_target_rad!=-2.15:
         from scripts.research.issue46.grasp.stance_region_static_review import ACTIVE
         prepared[int(study.qadr[ACTIVE.index("right_elbow_joint")])]=pre_raise_target_rad
@@ -803,7 +809,7 @@ def region_candidates(study, native_row, estimated_center, visibility_check=None
         compact_checked=True
         return region_candidates(study,native_row,estimated_center,visibility_check,
             reference_heading=reference_heading,far_observe=True,
-            pre_raise_target_rad=-2.45,actual_stance_only=True)
+            pre_raise_target_rad=-2.25,actual_stance_only=True)
     try:
         for candidate_anchor, label,candidate_yaw,pitch_target in candidates:
             yaw=candidate_yaw

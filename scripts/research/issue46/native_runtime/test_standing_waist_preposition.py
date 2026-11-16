@@ -128,6 +128,16 @@ class TorsoTurnTest(unittest.TestCase):
         self.assertIn("BODY_OBSERVER_VELOCITY_FORBIDDEN",script)
         self.assertLess(script.index('if mode=="observe":'),script.index('if mode!="restore":request_source(1001)'))
         compile(script,"observer","exec")
+
+class SharedPreRaiseSourceBoundsTests(unittest.TestCase):
+    def test_compact_candidate_respects_exact_delivered_elbow_range(self):
+        bounds={'right_elbow_joint':[-2.356194,0.,14.6608]}
+        self.assertTrue(w.pre_raise_target_in_source(-2.25,bounds))
+        self.assertTrue(w.pre_raise_target_in_source(-2.15,bounds))
+        self.assertFalse(w.pre_raise_target_in_source(-2.45,bounds))
+        self.assertFalse(w.pre_raise_target_in_source(0.,bounds))
+        self.assertFalse(w.pre_raise_target_in_source(float('nan'),bounds))
+
 if __name__=="__main__":unittest.main()
 
 
