@@ -221,6 +221,18 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # Allow34.4deg here, still inside the existing43deg DRIVE region.
         # Actual whole-body, workspace and contact gates remain mandatory.
         result["intermediate_turn_heading_tolerance_rad"]=.60
+        # Actual zero-to-stopped yaw in the same loaded DEFAULT turn:
+        # E49=-.2639165802, E50=-.1843895465, E52=-.3358612838 rad.
+        # Median signed drift corrects the old same-direction brake prediction.
+        result["measured_turn_stop_delta_rad"]=-.2639165801765029
+        result["turn_stop_prediction_evidence"]={
+            "classification":"EMPIRICAL_TASK_BRAKING_NOT_SOURCE_CONTROLLER_CHANGE",
+            "source_episodes":["raicom-stl-xvfb-native-reset-stand-20261116T000821Z",
+                               "raicom-stl-xvfb-native-reset-stand-20261116T003812Z",
+                               "raicom-stl-xvfb-native-reset-stand-20261116T010232Z"],
+            "zero_to_stopped_yaw_rad":[-.2639165801765029,-.18438954653910677,-.3358612837974184],
+            "estimator":"MEDIAN_SIGNED_YAW; actual stopped pose and physical gates remain mandatory"}
+
         # The old predicted0.50m stop fired after only0.127m of actual
         # retreat (233536Z). Its stopped turn then displaced the body0.455m
         # toward the pickup table; the first forward step hit the right hip.

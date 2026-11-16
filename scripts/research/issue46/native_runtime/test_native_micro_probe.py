@@ -25,6 +25,18 @@ def rows():
 
 class MicroTests(unittest.TestCase):
 
+    def test_signed_turn_braking_prediction_does_not_repeat_early_stop(self):
+        prior={"measured_turn_stop_delta_rad":-.2639165801765029}
+        bias=micro.turn_stopping_bias({},prior)
+        self.assertGreater(.10-bias,.35)
+        self.assertAlmostEqual(micro.turn_stopping_bias(
+            {"turn_observed_stop_delta_rad":-.184},prior),-.184)
+        self.assertEqual(micro.turn_stopping_bias({},{}),0.)
+        for bad in [-.401,.401,float("nan")]:
+            with self.assertRaises(ValueError):
+                micro.turn_stopping_bias({},{"measured_turn_stop_delta_rad":bad})
+
+
     def test_recovery_turn_selects_vendor_policy_before_rearming(self):
         cfg={"motion_mode":"LOCOMOTION_STEP"};requests=[]
         def request(mode):

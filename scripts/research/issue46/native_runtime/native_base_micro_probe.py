@@ -1342,6 +1342,20 @@ def measured_turn_refinement(mission, stopped, bearing, stop):
 
 
 
+
+def turn_stopping_bias(mission, delivery):
+    """Use signed measured braking yaw; negative means counter-rotation.
+
+    A within-run measured stop takes precedence over the pinned prior trials.
+    This predicts task braking only; the actual stopped pose is still checked.
+    """
+    value=mission.get("turn_observed_stop_delta_rad",
+                      (delivery or {}).get("measured_turn_stop_delta_rad",0.))
+    if not math.isfinite(value) or not -.40<=value<=.40:
+        raise ValueError("TURN_STOP_SIGNED_PREDICTION_SCOPE")
+    return float(value)
+
+
 def prepare_delivery_turn_mode(n, cfg, qualified_stop):
     """Select the installed turn policy while physically stopped and zero."""
     if qualified_stop.get("pass") is not True or n.moving:
@@ -1377,7 +1391,7 @@ def delivery_heading_recovery(mission, stopped, goal, qualified_stop, remaining_
         target_unwrapped_yaw=pose["yaw"]+error,turn_start_source_s=stamp,
         away_heading_rad=bearing,turn_yaw_history=[],
         turn_source_and_mode_observed=False,turn_refinement_count=0,
-        turn_observed_stop_delta_rad=0.,turn_max_center_excursion_m=0.,
+        turn_max_center_excursion_m=0.,
         turn_centre_recovery=False,delivery_alignment_state=None,
         delivery_forward_progress=None)
 
@@ -2123,7 +2137,9 @@ def run_carry_navigation(n,contract):
                         mission["target_unwrapped_yaw"]=previous_target+(bearing-previous_target+math.pi)%(2*math.pi)-math.pi
                         mission["away_heading_rad"]=bearing
                     turn_error=mission["target_unwrapped_yaw"]-mission["unwrapped_yaw"]
-                    control_turn_error=turn_error-float(mission.get('turn_observed_stop_delta_rad',0.))
+                    stopping_bias=turn_stopping_bias(mission,cfg.get("delivery"))
+                    control_turn_error=turn_error-stopping_bias
+                    mission["signed_turn_stop_prediction_rad"]=stopping_bias
                     history=mission.get("turn_yaw_history",[])
                     reserve=0.;rate=0.
                     if len(history)>2 and history[-1][0]-history[0][0]>=1.:
@@ -2138,7 +2154,7 @@ def run_carry_navigation(n,contract):
                     mission["measured_yaw_rate_rad_s"]=rate
                     mission["profile_observed_stop_reserve_rad"]=profile_reserve
                     mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,turn_error if profile_reserve else rate)
-                    if 'turn_observed_stop_delta_rad' in mission:mission['predicted_post_zero_yaw_rad']=mission['turn_observed_stop_delta_rad']
+                    if stopping_bias:mission["predicted_post_zero_yaw_rad"]=stopping_bias
                     mission["turn_max_center_excursion_m"]=max(mission.get("turn_max_center_excursion_m",0.),math.hypot(p["x"]-mission.get("turn_origin_pose",start)["x"],p["y"]-mission.get("turn_origin_pose",start)["y"]))
                     if cfg.get("compact_turn") and not ((cfg.get("delivery") or {}).get("turn_drift_is_diagnostic") or cfg.get("review_prefix_only")) and mission["turn_max_center_excursion_m"]>.30:raise RuntimeError("COMPACT_TURN_RADIUS_300MM")
                     centre_origin=mission.get("turn_origin_pose",start)
@@ -2147,7 +2163,7 @@ def run_carry_navigation(n,contract):
                         if centre_error>=.025:mission["turn_centre_recovery"]=True
                         elif centre_error<=.01:mission["turn_centre_recovery"]=False
                     recovering=cfg.get("inplace_centre_hold") and mission.get("turn_centre_recovery",False)
-                    if abs(control_turn_error)>(.08 if 'turn_observed_stop_delta_rad' in mission else max(.08,reserve)) or recovering:
+                    if abs(control_turn_error)>(.08 if stopping_bias else max(.08,reserve)) or recovering:
                         if abs(turn_error)>(2.*math.pi if (cfg.get("delivery") or {}).get("delivery_turn_direction")=="CLOCKWISE" else math.pi)+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=control_turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(control_turn_error)<float((cfg.get("delivery") or {}).get("turn_terminal_angular_taper_angle_rad",.60)) else cfg["angular_command_cap"],control_turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
@@ -2436,6 +2452,7 @@ def run_carry_navigation(n,contract):
                         cfg["delivery_alignment_stop_pass"]=True
                         prepare_delivery_turn_mode(n,cfg,heading_stop)
                         mission.pop("clock_recovery_turn_stop",None)
+                        mission.pop("turn_observed_stop_delta_rad",None)
                         mission.update(recovery);bearing=mission["away_heading_rad"]
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
