@@ -132,6 +132,15 @@ class ClockRecoveryTests(unittest.TestCase):
         for key in ("transit_root_cap_m_s","turn_braking_footprint_m","retreat_cross_track_limit_m"):
             self.assertEqual(cfg[key],profile[key])
 
+    def test_stopped_turn_is_inside_forward_correction_region(self):
+        from pathlib import Path
+        profile=json.loads((Path(task.__file__).resolve().parents[4]/"simulation/mujoco/scenes/raicom2026/config/reviewed_carry_step_h220_forward_no_roll.json").read_text())
+        cfg=task.task_route_profile(profile,fast_task_timing=True)
+        self.assertLess(.4435328669681766,cfg["intermediate_turn_heading_tolerance_rad"])
+        self.assertLess(cfg["intermediate_turn_heading_tolerance_rad"],cfg["delivery_align_reentry_rad"])
+        self.assertEqual(cfg["delivery_tracking_angular_cap_rad_s"],.20)
+        self.assertEqual(profile["intermediate_turn_heading_tolerance_rad"],.40)
+
     def test_nearby_reference_must_not_replace_actual_collision_pose(self):
         actual=[1.0198491189,-1.4223358472]
         reference=[1.0026981343,-1.4909411875]

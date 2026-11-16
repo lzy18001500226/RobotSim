@@ -1282,7 +1282,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
         if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
         if delivery.get("gait_prepare_required_load_states",2) not in (1,2):raise ValueError("gait readiness scope")
         if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
-        if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.40:raise ValueError("intermediate task heading bound")
+        if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.60:raise ValueError("intermediate task heading bound")
         if delivery.get("schema")!="robotsim.x2.two-table-delivery.v1" or delivery.get("frame")!="native_scene_world":raise ValueError("delivery scene contract")
         if len(delivery["base_goal_world_xy"])!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in delivery["base_goal_world_xy"]):raise ValueError("delivery goal workspace")
     if compact_centre_feedback and not compact_turn:raise ValueError("combined centre feedback requires compact carry")

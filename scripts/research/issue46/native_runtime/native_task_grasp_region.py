@@ -216,6 +216,11 @@ def task_route_profile(profile, *, fast_task_timing=False):
         # progress; use the existing simultaneous DRIVE steering inside43deg.
         # Larger errors still stop; actual environment/contact/velocity gates stay.
         result["delivery_align_reentry_rad"]=.75
+        # A stopped turn is an intermediate navigation pose, not placement IK.
+        # Saved25.4deg error has a collision-clear nominal forward correction.
+        # Allow34.4deg here, still inside the existing43deg DRIVE region.
+        # Actual whole-body, workspace and contact gates remain mandatory.
+        result["intermediate_turn_heading_tolerance_rad"]=.60
         # The old predicted0.50m stop fired after only0.127m of actual
         # retreat (233536Z). Its stopped turn then displaced the body0.455m
         # toward the pickup table; the first forward step hit the right hip.
