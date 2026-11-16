@@ -9,7 +9,7 @@ from .native_container_guard import require_exclusive_x2_runtime
 class NativeContainerGuardTests(unittest.TestCase):
     def record(self):
         return dict(Name="/mosim-sim-1",Config=dict(Image="mosim/ros1-dev:pin",
-                    Labels={"com.docker.compose.project":"mosim"}),
+                    Labels={"com.docker.compose.project":"mosim"},Env=["ROS_DISTRO=noetic"]),
                     HostConfig=dict(NetworkMode="mosim_default",Privileged=False),
                     Mounts=[dict(Source="/mnt/host/d/MoSim",Destination="/workspace/MoSim")])
 
@@ -23,6 +23,21 @@ class NativeContainerGuardTests(unittest.TestCase):
 
     def test_existing_separate_mosim_bridge_is_preserved(self):
         self.assertEqual(self.check([self.record()])[0]["action"],"UNTOUCHED")
+
+    def test_network_disabled_mosim_rebuild_is_preserved(self):
+        r=self.record();r['Name']='/mosim-rebuild-check'
+        r['HostConfig']['NetworkMode']='none'
+        self.assertEqual(self.check([r])[0]['action'],'UNTOUCHED')
+
+    def test_noetic_image_and_read_only_wslg_socket_are_preserved(self):
+        r=self.record();r["Config"]["Image"]="mosim:noetic-20261116"
+        r["Mounts"].append(dict(Source="/run/desktop/mnt/host/wsl/socket",Destination="/tmp/.X11-unix",RW=False))
+        r["Mounts"].append(dict(Source="/usr/lib/wsl",Destination="/usr/lib/wsl",RW=False))
+        self.assertEqual(self.check([r])[0]["action"],"UNTOUCHED")
+        r["Mounts"][-1]["RW"]=True
+        with self.assertRaises(RuntimeError):self.check([r])
+        r["Mounts"][-1]["RW"]=False;r["Config"]["Env"]=["ROS_DISTRO=humble"]
+        with self.assertRaises(RuntimeError):self.check([r])
 
     def test_unknown_or_x2_container_is_rejected(self):
         for key in ("Image","Labels"):

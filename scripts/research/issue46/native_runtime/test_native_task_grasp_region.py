@@ -222,7 +222,7 @@ class ClockRecoveryTests(unittest.TestCase):
 
 
 class FreshRgbdAcquisitionTests(unittest.TestCase):
-    def run_acquisition(self, durations, *, timeout_s=3.0, generation=1, read_error=None):
+    def run_acquisition(self, durations, *, timeout_s=3.0, generation=1, read_error=None,maximum_source_age_s=.20):
         from unittest.mock import patch
         import itertools
         clock = {"now": 1_000_000_000, "calls": 0}
@@ -238,7 +238,7 @@ class FreshRgbdAcquisitionTests(unittest.TestCase):
                 "top_world_z_m": .77, "axis_world": [0.,0.,1.], "diameter_m": .07}
         with patch.object(task.time,"monotonic_ns",side_effect=lambda:clock["now"]):
             result=task.acquire_control_observation(read,capture,generation=1,
-                after_source_ns=0,attempts=attempts,timeout_s=timeout_s)
+                after_source_ns=0,attempts=attempts,timeout_s=timeout_s,maximum_source_age_s=maximum_source_age_s)
         return result, attempts
 
     def test_cold_image_rejected_and_new_frame_qualified_without_restamping(self):
@@ -254,6 +254,25 @@ class FreshRgbdAcquisitionTests(unittest.TestCase):
     def test_consistently_slow_images_hit_acquisition_deadline(self):
         with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_ACQUISITION"):
             self.run_acquisition([.21,.21,.21,.21],timeout_s=.5)
+
+    def test_stationary_pair_accepts_observed_380ms_processing_without_restamping(self):
+        from scripts.research.issue46.perception import native_rgbd_grasp as vision
+        (_,_,first),attempts=self.run_acquisition([.380],maximum_source_age_s=1.)
+        self.assertEqual(first['source_host_ns'],1_000_000_000)
+        self.assertTrue(attempts[0]['accepted'])
+        second=dict(first,source_host_ns=1_400_000_000,created_host_ns=1_780_000_000)
+        snapshot=vision.make_stationary_snapshot(first,second,generation=1,
+                    now_ns=1_780_000_000,maximum_source_age_s=1.)
+        self.assertEqual(snapshot['maximum_source_age_s'],1.)
+        self.assertEqual(snapshot['original_observation']['source_host_ns'],1_000_000_000)
+        self.assertEqual(vision.qualify_stationary_snapshot(snapshot,generation=1,
+                    now_ns=2_000_000_000)['position_m'],first['estimated_center_world_m'])
+        with self.assertRaisesRegex(RuntimeError,'STALE_RGBD_SOURCE'):
+            vision.qualify_estimate(second,generation=1,now_ns=1_780_000_000)
+        second['source_host_ns']=700_000_000
+        with self.assertRaisesRegex(RuntimeError,'STALE_RGBD_SOURCE'):
+            vision.make_stationary_snapshot(first,second,generation=1,
+                        now_ns=1_780_000_000,maximum_source_age_s=1.)
 
     def test_source_generation_change_is_not_retried(self):
         with self.assertRaisesRegex(RuntimeError,"TASK_RGBD_GENERATION_CHANGED"):

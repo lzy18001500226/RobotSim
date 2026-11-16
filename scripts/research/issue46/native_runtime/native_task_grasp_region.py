@@ -17,22 +17,23 @@ from scripts.agent import path_governance as pg
 
 ROOT = Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46")
 FAR_CANDIDATE_SHIFT_M = .90  # Same task search extent as the existing navigation envelope.
+STATIONARY_RGBD_MAX_SOURCE_AGE_S = 1.0
 
 
-def control_observation(estimated, native, *, now_ns=None):
-    """Envelope a successful estimator return; keep its original freshness gate."""
+def control_observation(estimated, native, *, now_ns=None, maximum_source_age_s=.20):
+    """Envelope a successful estimator return without rewriting source time."""
     from scripts.research.issue46.perception import native_rgbd_grasp as vision
     now = time.monotonic_ns() if now_ns is None else now_ns
     record = dict(estimated, **{"pass": True}, estimated_center_world_m=[
         *estimated["center_xy_world_m"], estimated["top_world_z_m"]-.11],
         source_host_ns=native["host_monotonic_ns"], created_host_ns=now,
         generation=native["generation"], object_truth_used_by_estimator=False)
-    vision.qualify_estimate(record, generation=native["generation"], now_ns=now)
+    vision.qualify_estimate(record, generation=native["generation"], now_ns=now,maximum_source_age_s=maximum_source_age_s)
     return record
 
 
-def acquire_control_observation(read_native, capture, *, generation, after_source_ns, attempts, timeout_s=3.0):
-    """Discard slow image results; preserve the unchanged 200ms source gate."""
+def acquire_control_observation(read_native, capture, *, generation, after_source_ns, attempts, timeout_s=3.0,maximum_source_age_s=.20):
+    """Discard expired image results using the caller's observation policy."""
     deadline = time.monotonic_ns()+int(timeout_s*1e9)
     while time.monotonic_ns() < deadline:
         native = read_native()
@@ -55,7 +56,7 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
             record["failure"] = "TASK_RGBD_ACQUISITION_DEADLINE"
             raise RuntimeError(record["failure"])
         try:
-            observation = control_observation(estimated, native, now_ns=ended)
+            observation = control_observation(estimated, native, now_ns=ended,maximum_source_age_s=maximum_source_age_s)
         except RuntimeError as exc:
             record["failure"] = str(exc)
             if not str(exc).startswith("STALE_RGBD_SOURCE:"):
@@ -71,10 +72,10 @@ def acquire_control_observation(read_native, capture, *, generation, after_sourc
 
 def acquire_stationary_control_snapshot(read_native, capture, *, generation,
                                         after_source_ns, acquisition_audit,
-                                        index, timeout_s=6.0):
+                                        index, timeout_s=6.0,maximum_source_age_s=.20):
     """No-motion readiness: retry an expired verification before freezing it.
 
-    Keep both image source stamps and the 200ms check. The total budget equals
+    Keep both image source stamps and the selected age policy. The total budget equals
     the previous two 3s acquisitions; physical/source faults still propagate.
     """
     from scripts.research.issue46.perception import native_rgbd_grasp as vision
@@ -93,12 +94,12 @@ def acquire_stationary_control_snapshot(read_native, capture, *, generation,
             native, rgb, obs = acquire_control_observation(
                 read_native, capture, generation=generation,
                 after_source_ns=after_source_ns, attempts=audit["attempts"],
-                timeout_s=min(3., remaining_s))
+                timeout_s=min(3., remaining_s),maximum_source_age_s=maximum_source_age_s)
             after_source_ns = native["host_monotonic_ns"]
             if label == "b":
                 try:
                     snapshot = vision.make_stationary_snapshot(
-                        observations[0], obs, generation=generation)
+                        observations[0], obs, generation=generation,maximum_source_age_s=maximum_source_age_s)
                 except RuntimeError as exc:
                     if not str(exc).startswith("STALE_RGBD_SOURCE:"):
                         raise
@@ -1029,7 +1030,8 @@ def execute(run, container, environment, output, scene, cache, reference, limits
             native, captured_images, snapshot = acquire_stationary_control_snapshot(
                 lambda: read_fresh_native_row(output/"native_latest.json"), capture,
                 generation=warm["generation"], after_source_ns=after_source_ns,
-                acquisition_audit=acquisition_audit, index=index)
+                acquisition_audit=acquisition_audit, index=index,
+                maximum_source_age_s=STATIONARY_RGBD_MAX_SOURCE_AGE_S)
             after_source_ns = native["host_monotonic_ns"]
             # Only a successfully frozen fresh pair can reach planning or PNG I/O.
             for label,picture in captured_images:
@@ -1145,5 +1147,5 @@ def execute(run, container, environment, output, scene, cache, reference, limits
         renderer.close()
         pg.write_new_text(output/"task_rgbd_acquisition.json", json.dumps({
             "classification": "FRESH_RGBD_ACQUISITION_WITH_SLOW_FRAME_REJECTION",
-            "maximum_source_age_s": .20, "timestamp_rewriting": False,
+            "maximum_source_age_s": STATIONARY_RGBD_MAX_SOURCE_AGE_S, "timestamp_rewriting": False,
             "samples": acquisition_audit}, indent=2)+"\n")

@@ -15,13 +15,15 @@ def require_exclusive_x2_runtime():
         # separate bridge and no X2 assets. Unknown containers remain blocked.
         mounts=r.get("Mounts",[])
         isolated_mosim=(labels.get("com.docker.compose.project")=="mosim"
-            and config.get("Image","").startswith("mosim/")
-            and host.get("NetworkMode")=="mosim_default"
+            and config.get("Image","").startswith(("mosim/","mosim:"))
+            and "ROS_DISTRO=noetic" in config.get("Env",[])
+            and host.get("NetworkMode") in ("mosim_default","none")
             and not host.get("Privileged",False)
             and host.get("PidMode","")!="host" and host.get("IpcMode","")!="host"
             and bool(mounts) and all(
-                m.get("Destination","").startswith("/workspace/MoSim")
-                and "robotsim" not in m.get("Source","").lower()
+                (m.get("Destination","").startswith("/workspace/MoSim")
+                 and "robotsim" not in m.get("Source","").lower())
+                or (m.get("Destination") in ("/tmp/.X11-unix","/usr/lib/wsl") and m.get("RW") is False)
                 for m in mounts))
         if not isolated_mosim:
             raise RuntimeError("conflicting or unverified container:"+r.get("Name",r.get("Id","UNKNOWN")))

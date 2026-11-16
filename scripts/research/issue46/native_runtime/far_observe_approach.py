@@ -193,7 +193,10 @@ def forward_turn_command(pose,goal,linear,angular):
 
 def forward_table_plane_reached(pose,goal,origin,*,delay_s=.80):
     """Do not chase lateral error by driving beyond the checked forward station."""
-    if abs(goal[1]-origin[1])<=.15:return False
+    # A small lateral target still needs forward braking. Otherwise a missed
+    # diagonal is chased beyond its X station until the outer-box stop, which
+    # leaves too little space for the actual gait coast (case4 foot/table hit).
+    if goal[0]-origin[0]<=.06:return False
     return pose["x"]+delay_s*max(0.,pose["vx"])>=goal[0]-.02
 
 

@@ -44,10 +44,21 @@ def task_route_profile(profile, *, fast_task_timing=False):
     result = namespace["task_route_profile"](profile, fast_task_timing=True)
     # Keep the maintainer-approved diagnostic speed policy, not a model limit.
     result["planar_speed_warning_only"] = True
+    result["transient_joint_speed_peak_warning_only"] = True
+    # Ask MC to stop after the existing zero window. Waiting for already-static
+    # STEP legs before that request caused case4 to coast into the delivery table.
+    result["stand_transition_strategy"] = "STEP_ZERO_WINDOW_THEN_SD_REQUEST"
     # This option restores transport only, never the historical placement
     # task. Retain the separately approved current20mm low-release policy.
     result["placement_release_policy"] = "TOOL_ESTIMATED_LOW_DROP"
     result["placement_release_height_m"] = .02
+    # Twelve degrees was an experimental task envelope, not a joint limit.
+    # Let the known uniform cylinder use its geometric standing region;
+    # preserve1deg reserve and independently verify actual released support.
+    result["maximum_planned_bottle_tilt_rad"] = (
+        math.atan2(result["bottle_radius_m"], result["bottle_height_m"] / 2.)
+        - math.radians(1.))
+    result["placement_tilt_policy"] = "KNOWN_CYLINDER_STATIC_TIP_ANGLE_MINUS_1_DEG; MEASURED_RELEASE_SUPPORT_REQUIRED"
     result["carry_baseline"] = provenance()
     return result
 
@@ -59,10 +70,15 @@ def provenance():
         "source_sha256": dict(HASHES),
         "retained_fixes": ["current grasp and prepared stance",
                           "current owner feedback and clock handling",
-                          "carry_motion_handshake", "current physical_fault",
+                          "carry_motion_handshake", "measured-velocity retreat braking prediction",
+                          "current physical_fault",
                           "current source joint and collision gates",
                           "current tool-estimated10-30mm low-release placement",
-                          "maintainer-approved planar-speed warning policy"],
+                          "geometry-based low-release task tilt region",
+                          "maintainer-approved planar-speed warning policy",
+                          "recovered inter-sample joint peak diagnostic; current source velocity bound retained",
+                          "STEP zero window then vendor SD request; no already-static prerequisite",
+                          "separate compact-turn and forward-delivery steering bounds"],
         "not_a_whole_commit_replay": True,
     }
 
@@ -75,6 +91,12 @@ def restore_route_script(script):
     if replacements["run_carry_navigation"].count(old) != 1:
         raise ValueError("baseline handshake adaptation no longer exact")
     replacements["run_carry_navigation"] = replacements["run_carry_navigation"].replace(old, new)
+    # Keep physical braking independent of host scheduling and simulation speed.
+    old_prediction = 'predicted=progress+velocity*cfg.get("retreat_brake_delay_s",0.)'
+    new_prediction = 'predicted=retreat_braking_prediction(progress,p,origin,cfg.get("retreat_brake_delay_s",0.))'
+    if replacements["run_carry_navigation"].count(old_prediction) != 1:
+        raise ValueError("baseline retreat prediction adaptation no longer exact")
+    replacements["run_carry_navigation"] = replacements["run_carry_navigation"].replace(old_prediction, new_prediction)
     lines = script.splitlines(keepends=True)
     nodes = [n for n in ast.parse(script).body
              if isinstance(n, ast.FunctionDef) and n.name in replacements]

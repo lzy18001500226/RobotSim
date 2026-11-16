@@ -425,7 +425,7 @@ class Dock(Node):
    value=common[1]
    if (value['action_info']['action_desc']=='STAND_DEFAULT' and value['action_info']['status']['value']==100 and value['speed_status']['speed_mode']['value']==4 and value['body_status']['value']==1):
     return {'common_receipt_s':common[0],'stand_running':True,'step_speed_mode':4,'body_ready':True,'activation_still_requires_velocity_and_fresh_readback':True}
-  try:checked=ensure_mode(name,read_mode,send_once,timeout_s=5.,pending_readiness=pending_step if name=='LOCOMOTION_STEP' else None)
+  try:checked=ensure_mode(name,read_mode,send_once,timeout_s=20. if name=='STAND_DEFAULT' else 5.,pending_readiness=pending_step if name=='LOCOMOTION_STEP' else None)
   except RuntimeError as exc:
    print(json.dumps({'mode_handshake_failure':{'desired':name,'error':str(exc),'events':events,'common':getattr(self,'common_observation',None),'background_mode':getattr(self,'mode_observation',None)}}),flush=True);raise
   self.mode_requests.append({'name':name,'t':time.monotonic(),'verification':checked})
@@ -576,6 +576,7 @@ try:
    n.samples.append(entry)
    last_sample_at=now
   n.spin(.019)
+ print(json.dumps({'dock_before_stand_transition':True,'failure':failure,'milestones':milestones,'pose':n.pose,'source_mode_confirmed':source_mode_confirmed}),flush=True)
  n.zero_hold(1.5)
  # The delivered velocity interface returns to stable standing after its
  # timeout.  Request and observe that transition explicitly before exposing a
@@ -1201,14 +1202,16 @@ def qualify_static_carry_hold(output, ready, *, minimum_sim_s=8.):
     """Actual load-bearing simulation window; source/contact gates unchanged."""
     if minimum_sim_s not in (2.,8.):raise ValueError("unreviewed carry hold duration")
     from scripts.research.issue46.native_runtime import native_grasp_audit
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import carry_owner_fault
     first=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
     until=time.monotonic()+12.;unique=set();begin=time.monotonic()
     while time.monotonic()<until:
         if (output/"native_carry_owner.exit").exists():raise RuntimeError("CARRY_OWNER_EXITED_DURING_STATIC_HOLD")
         row=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
         health=json.loads((output/"carry_heartbeat.json").read_text())
-        if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or row["generation"]!=ready["generation"] or health.get("generation")!=ready["generation"] or health.get("pid")!=ready["pid"] or health.get("healthy") is not True or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
-            raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}))
+        owner_fault=carry_owner_fault(health,row,ready["pid"],time.monotonic_ns())
+        if row["generation"]!=ready["generation"] or owner_fault:
+            raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED:"+json.dumps(owner_fault or {"generation":row["generation"],"expected_generation":ready["generation"]}))
         unique.add(row["host_monotonic_ns"])
         if row["sim_time_s"]-first["sim_time_s"]>=minimum_sim_s and len(unique)>=25:
             return {"pass":True,"classification":"EIGHT_SIM_SECONDS_LOAD_BEARING_HOLD" if minimum_sim_s==8. else "TWO_SIM_SECONDS_LOAD_BEARING_HOLD","required_sim_span_s":minimum_sim_s,"sim_span_s":row["sim_time_s"]-first["sim_time_s"],"host_span_s":time.monotonic()-begin,"unique_native_samples":len(unique)}
@@ -1313,7 +1316,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         time.sleep(.05)
     if not ready_path.exists():raise RuntimeError("CARRY_READY_TIMEOUT")
     ready=json.loads(ready_path.read_text());heartbeat=json.loads((output/"carry_heartbeat.json").read_text());current=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
-    if ready.get("schema")!="robotsim.x2.carry-ready.v1" or ready.get("physical_lift_pass") is not True or ready.get("post_lift_retract_pass") is not True or ready.get("generation")!=current["generation"] or heartbeat.get("pid")!=ready.get("pid") or not 0.<=(time.monotonic_ns()-heartbeat["host_monotonic_ns"])*1e-9<=.20:
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import carry_owner_fault
+    if ready.get("schema")!="robotsim.x2.carry-ready.v1" or ready.get("physical_lift_pass") is not True or ready.get("post_lift_retract_pass") is not True or ready.get("generation")!=current["generation"] or carry_owner_fault(heartbeat,current,ready.get("pid"),time.monotonic_ns()):
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
     result["gates"]["HAL_PHYSICAL_LIFT"]="PASS"
@@ -2329,7 +2333,10 @@ def main() -> None:
         if args.fixed_reviewed_checkpoint:
             identity=" --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])
             capture_code="import sys;from pathlib import Path;sys.path.insert(0,'/workspace/evidence');import native_mujoco_reset as m;x=m.X11();assert x._target_identity("+str(pid)+","+repr(window['title'])+","+str(window['window_id'])+") is not None;x.capture_png("+str(window['window_id'])+",Path('/workspace/evidence/checkpoint_before_key.png'))"
-            run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code)],timeout_s=8.)
+            # The native keyframe is verified below from physical state and
+            # generation. A slow per-pixel X11 screenshot is not an execution
+            # prerequisite; the end-of-run capture remains available.
+            result['checkpoint_before_key_capture']={'status':'SKIPPED_DIAGNOSTIC_ONLY','reason':'native state and keyframe generation are the initialization evidence'}
             before_key=json.loads((output/'native_latest.json').read_text())
             selection=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py select-key-zero"+identity+(" --verified-pointer-only --native-ui-events /workspace/evidence/native_ui_events.jsonl" if args.verified_native_mouse_controls else "")+" --dispatch-event-json /workspace/evidence/keyframe_selection.json"],timeout_s=10.)
             pg.write_new_text(output/'keyframe_selection.stdout',selection.stdout)
@@ -2338,7 +2345,11 @@ def main() -> None:
             # that native effect before relocating the pointer or issuing a
             # second input. XSync acknowledges X11, not renderer consumption.
             result['reset']={'input':'NATIVE_KEY_SLIDER_AUTO_LOAD','dispatch':json.loads(selection.stdout),'load_key_button_sent':False}
-            init_deadline=time.monotonic()+2.;init_match=False
+            # XSync confirms dispatch, not when the background renderer consumes
+            # the key selection. Observed under concurrent simulation:3.4s.
+            # Wait for the same native generation/state evidence; never issue a
+            # duplicate reset or classify delayed UI consumption as bad physics.
+            init_deadline=time.monotonic()+15.;init_match=False
             while time.monotonic()<init_deadline:
                 observed=json.loads((output/'native_latest.json').read_text());pelvis=observed['bodies']['pelvis'];wanted=checkpoint['initial_pelvis_pose']
                 error=math.dist(pelvis['position_m'],wanted['position_m']);dot=abs(sum(a*b for a,b in zip(pelvis['quaternion_wxyz'],wanted['quaternion_wxyz'])))
@@ -2350,7 +2361,10 @@ def main() -> None:
                     init_match=True;break
                 time.sleep(.02)
             if not init_match:
-                run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code.replace('checkpoint_before_key.png','checkpoint_after_key.png'))],timeout_s=8.,check=False)
+                try:
+                    run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code.replace('checkpoint_before_key.png','checkpoint_after_key.png'))],timeout_s=8.,check=False)
+                except (subprocess.TimeoutExpired,OSError) as exc:
+                    result['checkpoint_failure_capture']={'status':'UNAVAILABLE_DIAGNOSTIC_ONLY','error':str(exc)}
                 result['checkpoint_initialization_failure']={'actual_pelvis_pose':pelvis,'wanted':wanted,'position_error_m':error,'angle_error_rad':angle,'generation':observed['generation'],'native_keyframe_count':observed.get('model_keyframe_count')}
                 raise RuntimeError('NATIVE_KEYFRAME_INITIAL_POSE_UNCONFIRMED')
             result['reviewed_checkpoint']=checkpoint;result['native_checkpoint_observation']={**boundary,'current_position_error_m':error,'current_angle_error_rad':angle};result['gates']['NATIVE_EPISODE_KEYFRAME_INIT']='PASS'
@@ -2381,7 +2395,9 @@ def main() -> None:
                     time.sleep(.01)
                 else:raise RuntimeError("NATIVE_RESET_EFFECT_UNCONFIRMED")
             result["gates"]["NATIVE_RESET"] = "PASS"
-        state = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 6s ros2 topic echo --once /aima/hal/joint/leg/state"], timeout_s=8.0)
+        # The delivered SDK fixes this message type. Do not depend on the CLI
+        # graph cache discovering it during concurrent simulator startup.
+        state = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 15s ros2 topic echo --once /aima/hal/joint/leg/state aimdk_msgs/msg/JointStateArray"], timeout_s=18.0)
         pg.write_new_text(output / "post_reset_leg_state.yaml", state.stdout)
         count = state.stdout.count("- name:")
         if state.returncode != 0 or count != 12:

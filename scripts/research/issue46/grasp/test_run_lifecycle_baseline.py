@@ -67,6 +67,7 @@ class CompletionAndBaselineTests(unittest.TestCase):
         self.assertEqual(profile["retreat_target_m"],.70)
         self.assertEqual(profile["delivery_align_reentry_rad"],.75)
         self.assertTrue(profile["planar_speed_warning_only"])
+        self.assertEqual(profile["stand_transition_strategy"],"STEP_ZERO_WINDOW_THEN_SD_REQUEST")
         self.assertNotIn("measured_turn_stop_delta_rad",profile)
         kwargs=dict(carry_pid=1,timeout_s=90,transit_policy_050=True,
                     away_1m=True,straight_retreat_turn=True,compact_turn=True,
@@ -83,6 +84,10 @@ class CompletionAndBaselineTests(unittest.TestCase):
         for key in ("physical_fault","carry_owner_fault","carry_motion_handshake","planned_step_deceleration"):
             self.assertEqual(a[key],b[key],key)
         self.assertNotIn("delivery_heading_recovery(mission",ast.get_source_segment(restored,next(n for n in ast.parse(restored).body if isinstance(n,ast.FunctionDef) and n.name=="run_carry_navigation")))
+        route=ast.get_source_segment(restored,next(n for n in ast.parse(restored).body
+                    if isinstance(n,ast.FunctionDef) and n.name=="run_carry_navigation"))
+        self.assertIn('predicted=retreat_braking_prediction(progress,p,origin,',route)
+        self.assertNotIn('predicted=progress+velocity*',route)
         compile(restored,"restored","exec")
 
 if __name__=="__main__":

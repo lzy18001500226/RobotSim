@@ -275,18 +275,19 @@ def capture_once(scene,row,output):
     result.update({'classification':'SIMULATION_ONLY_CALIBRATED_HEAD_RGBD_VARIABLE_RADIUS','source_host_ns':row['host_monotonic_ns'],'generation':row['generation'],'camera_intrinsics':K,'T_world_optical':T.tolist(),'object_truth_used_by_estimator':False,'geometry_or_head_joint_changed':False,'vendor_optical_calibration_verified':False})
     return result
 
-def qualify_estimate(record, *, generation, now_ns=None):
+def qualify_estimate(record, *, generation, now_ns=None, maximum_source_age_s=.20):
     """Control-side contract. Never accepts missing, old or evaluation truth."""
     now=time.monotonic_ns() if now_ns is None else now_ns
     if record.get('pass') is not True or record.get('generation')!=generation:raise RuntimeError('RGBD_NOT_QUALIFIED_OR_WRONG_GENERATION:'+str(record.get('failure','generation mismatch')))
     age=(now-int(record['source_host_ns']))*1e-9
-    if not 0.<=age<=.20:raise RuntimeError('STALE_RGBD_SOURCE:'+str(age))
+    if maximum_source_age_s not in (.20,1.):raise ValueError('unsupported RGBD source age policy')
+    if not 0.<=age<=maximum_source_age_s:raise RuntimeError('STALE_RGBD_SOURCE:'+str(age))
     xyz=np.asarray(record['estimated_center_world_m'],dtype=float);axis=np.asarray(record['axis_world'],dtype=float)
     if xyz.shape!=(3,) or axis.shape!=(3,) or not np.isfinite(np.r_[xyz,axis,record['diameter_m']]).all() or not np.allclose(axis,[0.,0.,1.],atol=1e-8):raise RuntimeError('INVALID_RGBD_POSE')
     if not .01<=record['diameter_m']<=.16 or record.get('object_truth_used_by_estimator') is not False:raise RuntimeError('INVALID_RGBD_PROVENANCE_OR_SIZE')
     return {'position_m':xyz.tolist(),'rotation':np.eye(3).reshape(-1).tolist(),'quaternion_wxyz':[1.,0.,0.,0.]}
 
-def await_initial_estimate(path, *, generation, timeout_s=2.,after_source_ns=None):
+def await_initial_estimate(path, *, generation, timeout_s=2.,after_source_ns=None,maximum_source_age_s=.20):
     """No-motion readiness only. Active servo calls qualify_estimate directly."""
     if not 0.<timeout_s<=2.:raise ValueError('initial image readiness budget exceeds 2s')
     end=time.monotonic()+timeout_s
@@ -295,30 +296,30 @@ def await_initial_estimate(path, *, generation, timeout_s=2.,after_source_ns=Non
         if after_source_ns is not None and record.get('pass') is True and int(record['source_host_ns'])<=after_source_ns:
             if time.monotonic()>=end:raise RuntimeError('NO_ADVANCING_RGBD_FOR_INITIAL_READINESS')
             time.sleep(.01);continue
-        try:return record,qualify_estimate(record,generation=generation)
+        try:return record,qualify_estimate(record,generation=generation,maximum_source_age_s=maximum_source_age_s)
         except RuntimeError as exc:
             if not str(exc).startswith('STALE_RGBD_SOURCE') or time.monotonic()>=end:raise
             time.sleep(.01)
 
-def make_stationary_snapshot(planned,verification, *, generation,now_ns=None):
+def make_stationary_snapshot(planned,verification, *, generation,now_ns=None,maximum_source_age_s=.20):
     now=time.monotonic_ns() if now_ns is None else now_ns
-    qualify_estimate(planned,generation=generation,now_ns=planned['created_host_ns'])
-    qualify_estimate(verification,generation=generation,now_ns=now)
+    qualify_estimate(planned,generation=generation,now_ns=planned['created_host_ns'],maximum_source_age_s=maximum_source_age_s)
+    qualify_estimate(verification,generation=generation,now_ns=now,maximum_source_age_s=maximum_source_age_s)
     if verification['source_host_ns']<=planned['source_host_ns']:raise RuntimeError('SNAPSHOT_REQUIRES_INDEPENDENT_FRESH_REOBSERVATION')
     error=float(np.linalg.norm(np.asarray(planned['estimated_center_world_m'])-verification['estimated_center_world_m']))
     if error>.002 or abs(planned['diameter_m']-verification['diameter_m'])>.002:raise RuntimeError('OBJECT_NOT_STATIONARY_BETWEEN_RGBD_OBSERVATIONS')
-    return {'schema':'robotsim.issue46.stationary-rgbd-grasp-snapshot.v1','classification':'FRESH_ACQUISITION_BOUNDED_STATIC_WORLD_TARGET_NOT_CONTINUOUS_VISION','generation':generation,'frozen_at_host_ns':now,'valid_for_s':45.,'estimated_center_world_m':list(planned['estimated_center_world_m']),'axis_world':list(planned['axis_world']),'diameter_m':planned['diameter_m'],'original_observation':json.loads(json.dumps(planned)),'pre_execution_verification':json.loads(json.dumps(verification)),'reobservation_position_difference_m':error,'expected_object_stationary':True,'object_truth_used_by_estimator':False,'independent_native_motion_contact_and_fall_guards_unchanged':True}
+    return {'schema':'robotsim.issue46.stationary-rgbd-grasp-snapshot.v1','classification':'FRESH_ACQUISITION_BOUNDED_STATIC_WORLD_TARGET_NOT_CONTINUOUS_VISION','generation':generation,'frozen_at_host_ns':now,'valid_for_s':45.,'maximum_source_age_s':maximum_source_age_s,'estimated_center_world_m':list(planned['estimated_center_world_m']),'axis_world':list(planned['axis_world']),'diameter_m':planned['diameter_m'],'original_observation':json.loads(json.dumps(planned)),'pre_execution_verification':json.loads(json.dumps(verification)),'reobservation_position_difference_m':error,'expected_object_stationary':True,'object_truth_used_by_estimator':False,'independent_native_motion_contact_and_fall_guards_unchanged':True}
 
 def qualify_stationary_snapshot(record, *, generation,now_ns=None):
     now=time.monotonic_ns() if now_ns is None else now_ns
     if record.get('schema')!='robotsim.issue46.stationary-rgbd-grasp-snapshot.v1' or record.get('generation')!=generation or record.get('valid_for_s')!=45. or record.get('expected_object_stationary') is not True:raise RuntimeError('INVALID_RGBD_SNAPSHOT_CONTRACT')
     frozen=int(record['frozen_at_host_ns'])
     if not 0.<=(now-frozen)*1e-9<=45.:raise RuntimeError('RGBD_SNAPSHOT_EXECUTION_DEADLINE')
-    rebuilt=make_stationary_snapshot(record['original_observation'],record['pre_execution_verification'],generation=generation,now_ns=frozen)
+    rebuilt=make_stationary_snapshot(record['original_observation'],record['pre_execution_verification'],generation=generation,now_ns=frozen,maximum_source_age_s=record.get('maximum_source_age_s',.20))
     if any(record[k]!=rebuilt[k] for k in ('estimated_center_world_m','axis_world','diameter_m','object_truth_used_by_estimator')):raise RuntimeError('RGBD_SNAPSHOT_TARGET_CHANGED')
     return {'position_m':record['estimated_center_world_m'],'rotation':np.eye(3).reshape(-1).tolist(),'quaternion_wxyz':[1.,0.,0.,0.]}
 
-def stream(scene,latest,output, *, half_height_m,cache=None):
+def stream(scene,latest,output, *, half_height_m,cache=None,maximum_source_age_s=.20):
     from PIL import Image
     from scripts.research.issue46.perception.rgbd_truth_capture import CAMERA_POS
     if half_height_m not in (.075,.11,.15):raise ValueError('explicit canonical height prior required')
@@ -327,6 +328,7 @@ def stream(scene,latest,output, *, half_height_m,cache=None):
     if requested and requested.lower() not in backend['renderer'].lower():raise RuntimeError('RGBD_RENDER_ADAPTER_SELECTION_NOT_CONFIRMED')
     configuration={'schema':'robotsim.issue46.calibrated-virtual-rgbd.v1','scene':str(scene),'scene_sha256':hashlib.sha256(Path(scene).read_bytes()).hexdigest(),'sensor_source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'camera_parent':'head_pitch_link','position_parent_m':CAMERA_POS,'fixed_downward_angle_rad':.65,'fovy_deg':FOVY,'resolution':[WIDTH,HEIGHT],'sensor_render_shadows':False,'sensor_render_reflections':False,'renderer_engine':mujoco.mj_version(),'no_object_lookat':True,'vendor_optical_calibration_verified':False,'height_prior_m':2*half_height_m,'size_estimator':'variable-radius visible cylinder with horizontal top plane','robot_physics_changed':False}
     configuration['graphics_backend']=backend;configuration['requested_render_adapter']=requested
+    configuration['maximum_source_age_s']=maximum_source_age_s
     pg.write_new_text(output/'sensor_configuration.json',json.dumps(configuration,indent=2)+'\n')
     # EGL/shader first-use initialization is not a qualified observation.
     # Warm it before acquiring the source stamp used by active control.
@@ -344,7 +346,7 @@ def stream(scene,latest,output, *, half_height_m,cache=None):
                 if phase.get('phase') in ('ARRIVAL_HOLD','CLOSING','LIFTING') and phase.get('native_arrival_pass') is True:
                     pg.write_new_text(output/'contact_handoff.json',json.dumps({'classification':'PERCEPTION_TO_FIXED_TARGET_AND_PROPRIOCEPTIVE_CONTACT_HANDOFF','phase':phase,'last_sensor_source_ns':last_unique,'freshness_gates_before_closure_unchanged':True})+'\n');break
             tick=time.monotonic();row=json.loads(latest.read_text());stamp=row['host_monotonic_ns']
-            if not 0.<=(time.monotonic_ns()-stamp)*1e-9<=.20:raise RuntimeError('STALE_SENSOR_GENERATION_INPUT')
+            if not 0.<=(time.monotonic_ns()-stamp)*1e-9<=maximum_source_age_s:raise RuntimeError('STALE_SENSOR_GENERATION_INPUT')
             if generation is not None and row['generation']!=generation:raise RuntimeError('RGBD_RESET_GENERATION_CHANGED')
             generation=row['generation']
             if last_unique is not None and stamp<=last_unique:
@@ -353,12 +355,12 @@ def stream(scene,latest,output, *, half_height_m,cache=None):
             rgb,depth,K,T=render(model,data,renderer,camera,row)
             result,mask=estimate(rgb,depth,K,T)
             record={**result,'pass':True,'source_host_ns':stamp,'created_host_ns':time.monotonic_ns(),'generation':generation,'estimated_center_world_m':result['center_xy_world_m']+[result['top_world_z_m']-half_height_m],'height_prior_m':half_height_m*2,'object_truth_used_by_estimator':False,'classification':'FRESH_SIMULATED_CALIBRATED_HEAD_RGBD','camera_intrinsics':K,'T_world_optical':T.tolist()}
-            try:qualify_estimate(record,generation=generation)
+            try:qualify_estimate(record,generation=generation,maximum_source_age_s=maximum_source_age_s)
             except RuntimeError as exc:
                 if not str(exc).startswith('STALE_RGBD_SOURCE'):raise
                 # Discard delayed images; never refresh the last good stamp.
-                # An active consumer still stops at its unchanged 0.20s age.
-                # Only pre-motion readiness may await a subsequent good frame.
+                # The stationary snapshot path explicitly allows render delay;
+                # continuous vision retains its separate 0.20s policy.
                 dropped.append({'source_host_ns':stamp,'completed_host_ns':time.monotonic_ns(),'reason':str(exc),'published':False})
                 last_unique=stamp;continue
             if not trace or len(trace)%10==0:
@@ -379,10 +381,11 @@ def stream(scene,latest,output, *, half_height_m,cache=None):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--capture',type=Path)
     p.add_argument('--stream-scene',type=Path);p.add_argument('--native-latest',type=Path);p.add_argument('--output-dir',type=Path);p.add_argument('--half-height-m',type=float,default=.15);p.add_argument('--host-model-cache',type=Path)
+    p.add_argument('--maximum-source-age-s',type=float,choices=(.20,1.),default=.20)
     a=p.parse_args()
     if a.stream_scene:
         if not a.native_latest or not a.output_dir:raise ValueError('native state and unique output required')
-        stream(a.stream_scene,a.native_latest,a.output_dir,half_height_m=a.half_height_m,cache=a.host_model_cache);return
+        stream(a.stream_scene,a.native_latest,a.output_dir,half_height_m=a.half_height_m,cache=a.host_model_cache,maximum_source_age_s=a.maximum_source_age_s);return
     if not a.capture:raise ValueError('capture or stream mode required')
     record=json.loads((a.capture/'result.json').read_text());plan=json.loads(Path(record['hal_arm_runtime_replan']['path']).read_text());state=json.loads(Path(plan['standing_state']).read_text())
     stamp=state['native_snapshot']['host_monotonic_ns']

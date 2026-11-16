@@ -945,7 +945,8 @@ def native_circle_arrival(contract):
   with open(contract['perception_snapshot']) as f:snapshot=json.load(f)
   frozen=snapshot['frozen_at_host_ns'];original=snapshot['original_observation'];verification=snapshot['pre_execution_verification']
   if snapshot.get('schema')!='robotsim.issue46.stationary-rgbd-grasp-snapshot.v1' or snapshot.get('generation')!=row['generation'] or snapshot.get('valid_for_s')!=45. or snapshot.get('expected_object_stationary') is not True or not 0.<=(time.monotonic_ns()-frozen)*1e-9<=45.:raise RuntimeError('INVALID_OR_EXPIRED_RGBD_SNAPSHOT')
-  if any(v.get('pass') is not True or v.get('generation')!=row['generation'] or v.get('object_truth_used_by_estimator') is not False for v in (original,verification)) or not 0.<=(frozen-verification['source_host_ns'])*1e-9<=.20 or verification['source_host_ns']<=original['source_host_ns']:raise RuntimeError('RGBD_SNAPSHOT_ACQUISITION_UNQUALIFIED')
+  acquisition_age_limit=snapshot.get('maximum_source_age_s',.20)
+  if acquisition_age_limit not in (.20,1.) or any(v.get('pass') is not True or v.get('generation')!=row['generation'] or v.get('object_truth_used_by_estimator') is not False for v in (original,verification)) or not 0.<=(frozen-verification['source_host_ns'])*1e-9<=acquisition_age_limit or verification['source_host_ns']<=original['source_host_ns']:raise RuntimeError('RGBD_SNAPSHOT_ACQUISITION_UNQUALIFIED')
   position=snapshot['estimated_center_world_m'];axis=snapshot['axis_world'];image_source_ns=original['source_host_ns']
   if position!=original['estimated_center_world_m'] or axis!=[0.,0.,1.] or not all(math.isfinite(v) for v in position) or math.sqrt(sum((a-b)**2 for a,b in zip(position,verification['estimated_center_world_m'])))>.002 or abs(original['diameter_m']-verification['diameter_m'])>.002:raise RuntimeError('RGBD_SNAPSHOT_TARGET_CHANGED')
   bottle={'position_m':position,'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]};target_source='RGBD_BOUNDED_STATIONARY_OBJECT_SNAPSHOT'
@@ -1142,7 +1143,7 @@ class Plan(Node):
     if fault:raise RuntimeError("CLEARANCE_PHYSICAL:"+fault)
     if math.dist(self.native_row["bodies"]["pelvis"]["position_m"],staged["root_reference_world_m"])>.05:raise RuntimeError("CLEARANCE_ROOT_DRIFT")
    if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE'):
-    endpoint=self.tracking_target(retry_s=.05);target=dict(target)
+    endpoint=self.tracking_target(retry_s=1.);target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      for name in RIGHT:
       correction=float(self.tracking_metrics['cartesian_correction_rad'][name])
@@ -1314,7 +1315,7 @@ try:
  # shoulder-roll limit crossing in 171134Z. Keep actual arrival fail-closed.
  if TRACK_NATIVE_CIRCLE and ENABLE_RESIDUAL_FF and not arrival['pass'] and preclose_error<=.15:
   for refinement in range(8):
-   n.refresh_native();endpoint=n.tracking_target(retry_s=.05)
+   n.refresh_native();endpoint=n.tracking_target(retry_s=1.)
    for name in RIGHT:
     correction=float(n.tracking_metrics['cartesian_correction_rad'][name])
     if not math.isfinite(correction):raise RuntimeError('NONFINITE_CARTESIAN_CORRECTION')

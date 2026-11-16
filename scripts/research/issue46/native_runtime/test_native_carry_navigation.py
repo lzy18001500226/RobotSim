@@ -6,6 +6,13 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_delivery_steering_does_not_inherit_slower_pure_turn_cap(self):
+        cfg=dict(angular_command_cap=.30,delivery=dict(delivery_tracking_angular_cap_rad_s=.60))
+        for phase in ("RETREAT","TURN","EGRESS"):
+            self.assertEqual(m.carry_phase_angular_cap(dict(cfg,active_mission_phase=phase)),.30)
+        self.assertEqual(m.carry_phase_angular_cap(dict(cfg,active_mission_phase="DELIVERY")),.60)
+        self.assertEqual(m.carry_phase_angular_cap(dict(angular_command_cap=.10,active_mission_phase="DELIVERY")),.10)
+
     def test_explicit_loaded_retreat_is_not_overridden_by_forward_transit_speed(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import task_route_profile
         profile=task_route_profile({"schema":"robotsim.x2.two-table-delivery.v1","transit_root_cap_m_s":.60,"turn_translation_strategy":"PURE_YAW","base_goal_world_xy":[.015,.98]},fast_task_timing=True)
@@ -39,6 +46,21 @@ class CarryNavigationTests(unittest.TestCase):
         for cfg in (dict(retreat_target_m=.50,minimum_actual_retreat_m=.60),dict(retreat_target_m=.9)):
             with self.assertRaises(ValueError):m.retreat_braking_gate(.3,.5,True,cfg)
         with self.assertRaises(ValueError):m.retreat_braking_gate(float('nan'),.5,True,{})
+
+
+    def test_retreat_prediction_uses_physical_velocity_in_world_frame(self):
+        # Failed case1 understated physical speed with a host-time position fit.
+        yaw=.221613
+        pose=dict(vx=-.5429987603616352*math.cos(yaw),
+                  vy=-.5429987603616352*math.sin(yaw))
+        predicted=m.retreat_braking_prediction(.3050846753291788,pose,dict(yaw=yaw),2.23)
+        self.assertAlmostEqual(predicted,1.515971910935625)
+        self.assertTrue(m.retreat_braking_gate(.3050846753291788,predicted,True,
+                        dict(retreat_target_m=.70,minimum_actual_retreat_m=.30))["request_stop"])
+        self.assertAlmostEqual(m.retreat_braking_prediction(.3,dict(vx=1.,vy=0.),dict(yaw=math.pi/2),2.23),.3)
+        self.assertEqual(m.retreat_braking_prediction(.3,dict(vx=1.,vy=0.),dict(yaw=0.),2.23),.3)
+        with self.assertRaises(ValueError):
+            m.retreat_braking_prediction(.3,dict(vx=float('nan'),vy=0.),dict(yaw=0.),2.23)
 
 
     def test_near_terminal_step_heading_requests_zero_not_precise_pivot(self):
@@ -351,7 +373,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
             native=dict(engine_version=337,host_monotonic_ns=now,generation=1,sim_time_s=80.,process_pid=7,bodies={n:{} for n in ("pelvis","R_omnipicker_base_link","test_cylinder")})
             (out/"native_latest.json").write_text(json.dumps(native)+chr(10))
             (out/"carry_ready.json").write_text(json.dumps(ready))
-            (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
+            (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,generation=1,mode="MEASURED_LOAD_BEARING_CARRY_HOLD",healthy=True,host_monotonic_ns=now,native_source_host_ns=now)))
             (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
             (out/"native_micro_stop_contract.py").write_text("# fixture")
             args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False,carry_native_action_smoothing=False,carry_native_step_mode=False)
@@ -462,7 +484,9 @@ class StaticCarryHoldTests(unittest.TestCase):
             clock.sim+=.25
             return dict(generation=1,sim_time_s=clock.sim,host_monotonic_ns=int(clock.t*1e9))
         def health(path):
-            return json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=int(clock.t*1e9),native_source_host_ns=int(clock.t*1e9)))
+            # A live owner's last publication need not share the latest
+            # independent physical observation's200ms acquisition deadline.
+            return json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=int(clock.t*1e9)-350000000,native_source_host_ns=int(clock.t*1e9)-360000000))
         with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",side_effect=row),mock.patch.object(Path,"read_text",health),mock.patch.object(p.time,"monotonic",lambda:clock.t),mock.patch.object(p.time,"monotonic_ns",lambda:int(clock.t*1e9)),mock.patch.object(p.time,"sleep",lambda t:setattr(clock,"t",clock.t+t)):
             result=p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
         self.assertTrue(result["pass"]);self.assertGreaterEqual(result["sim_span_s"],8.);self.assertGreaterEqual(result["unique_native_samples"],25)
@@ -1329,6 +1353,16 @@ class CombinedCompactCentreTests(unittest.TestCase):
         self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
 
 class TwoTableDeliveryTests(unittest.TestCase):
+    def test_generated_delivery_retains_requested_steering_cap(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        cfg["delivery_tracking_angular_cap_rad_s"]=.60
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,compact_angular_cap=.30,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,baseline_78df5bd=True)
+        options=next(ast.literal_eval(n.value.args[0]) for n in ast.walk(ast.parse(code)) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and ast.unparse(n.value.func)=="MICRO.update")
+        self.assertEqual(options["carry"]["angular_command_cap"],.30)
+        self.assertEqual(options["carry"]["delivery"]["delivery_tracking_angular_cap_rad_s"],.60)
+        compile(code,"separate_turn_and_delivery_caps","exec")
+
     def test_actual_delivery_profile_uses_same_controller_and_separate_stop_permit(self):
         import json
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())

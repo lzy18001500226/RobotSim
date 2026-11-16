@@ -439,22 +439,23 @@ class NativeLaunchTests(TestCase):
 
 
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
+        from scripts.research.issue46.native_runtime.native_feedback_recovery import read_fresh_native_snapshot
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
         cls.bases=[];cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('refresh_native','arm_fresh')]
         clock=NS(ns=1100000000)
-        ns={'USE_NATIVE_FEEDBACK':True,'CONTROL':('left','right'),'TRACK_NATIVE_CIRCLE':False,'time':NS(monotonic_ns=lambda:clock.ns),'json':json,'math':math}
+        ns={'USE_NATIVE_FEEDBACK':True,'CONTROL':('left','right'),'TRACK_NATIVE_CIRCLE':False,'time':NS(monotonic_ns=lambda:clock.ns),'json':json,'math':math,'read_fresh_native_snapshot':read_fresh_native_snapshot}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'feedback','exec'),ns)
         n=ns['Plan']();n.arm={};n.native_generation=None;n.native_receipt_ns=None;n.native_sim_time=None
         row={'host_monotonic_ns':1000000000,'engine_version':337,'generation':1,'sim_time_s':3.,'joints':{x:{'q':.2,'qvel':0.} for x in ('left','right')}}
         def refresh():
-            with mock.patch('builtins.open',return_value=io.BytesIO((json.dumps(row)+'\n').encode())):n.refresh_native()
+            with mock.patch.object(Path,'read_bytes',return_value=(json.dumps(row)+'\n').encode()),mock.patch('time.monotonic_ns',lambda:clock.ns),mock.patch('time.sleep',lambda dt:setattr(clock,'ns',clock.ns+round(dt*1e9))):n.refresh_native()
         refresh();self.assertTrue(n.arm_fresh());self.assertEqual(n.arm['left'],.2)
         clock.ns=1300000000
-        with self.assertRaisesRegex(RuntimeError,'STALE'):refresh()
+        with self.assertRaisesRegex(RuntimeError,'REACQUISITION_EXPIRED'):refresh()
         self.assertFalse(n.arm_fresh())
         clock.ns=1100000000;row['generation']=2
-        with self.assertRaisesRegex(RuntimeError,'RESET'):refresh()
+        with self.assertRaisesRegex(RuntimeError,'GENERATION_CHANGED'):refresh()
         self.assertEqual(n.native_generation,1)
 
 class NativeStartupReadinessTests(TestCase):

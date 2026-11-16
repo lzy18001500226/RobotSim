@@ -74,7 +74,14 @@ class TrackingTargetRereadTests(unittest.TestCase):
         self.assertGreaterEqual(len(calls),2)
         for call in calls:
             retry=next(k.value for k in call.keywords if k.arg=="retry_s")
-            self.assertEqual(ast.literal_eval(retry),.05)
+            self.assertEqual(ast.literal_eval(retry),1.)
+
+    def test_host_scheduling_gap_recovers_after_300ms_with_fresh_target_only(self):
+        def read():
+            return self.target(10_000_000 if self.clock.ns>=1_300_000_000 else 294_000_000)
+        self.assertEqual(self.run_target(read,retry=1.),{"joint":.3})
+        self.assertEqual(self.clock.ns,1_300_000_000)
+        self.assertLessEqual(json.loads(self.output[0][0])["accepted_source_age_s"],.20)
 
     def test_persistent_expiry_fails_at_50ms_without_setting_endpoint(self):
         with self.assertRaisesRegex(RuntimeError, "STALE_NATIVE_CIRCLE_TRACKING_TARGET"):

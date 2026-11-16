@@ -680,7 +680,8 @@ def track_native(reference_path, latest_path, output_path):
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
     # Before producing any executable target, await a genuinely fresh sample.
-    # Once tracking starts the unchanged 0.20s deadline remains fail-closed.
+    # Executable measurements remain <=0.20s old. Short host scheduling gaps
+    # get the same1s fresh-sample reacquisition budget as the native owner.
     readiness_deadline=time.monotonic()+3.
     while True:
         initial=json.loads(Path(latest_path).read_text())
@@ -695,7 +696,7 @@ def track_native(reference_path, latest_path, output_path):
             if not 0<=age<=.20:
                 if age>=0:
                     if recovery_deadline_ns is None:
-                        recovery_deadline_ns=time.monotonic_ns()+50000000
+                        recovery_deadline_ns=time.monotonic_ns()+1000000000
                         deadline_recoveries.append({'event':'EXPIRED_SOURCE_REREAD','source_host_ns':row['host_monotonic_ns'],'checked_host_ns':time.monotonic_ns(),'source_age_s':age})
                         previous_carry=None;carry_velocity=np.zeros(7)
                     if time.monotonic_ns()<recovery_deadline_ns:
@@ -735,13 +736,13 @@ def track_native(reference_path, latest_path, output_path):
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:
                 # Discard expired results; the consumer holds the last setpoint
-                # and already permits a bounded 50ms fresh-target reread.
+                # and permits a bounded1s fresh-target reread.
                 event={'event':'EXPIRED_IK_RESULT_DISCARDED','phase':(phase or {}).get('phase'),
                     'source_host_ns':row['host_monotonic_ns'],'checked_host_ns':now,
                     'source_age_s':(now-row['host_monotonic_ns'])*1e-9,
                     'compute_wall_s':time.monotonic()-tick}
                 deadline_recoveries.append(event);print(json.dumps(event),flush=True)
-                if recovery_deadline_ns is None:recovery_deadline_ns=now+50000000
+                if recovery_deadline_ns is None:recovery_deadline_ns=now+1000000000
                 elif now>=recovery_deadline_ns:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
                 seed=previous_seed;previous_carry=None;carry_velocity=np.zeros(7)
                 time.sleep(0);continue
@@ -1035,7 +1036,7 @@ def main():
     if args.target_source in ("truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"):
         if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot'):
             from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate
-            latest=Path(state['perception']['latest_path']);estimated,pose=await_initial_estimate(latest,generation=state['native_snapshot']['generation'])
+            latest=Path(state['perception']['latest_path']);estimated,pose=await_initial_estimate(latest,generation=state['native_snapshot']['generation'],maximum_source_age_s=1. if args.target_source=='fresh-rgbd-snapshot' else .20)
             state['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
         source_data=mujoco.MjData(model)
         if 'object_pose_world' in state:

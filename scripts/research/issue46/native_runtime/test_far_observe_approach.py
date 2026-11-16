@@ -75,7 +75,15 @@ class FarApproachTests(unittest.TestCase):
         pose={"x":.80,"vx":.20}
         self.assertTrue(forward_table_plane_reached(pose,[.947,-.995],[.52,-1.54]))
         self.assertFalse(forward_table_plane_reached({"x":.52,"vx":0.},[.947,-.995],[.52,-1.54]))
-        self.assertFalse(forward_table_plane_reached(pose,[.947,-1.53],[.52,-1.54]))
+        self.assertTrue(forward_table_plane_reached(pose,[.947,-1.53],[.52,-1.54]))
+        self.assertFalse(forward_table_plane_reached(pose,[.52,-1.0],[.52,-1.54]))
+
+    def test_small_lateral_case4_stops_before_forward_station_despite_heading_error(self):
+        from scripts.research.issue46.native_runtime.far_observe_approach import forward_table_plane_reached
+        # Saved case4 goal differs laterally by105mm. Old150mm branch skipped
+        # braking entirely and drove toX1.093 before the foot/table collision.
+        self.assertTrue(forward_table_plane_reached(
+            {"x":.72,"vx":.253},[.90749,-1.46787],[.37266,-1.57278]))
     def test_compact_recovery_covers_preparation_sweep_but_not_hip_collision(self):
         from scripts.research.issue46.native_runtime.native_task_grasp_region import forearm_clearance_recovery_needed
         hand={"stage":"ACTUAL_PREPARATION_COLLISION","actual_preparation_preflight":{"stage":"waist","pair":["test_cylinder","R_hand_wide3_Link"]}}

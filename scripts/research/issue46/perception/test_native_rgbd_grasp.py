@@ -251,6 +251,17 @@ class SensorTests(unittest.TestCase):
         with mock.patch('builtins.open',side_effect=snapshot_open):
             result=ns['native_circle_arrival'](contract);self.assertTrue(result['pass']);self.assertEqual(result['target_source'],'RGBD_BOUNDED_STATIONARY_OBJECT_SNAPSHOT')
             self.assertEqual(result['image_source_host_ns'],1000000000)
+            # The generated robot-side executor must honor the same explicit
+            # stationary acquisition policy as the producer and planner.
+            snapshot=make_stationary_snapshot(first,second,generation=1,
+                         now_ns=2380000000,maximum_source_age_s=1.)
+            result=ns['native_circle_arrival'](contract)
+            self.assertTrue(result['pass'])
+            self.assertEqual(result['image_source_host_ns'],1000000000)
+            snapshot['maximum_source_age_s']=.20
+            with self.assertRaisesRegex(RuntimeError,'ACQUISITION_UNQUALIFIED'):
+                ns['native_circle_arrival'](contract)
+            snapshot['maximum_source_age_s']=1.
             row['host_monotonic_ns']=48000000000;ns['time'].monotonic_ns=lambda:48100000000
             with self.assertRaisesRegex(RuntimeError,'EXPIRED'):ns['native_circle_arrival'](contract)
 

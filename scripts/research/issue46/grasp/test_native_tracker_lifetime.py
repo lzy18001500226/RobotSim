@@ -137,7 +137,7 @@ class TrackerLifetimeTests(unittest.TestCase):
         result = self.run_loop(self.grasp_phases, stale_after=45.)
         self.assertEqual(result["failure"], "STALE_NATIVE_TRACKING_SOURCE")
         self.assertGreater(result["elapsed_s"], 45.2)
-        self.assertLess(result["elapsed_s"], 45.4)
+        self.assertLess(result["elapsed_s"], 46.4)
 
     def test_persistently_expired_computation_still_stops(self):
         result = self.run_loop(lambda elapsed: None, compute_delay=.201)
@@ -172,10 +172,16 @@ class TrackerLifetimeTests(unittest.TestCase):
         self.assertEqual(result["failure"],"NATIVE_TRACKING_GENERATION_CHANGED")
         self.assertFalse(result["trace"])
 
-    def test_compute_recovery_cannot_publish_after_50ms_budget(self):
-        result=self.run_loop(lambda elapsed:None,compute_delay=[.205,.051],stop_after=1.)
+    def test_compute_recovery_cannot_publish_after_one_second_budget(self):
+        result=self.run_loop(lambda elapsed:None,compute_delay=[.205]+[.201]*5+[.003],stop_after=2.)
         self.assertEqual(result["failure"],"NATIVE_TRACKING_COMPUTE_DEADLINE")
         self.assertFalse(result["trace"])
+
+    def test_recorded_294ms_source_gap_survives_more_than_old_50ms_retry(self):
+        result=self.run_loop(lambda elapsed:None,source_lag=lambda t:.294 if .199<=t<.55 else 0.,stop_after=.8)
+        self.assertIsNone(result["failure"])
+        self.assertEqual([r["event"] for r in result["recoveries"]],["EXPIRED_SOURCE_REREAD","FRESH_IK_RESULT_RECOVERED"])
+        self.assertTrue(all(0<=r["created_host_ns"]-r["source_host_ns"]<=200000000 for r in result["trace"]))
 
     def test_generation_change_still_stops(self):
         result = self.run_loop(lambda elapsed: None, generation_after=.5)

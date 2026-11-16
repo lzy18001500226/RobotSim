@@ -1,14 +1,14 @@
 """Bounded native-snapshot acquisition; never qualify an expired measurement."""
 
 
-def read_fresh_native_snapshot(path, *, generation=None, budget_s=.05):
+def read_fresh_native_snapshot(path, *, generation=None, budget_s=1.0):
     import json
     import time
     from pathlib import Path
-    if budget_s != .05:
-        raise ValueError("native acquisition recovery budget must be 50ms")
+    if not .05<=budget_s<=1.:
+        raise ValueError("native acquisition recovery budget must be between50ms and1s")
     began=time.monotonic_ns()
-    deadline=began+50000000
+    deadline=began+round(budget_s*1e9)
     first_age=None
     while True:
         raw=Path(path).read_bytes()

@@ -78,6 +78,14 @@ def planned_turn_forward(cfg, angular, previous):
     return forward_cap*abs(angular)/angular_cap
 
 
+def carry_phase_angular_cap(cfg):
+    """Keep the pure-turn cap separate from forward delivery steering."""
+    cap=float(cfg.get("angular_command_cap",.1))
+    if cfg.get("active_mission_phase")=="DELIVERY":
+        cap=float((cfg.get("delivery") or {}).get("delivery_tracking_angular_cap_rad_s",cap))
+    return cap
+
+
 def drain_ready_callbacks(node, rclpy_module, *, budget_s=.004, max_callbacks=128):
     """Drain queued state callbacks within a bounded CPU slice, without sleeping."""
     began=time.monotonic();count=0
@@ -101,10 +109,12 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20,review_incidental_contacts=False,planar_speed_warning_only=False):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20,review_incidental_contacts=False,planar_speed_warning_only=False,joint_velocity_peak_warning_only=False):
     if planar_speed_limit not in (.20,.50,.60):raise ValueError("unsupported explicit physical speed profile")
     if planar_speed_warning_only and planar_speed_limit!=.60:
         raise ValueError("warning-only speed is scoped to explicit simulation ROOT060")
+    if joint_velocity_peak_warning_only and planar_speed_limit!=.60:
+        raise ValueError("transient joint peak diagnostic is scoped to simulation ROOT060")
     if not all(math.isfinite(pose[k]) for k in ("z","roll","pitch","vx","vy")):
         return "NONFINITE_BASE_STATE"
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
@@ -119,8 +129,18 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
         j = row["joints"][name]
         if not lo-.001 <= j["q"] <= hi+.001:
             return "JOINT_LIMIT:" + name
-        if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed or j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))>speed:
+        if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed:
             return "SOURCE_JOINT_SPEED:" + name
+        peak=j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))
+        if not math.isfinite(peak):return "SOURCE_JOINT_SPEED:" + name
+        if peak>speed:
+            if not joint_velocity_peak_warning_only:return "SOURCE_JOINT_SPEED:" + name
+            # Contact impulses can exceed the source reference between samples
+            # even after measured speed has recovered. Keep that evidence;
+            # current over-limit speed and all other physical checks still stop.
+            pose.setdefault("transient_joint_velocity_warnings",[]).append(dict(
+                joint=name,peak_rad_s=peak,current_rad_s=j["qvel"],source_limit_rad_s=speed,
+                response="RECOVERED_INTER_SAMPLE_PEAK_RECORDED; CURRENT_SPEED_LIMIT_UNCHANGED"))
     allowed={frozenset(p) for p in (allowed_contact_pairs or [])}
     approved={frozenset(('test_cylinder',p)) for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')}
     if not allowed.issubset(approved):raise ValueError('only intended distal-pad bottle contact may be allowed')
@@ -531,7 +551,7 @@ def run_probe(smoke_only=False):
                     fwd=lat=ang=0.
                 if MICRO.get("carry",{}).get("inplace_centre_hold"):
                     limit=(.20 if MICRO["carry"].get("compact_centre_feedback") else 0. if MICRO["carry"].get("compact_turn") else MICRO["carry"].get("turn_recovery_speed",.12)) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
-                    if math.hypot(fwd,lat)>limit+1e-8 or abs(ang)>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
+                    if math.hypot(fwd,lat)>limit+1e-8 or abs(ang)>carry_phase_angular_cap(MICRO["carry"])+1e-8:
                         raise RuntimeError("INPLACE_COMMAND_BOUND")
                     if not MICRO["carry"].get("compact_centre_feedback") and MICRO["carry"].get("active_mission_phase")=="TURN" and math.hypot(fwd,lat)>.12000001 and (not MICRO["carry"].get("active_centre_recovery") or abs(ang)>1e-9):
                         raise RuntimeError("RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE")
@@ -673,11 +693,11 @@ def run_probe(smoke_only=False):
                     command=self.bridge_commands[-1]["raw"]
                     if MICRO["carry"].get("compact_centre_feedback") and command["lateral_velocity"]:raise RuntimeError("OBSERVED_UNQUALIFIED_LATERAL_COMPACT_COMMAND")
                     limit=(.20 if MICRO["carry"].get("compact_centre_feedback") else 0. if MICRO["carry"].get("compact_turn") else MICRO["carry"].get("turn_recovery_speed",.12)) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
-                    if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
+                    if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>carry_phase_angular_cap(MICRO["carry"])+1e-8:
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
                 limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .60 if MICRO.get("pickup_stance_profile") else .20
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")),planar_speed_warning_only=limit==.60 and bool(MICRO.get("planar_speed_warning_only") or (MICRO.get("carry",{}).get("delivery") or {}).get("planar_speed_warning_only")))
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")),planar_speed_warning_only=limit==.60 and bool(MICRO.get("planar_speed_warning_only") or (MICRO.get("carry",{}).get("delivery") or {}).get("planar_speed_warning_only")),joint_velocity_peak_warning_only=limit==.60 and bool((MICRO.get("carry",{}).get("delivery") or {}).get("transient_joint_speed_peak_warning_only")))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -1233,6 +1253,18 @@ def retreat_braking_gate(progress, predicted, compact_turn, delivery):
                 request_stop=progress>=target or progress>=minimum and predicted>=target)
 
 
+def retreat_braking_prediction(progress, pose, origin, delay_s):
+    """Predict physical displacement using world-frame measured velocity.
+
+    A position fit against host monotonic time changes with simulation speed.
+    Keep watchdog time separate from this physical braking calculation.
+    """
+    velocity=-math.cos(origin["yaw"])*pose["vx"]-math.sin(origin["yaw"])*pose["vy"]
+    if not all(math.isfinite(v) for v in (progress,velocity,delay_s)) or delay_s<0.:
+        raise ValueError("invalid physical retreat prediction")
+    return progress+max(0.,velocity)*delay_s
+
+
 def delivery_forward_progress(state, distance, now, active, epoch):
     """Accumulate the existing three-second no-progress budget across ALIGN."""
     if state is None:
@@ -1280,7 +1312,8 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
 
         if delivery.get("transit_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported native transit mode")
         if float(delivery.get("delivery_forward_command_m_s",.20)) not in (.20,.30,.40,5./9.):raise ValueError("delivery forward response profile bound")
-        if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
+        if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC","STEP_ZERO_WINDOW_THEN_SD_REQUEST"):raise ValueError("stand transition diagnostic scope")
+        if delivery.get("stand_transition_strategy")=="STEP_ZERO_WINDOW_THEN_SD_REQUEST" and delivery.get("delivery_motion_mode")!="LOCOMOTION_STEP":raise ValueError("STEP stand request requires STEP delivery")
         direct_retreat=delivery.get("activation_protocol")=="VENDOR_DIRECT_RETREAT_NONZERO"
         if not (compact_turn and (gait_prepare or direct_retreat and transit_command_speed==.20) and release_source_on_stop and compact_centre_feedback and (not native_step or step_all)):raise ValueError("delivery requires the measured FoundationWalk compact/stop or explicit vendor-direct retreat profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
@@ -1305,8 +1338,11 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if compact_turn:angular_command_cap=compact_angular_cap
     if delivery is not None:
         if not .03<=float(delivery.get("delivery_arrival_reserve_m",.05))<=.15:raise ValueError("bounded delivery stop reserve")
-        # One command bound across compact turn and the later delivery leg.
-        delivery=dict(delivery,delivery_tracking_angular_cap_rad_s=min(float(angular_command_cap),float(delivery.get("delivery_tracking_angular_cap_rad_s",angular_command_cap))))
+        # Slower pure-yaw turning must not suppress the already bounded forward
+        # steering response. Both phases retain their explicit command envelope.
+        tracking_cap=float(delivery.get("delivery_tracking_angular_cap_rad_s",angular_command_cap))
+        if not math.isfinite(tracking_cap) or not 0.<tracking_cap<=.60 or tracking_cap>.10 and not compact_turn:raise ValueError("delivery steering command bound")
+        delivery=dict(delivery,delivery_tracking_angular_cap_rad_s=tracking_cap)
     if angular_command_cap not in (.075,.10,.30,.60) or angular_command_cap>.10 and not compact_turn:raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     wall_budget_limit=180. if delivery and straight_retreat_turn and away_1m and transit_policy_050 else 90.
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=wall_budget_limit or not isinstance(carry_pid,int) or carry_pid<=0:
@@ -2061,7 +2097,7 @@ def run_carry_navigation(n,contract):
                         xs=[x[0]-history[0][0] for x in history];ys=[x[1] for x in history]
                         mx=sum(xs)/len(xs);my=sum(ys)/len(ys);var=sum((x-mx)**2 for x in xs)
                         velocity=max(0.,sum((x-mx)*(y-my) for x,y in zip(xs,ys))/var) if var else 0.
-                    predicted=progress+velocity*cfg.get("retreat_brake_delay_s",0.)
+                    predicted=retreat_braking_prediction(progress,p,origin,cfg.get("retreat_brake_delay_s",0.))
                     mission["retreat_predicted_settled_progress_m"]=predicted
                     retreat_gate=retreat_braking_gate(progress,predicted,cfg.get("compact_turn"),cfg.get("delivery") or {})
                     mission["retreat_braking_gate"]=retreat_gate

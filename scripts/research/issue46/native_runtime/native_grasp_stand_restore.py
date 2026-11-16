@@ -323,6 +323,7 @@ def restore_postured_hold(run,container,environment,output,ready,result):
     import os
     from scripts.agent import path_governance as pg
     from scripts.research.issue46.native_runtime.native_grasp_audit import read_fresh_native_row
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import carry_owner_fault
     proof=json.loads((output/"body_crouch_pickup_result.json").read_text())
     expected_mc=proof["body_subscriber"]["name"]
     if not proof.get("pass_result") or proof.get("generation")!=ready["generation"]:raise RuntimeError("RESTORE_NEEDS_SAME_EPISODE_QUALIFIED_LOWERING")
@@ -337,12 +338,16 @@ def restore_postured_hold(run,container,environment,output,ready,result):
     while time.monotonic()<deadline:
         row=read_fresh_native_row(output/'native_latest.json')
         health=json.loads((output/'carry_heartbeat.json').read_text())
-        if health.get('healthy') is not True or health.get('pid')!=ready['pid'] or health.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-health['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH:'+json.dumps({k:health.get(k) for k in ('mode','healthy','failure','pid','generation','host_monotonic_ns')}))
+        owner_fault=carry_owner_fault(health,row,ready['pid'],time.monotonic_ns())
+        if owner_fault:raise RuntimeError('RESTORE_WAIST_OWNER_NOT_FRESH:'+json.dumps(owner_fault))
         if not waist_rows or row['host_monotonic_ns']>waist_rows[-1]['host_monotonic_ns']:waist_rows.append(row)
         path=output/'carry_waist_return_feedback.json'
         if path.exists():
             returned=json.loads(path.read_text())
-            if returned.get('owner_pid')==ready['pid'] and returned.get('generation')==ready['generation'] and returned.get('fraction')==1. and 0.<=(time.monotonic_ns()-returned['host_monotonic_ns'])*1e-9<=.20 and held_waist_return_ready(waist_rows,baseline):break
+            # This is a completion acknowledgement, not a continuous sensor.
+            # Same owner/generation plus the fresh measured waist window below
+            # proves completion even when the acknowledgement is older200ms.
+            if returned.get('owner_pid')==ready['pid'] and returned.get('generation')==ready['generation'] and returned.get('fraction')==1. and held_waist_return_ready(waist_rows,baseline):break
         time.sleep(.01)
     else:raise RuntimeError('HELD_WAIST_RETURN_BEFORE_RISE_NOT_QUALIFIED')
     waist_proof=dict(classification='MEASURED_EXISTING_OWNER_WAIST_RETURN_BEFORE_BODY_RISE',pass_result=True,baseline_rad=baseline,

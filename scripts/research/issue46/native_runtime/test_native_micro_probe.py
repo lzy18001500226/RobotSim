@@ -151,6 +151,20 @@ class MicroTests(unittest.TestCase):
         r=dict(joints=dict(knee=dict(q=.1,qvel=.01,max_abs_qvel_since_previous_sample=1.01)))
         self.assertEqual(micro.physical_fault(r,p,dict(knee=(-1,1,1))),"SOURCE_JOINT_SPEED:knee")
 
+    def test_simulation_recovered_peak_is_recorded_but_current_source_speed_still_stops(self):
+        p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
+        r=dict(joints=dict(ankle=dict(q=.1,qvel=5.38,max_abs_qvel_since_previous_sample=14.34)))
+        limits=dict(ankle=(-1,1,13.087))
+        policy=dict(planar_speed_limit=.60,joint_velocity_peak_warning_only=True)
+        self.assertIsNone(micro.physical_fault(r,p,limits,**policy))
+        warning=p['transient_joint_velocity_warnings'][0]
+        self.assertEqual(warning['peak_rad_s'],14.34)
+        self.assertEqual(warning['source_limit_rad_s'],13.087)
+        r['joints']['ankle']['qvel']=13.1
+        self.assertEqual(micro.physical_fault(r,p,limits,**policy),'SOURCE_JOINT_SPEED:ankle')
+        with self.assertRaises(ValueError):
+            micro.physical_fault(r,p,limits,joint_velocity_peak_warning_only=True)
+
     def test_source_native_arm_motion_keeps_active_collision_guard(self):
         p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
         bodies=["left_wrist_roll_link","left_ankle_roll_link","right_ankle_roll_link"]

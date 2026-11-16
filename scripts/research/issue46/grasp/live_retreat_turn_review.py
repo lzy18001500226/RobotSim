@@ -65,7 +65,7 @@ def launch_first_person_observer(episode):
     return observer
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.60,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--visual-stance-adjustment",action="store_true",help="known-table dock then RGBD-directed unloaded native stance correction");parser.add_argument("--initial-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="scenario initialization only, never a control target");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));parser.add_argument("--grasp-only",action="store_true",help="stop after measured grasp/lift/hold, no transfer");parser.add_argument("--far-observe-approach",action="store_true");parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference");parser.add_argument("--fast-task-timing",action="store_true",help="research2s closure and2sim-second load hold; physical gates unchanged");parser.add_argument("--carry-baseline-78df5bd",action="store_true");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--higher-carry-clearance",action="store_true",help="H300 source-bounded arm-only +60mm carry task pose");parser.add_argument("--multiccd",action="store_true",help="explicit numerical native337 manifold comparison, unchanged geometry/gains");parser.add_argument("--from-start",action="store_true",help="complete aligned START navigation before pickup");parser.add_argument("--bottle-height-m",type=float,choices=(.30,.22),default=.30);parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--carry-angular-cap",type=float,choices=(.30,.60),default=.30,help="bounded command cap; source joint speed gates remain unchanged");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");parser.add_argument("--visual-stance-adjustment",action="store_true",help="known-table dock then RGBD-directed unloaded native stance correction");parser.add_argument("--initial-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="scenario initialization only, never a control target");parser.add_argument("--task-grasp-region",action="store_true");parser.add_argument("--task-bottle-offset-xy-m",type=float,nargs=2,default=(0.,0.));parser.add_argument("--grasp-only",action="store_true",help="stop after measured grasp/lift/hold, no transfer");parser.add_argument("--far-observe-approach",action="store_true");parser.add_argument("--lateral-motion-direction",choices=("left","right"));parser.add_argument("--lateral-motion-profile",choices=("reference","side-start"),default="reference");parser.add_argument("--fast-task-timing",action="store_true",help="research2s closure and2sim-second load hold; physical gates unchanged");parser.add_argument("--carry-baseline-78df5bd",action="store_true");args=parser.parse_args()
     if args.carry_baseline_78df5bd:
         if not (args.from_start and args.task_grasp_region and args.fast_task_timing and args.to_delivery_table):
             raise ValueError("baseline requires complete START H220 fast task")
@@ -87,7 +87,7 @@ def main():
         if not args.task_grasp_region or (args.from_start and not args.far_observe_approach):raise ValueError("full START grasp-only requires far RGBD approach")
         CMD.append("--grasp-only")
     if args.task_grasp_region:
-        if (not args.from_start and not args.grasp_only) or not args.to_delivery_table or args.bottle_height_m!=.22 or args.carry_angular_cap!=.60:
+        if (not args.from_start and not args.grasp_only) or not args.to_delivery_table or args.bottle_height_m!=.22:
             raise ValueError("task region is the complete H220 START transfer")
         CMD.append("--task-grasp-region")
         CMD[CMD.index("--post-lift-retract-world-m")+2]="-0.04"
@@ -163,7 +163,7 @@ def main():
     from scripts.research.issue46.native_runtime.native_container_guard import require_exclusive_x2_runtime
     require_exclusive_x2_runtime()
     out=pg.create_unique_output_directory(ROOT,prefix="live-retreat-turn-human-review-command").native_path
-    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;closed=False;camera_started=False;camera_endpoint_printed=False
+    attempt=str(uuid.uuid4());old=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"));episode=None;native=None;viewer_started=False;viewer_attempted=False;viewer_wait_reported=False;closed=False;camera_started=False;camera_endpoint_printed=False
     (out/"command.json").write_text(json.dumps(dict(attempt_id=attempt,route_configuration_validated_before_physics=args.to_delivery_table,host_numeric_thread_limits=host_threads,head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),command=CMD,scope="LIVE_PHYSICS_SECOND_TABLE_PLACEMENT" if args.to_delivery_table else "LIVE_PHYSICS_RETREAT_TURN_ONLY_NO_TRANSFER_QUALIFICATION"),indent=2))
     from scripts.research.issue46.grasp.run_lifecycle import observe_episode,publish
     lifecycle_seen=set()
@@ -182,7 +182,10 @@ def main():
                 if len(owned)>1:raise RuntimeError("ambiguous live episode")
                 if owned:episode=next(iter(owned))
                 if episode:observe_episode(episode,lifecycle_seen,destination=out)
-                copy_readonly_view_state(episode)
+                try:
+                    copy_readonly_view_state(episode)
+                except (OSError,ValueError) as observer_error:
+                    (out/"viewer_copy_diagnostic.json").write_text(json.dumps(dict(error=str(observer_error),physical_controller_unchanged=True)))
                 if args.task_grasp_region and not args.no_viewer and episode and not camera_started and (episode/"invocation.json").exists() and review_source_ready(episode):
                     camera_started=True
                     try:
@@ -193,20 +196,30 @@ def main():
                         (episode/"first_person_observer_start_failure.json").write_text(json.dumps({"failure":str(camera_error),"physical_controller_unchanged":True}))
                         print("FIRST_PERSON_OBSERVER_FAILED",str(camera_error),flush=True)
                 if camera_started and not camera_endpoint_printed and episode and (episode/"first_person_video/first_person_stream_configuration.json").exists():
-                    camera_config=json.loads((episode/"first_person_video/first_person_stream_configuration.json").read_text())
-                    print("FIRST_PERSON_RGB_VIDEO",camera_config["url"],flush=True)
-                    camera_endpoint_printed=True
-                if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and review_source_ready(episode):
-                    manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
-                    def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()
-                    viewer=REPO/"scripts/research/issue46/grasp/native_live_review_windows.py"
-                    argv=[r"D:\Dev\Anaconda\python.exe","-I","-S",win(viewer),win(episode),win(review_cache),win(REPO)]
-                    code="import subprocess,json;from pathlib import Path;root=Path("+repr(win(episode))+");log=(root/'live_viewer.stdout').open('x');p=subprocess.Popen("+repr(argv)+",stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW);print(json.dumps(dict(viewer_pid=p.pid)))"
-                    launched=subprocess.run([str(WINPY),"-c",code],text=True,capture_output=True,timeout=12)
-                    if launched.returncode:raise RuntimeError("live viewer launch failed:"+launched.stderr)
-                    (out/"viewer_process.json").write_text(launched.stdout);viewer_started=True;view_deadline=time.monotonic()+25.
-                    print("LIVE_WINDOW_STARTING",episode,flush=True)
-                if viewer_started and not (episode/"live_view_ready.json").exists() and time.monotonic()>view_deadline:raise RuntimeError("live viewer did not become ready")
+                    try:
+                        camera_config=json.loads((episode/"first_person_video/first_person_stream_configuration.json").read_text())
+                        print("FIRST_PERSON_RGB_VIDEO",camera_config["url"],flush=True)
+                        camera_endpoint_printed=True
+                    except (OSError,ValueError,KeyError):pass # Retry an incomplete observer-only write.
+                if not args.no_viewer and episode and not viewer_attempted and (episode/"live_view_scene.json").exists() and review_source_ready(episode):
+                    viewer_attempted=True
+                    try:
+                        manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
+                        def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()
+                        viewer=REPO/"scripts/research/issue46/grasp/native_live_review_windows.py"
+                        argv=[r"D:\Dev\Anaconda\python.exe","-I","-S",win(viewer),win(episode),win(review_cache),win(REPO)]
+                        code="import subprocess,json;from pathlib import Path;root=Path("+repr(win(episode))+");log=(root/'live_viewer.stdout').open('x');p=subprocess.Popen("+repr(argv)+",stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW);print(json.dumps(dict(viewer_pid=p.pid)))"
+                        launched=subprocess.run([str(WINPY),"-c",code],text=True,capture_output=True,timeout=12)
+                        if launched.returncode:raise RuntimeError("live viewer launch failed:"+launched.stderr)
+                        (out/"viewer_process.json").write_text(launched.stdout);viewer_started=True;view_deadline=time.monotonic()+25.
+                        print("LIVE_WINDOW_STARTING",episode,flush=True)
+                    except Exception as observer_error:
+                        (out/"viewer_start_diagnostic.json").write_text(json.dumps(dict(error=str(observer_error),physical_controller_unchanged=True)))
+                        print("LIVE_VIEWER_UNAVAILABLE_PHYSICS_CONTINUES",str(observer_error),flush=True)
+                if viewer_started and not viewer_wait_reported and not (episode/"live_view_ready.json").exists() and time.monotonic()>view_deadline:
+                    viewer_wait_reported=True
+                    (out/"viewer_readiness_diagnostic.json").write_text(json.dumps(dict(reason="read-only renderer not ready after25s",physical_controller_unchanged=True)))
+                    print("LIVE_VIEWER_DELAYED_PHYSICS_CONTINUES",flush=True)
                 if episode and (episode/"live_view_closed.json").exists() and not closed:
                     (episode/"human_review_stop").write_text("viewer closed; existing controller must zero/stand/cleanup")
                     closed=True;print("REVIEW_CLOSED_REQUESTED_SAFE_STOP",flush=True)

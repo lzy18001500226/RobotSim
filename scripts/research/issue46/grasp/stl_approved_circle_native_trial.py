@@ -281,13 +281,15 @@ def main():
                 perception_output=state.parent/'fresh_rgbd'
                 scene=json.loads(args.candidate.read_text())['scene']['path']
                 sensor_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(REPO/'scripts/research/issue46/perception/native_rgbd_grasp.py'),'--stream-scene',scene,'--native-latest',str(state.parent/'native_latest.json'),'--output-dir',str(perception_output),'--half-height-m',str(args.bottle_height_m/2.)]
+                sensor_maximum_age_s=1. if args.target_source=='fresh-rgbd-snapshot' else .20
+                sensor_command.extend(['--maximum-source-age-s',str(sensor_maximum_age_s)])
                 if host_model_cache:sensor_command.extend(['--host-model-cache',str(host_model_cache)])
                 pg.write_new_text(state.parent/'fresh_rgbd_command.json',json.dumps(sensor_command)+'\n')
                 import os
                 environment=dict(os.environ);environment['MUJOCO_GL']='egl'
                 if args.rgbd_render_adapter:environment['MESA_D3D12_DEFAULT_ADAPTER_NAME']=args.rgbd_render_adapter
                 with (state.parent/'fresh_rgbd.stdout').open('x') as log:perception_process=subprocess.Popen(sensor_command,stdout=log,stderr=subprocess.STDOUT,cwd=REPO,env=environment)
-                deadline=time.monotonic()+15.
+                deadline=time.monotonic()+45.
                 while time.monotonic()<deadline:
                     native_grasp_audit.require_fresh_sample(state.parent/'native_latest.json')
                     if perception_process.poll() is not None:raise RuntimeError('RGBD_SENSOR_STARTUP_FAILED')
@@ -295,11 +297,11 @@ def main():
                     if latest.exists():
                         observation=json.loads(latest.read_text())
                         if observation.get('pass') is not True:raise RuntimeError('RGBD_SENSOR_NOT_QUALIFIED:'+str(observation))
-                        observation,pose=await_initial_estimate(latest,generation=row['generation']);break
+                        observation,pose=await_initial_estimate(latest,generation=row['generation'],maximum_source_age_s=sensor_maximum_age_s);break
                     time.sleep(.02)
                 else:raise RuntimeError('RGBD_SENSOR_READINESS_TIMEOUT')
                 synchronized['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
-                synchronized['perception']={'latest_path':str(latest),'source':'FRESH_SIMULATED_CALIBRATED_HEAD_RGBD','truth_not_control_target':True}
+                synchronized['perception']={'latest_path':str(latest),'source':'FRESH_SIMULATED_CALIBRATED_HEAD_RGBD','truth_not_control_target':True,'maximum_source_age_s':sensor_maximum_age_s}
             if args.physical_lift_test or (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 carry_source_limits,carry_source_provenance=native.native_leg_safety_contract(include_upper_body=True)
                 synchronized["runtime_source_motion_limits"]=carry_source_limits
@@ -372,8 +374,8 @@ def main():
             if args.target_source=='fresh-rgbd-snapshot':
                 from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate,make_stationary_snapshot
                 plan=json.loads(reference.read_text());planned=plan['perception']['observation_at_plan']
-                verification,_=await_initial_estimate(perception_output/'latest.json',generation=planned['generation'],after_source_ns=planned['source_host_ns'])
-                snapshot=make_stationary_snapshot(planned,verification,generation=planned['generation'])
+                verification,_=await_initial_estimate(perception_output/'latest.json',generation=planned['generation'],after_source_ns=planned['source_host_ns'],maximum_source_age_s=1.)
+                snapshot=make_stationary_snapshot(planned,verification,generation=planned['generation'],maximum_source_age_s=1.)
                 snapshot_path=evidence/'rgbd_grasp_snapshot.json';pg.write_new_text(snapshot_path,json.dumps(snapshot,indent=2)+'\n')
                 plan['static_replan_source']={'path':str(reference),'sha256':native.sha256(reference)}
                 plan['perception']['snapshot']={'path':str(snapshot_path),'sha256':native.sha256(snapshot_path)}

@@ -598,7 +598,9 @@ def prepare_delivery_scene(parent, config_path, *, host_model_cache=None):
         cfg['placement_target_selection']=dict(policy='CURRENT_TOOL_TABLETOP_PROJECTION',actual_tool_section_world_m=current_section.tolist(),actual_tool_axis_world=current_axis.tolist(),target_center_world_m=cfg['placement_center_world_m'],table_edge_planning_inset_m=cfg['bottle_radius_m']+.025)
     elif cfg.get('placement_target_policy','FIXED_TABLE_POINT')!='FIXED_TABLE_POINT':raise ValueError('unknown placement target policy')
     if cfg.get('placement_target_policy')=='CURRENT_TOOL_TABLETOP_PROJECTION':
-        hint=np.asarray(cfg['placement_center_world_m'][:2]);z=cfg['placement_center_world_m'][2]+float(cfg.get('grasp_height_above_center_m',.10))
+        # Solve the release endpoint actually requested by the task. Solving
+        # contact at the tabletop first can reject a reachable20mm low drop.
+        hint=np.asarray(cfg['placement_center_world_m'][:2]);z=(low_release_center_height(cfg,[0.,0.,1.]) if low_release_enabled(cfg) else cfg['placement_center_world_m'][2])+float(cfg.get('grasp_height_above_center_m',.10))
         inset=max(cfg['bottle_radius_m']+.025,cfg['bottle_radius_m']+.5*cfg['bottle_height_m']*math.sin(math.radians(12.))+.010);lower_xy=np.maximum(np.asarray(cfg['table_bounds_min_world_m'][:2])+inset,hint-.15);upper_xy=np.minimum(np.asarray(cfg['table_bounds_max_world_m'][:2])-inset,hint+.15)
         saved=qseed.copy();weights=np.r_[np.full(3,10000.),np.full(3,10.)]
         def table_endpoint_error(x):
