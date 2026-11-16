@@ -1341,6 +1341,15 @@ def measured_turn_refinement(mission, stopped, bearing, stop):
 
 
 
+
+def prepare_delivery_turn_mode(n, cfg, qualified_stop):
+    """Select the installed turn policy while physically stopped and zero."""
+    if qualified_stop.get("pass") is not True or n.moving:
+        raise RuntimeError("DELIVERY_TURN_MODE_REQUIRES_QUALIFIED_STOP")
+    cfg["motion_mode"]="LOCOMOTION_DEFAULT"
+    n.stand_once("LOCOMOTION_DEFAULT")
+
+
 def delivery_heading_recovery(mission, stopped, goal, qualified_stop, remaining_s):
     """Resume the existing measured TURN phase after a real delivery stop.
 
@@ -2420,7 +2429,7 @@ def run_carry_navigation(n,contract):
                         cfg["previous_permit_filename"]=cfg["permit_filename"]
                         cfg["permit_filename"]="carry_transit_heading_recovery_"+str(recovery["delivery_heading_recovery_count"])+".json"
                         cfg["delivery_alignment_stop_pass"]=True
-                        cfg["motion_mode"]="LOCOMOTION_DEFAULT"
+                        prepare_delivery_turn_mode(n,cfg,heading_stop)
                         mission.pop("clock_recovery_turn_stop",None)
                         mission.update(recovery);bearing=mission["away_heading_rad"]
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)

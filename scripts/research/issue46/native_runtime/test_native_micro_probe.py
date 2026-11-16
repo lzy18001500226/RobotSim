@@ -25,6 +25,19 @@ def rows():
 
 class MicroTests(unittest.TestCase):
 
+    def test_recovery_turn_selects_vendor_policy_before_rearming(self):
+        cfg={"motion_mode":"LOCOMOTION_STEP"};requests=[]
+        def request(mode):
+            self.assertEqual(cfg["motion_mode"],"LOCOMOTION_DEFAULT")
+            requests.append(mode)
+        n=NS(moving=False,stand_once=request)
+        micro.prepare_delivery_turn_mode(n,cfg,{"pass":True})
+        self.assertEqual(requests,["LOCOMOTION_DEFAULT"])
+        for moving,passed in [(True,True),(False,False)]:
+            with self.assertRaises(RuntimeError):
+                micro.prepare_delivery_turn_mode(NS(moving=moving),cfg,{"pass":passed})
+
+
     def test_delivery_heading_recovery_requires_actual_stop_and_shared_budget(self):
         stopped=dict(pose=dict(x=.3,y=-1.,yaw=0.),sample_monotonic_s=20.)
         for stop_state,remaining,mission in [
