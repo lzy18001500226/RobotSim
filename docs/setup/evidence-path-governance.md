@@ -80,6 +80,37 @@ The path API remains compatible with older code that reads
 `describe_output_path(...).get("windows_unc")`; persisted descriptor keys stay
 uppercase. This compatibility does not make direct filesystem writes safe.
 
+## Historical trace archives
+
+After an explicitly approved hygiene review, a closed historical experiment
+may retain a losslessly compressed `native_physics.jsonl.gz` instead of its
+uncompressed trace. This is archival, not a new run or a revised verdict.
+
+- Select exact closed failed experiments from a recorded plan. Preserve
+  successful baselines, current runs, named source/review references and
+  representative failures. Do not select directories merely because they
+  are old or have similar names.
+- Keep original results, configuration, source/model inputs, HTML viewers and
+  logs in place. Do not rewrite a FAIL/BLOCKED result as PASS.
+- Reject active process consumers, symlinks, changed source files and existing
+  archive destinations. Verify the complete decompressed SHA-256 before
+  removing exactly the planned uncompressed regular file.
+- Preserve `ARCHIVED_NATIVE_PHYSICS.json` beside the archive. It records the
+  original and compressed hashes, original size/mode/mtime, result hash and
+  the restoration command. Preserve the trusted archival script, exact plan
+  and per-file journal in the governed housekeeping evidence directory.
+- Restore with that script's `--restore <run-name>` command before using an
+  older reader, replay tool or full artifact-manifest check that requires the
+  uncompressed path. Restoration verifies both hashes, recreates the original
+  path and refuses to overwrite an existing file. The compressed copy remains
+  available after restoration.
+
+The original experiment manifest remains the historical manifest. An archived
+experiment is not advertised as fully online or newly manifest-validated until
+the trace is restored. Current review pages and their input closure must remain
+online. Report measured filesystem allocation separately from logical bytes;
+freeing space inside WSL does not by itself compact the Windows VHDX file.
+
 ## Task closeout
 
 The `robotsim.task-closeout.v1` envelope may include an optional
