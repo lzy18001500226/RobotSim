@@ -197,6 +197,12 @@ def perform_native_placement(n, request):
     hand=n.native_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];local=CIRCLE_CONTRACT["circle_center_local_m"]
     outward=[sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)];length=math.sqrt(sum(x*x for x in outward))
     retreat=[point[i]-.08*outward[i]/length for i in range(3)]
+    # The bottle is now independently table-supported and the real claw is
+    # open. Retain positional continuation and all physical guards; its former
+    # grasp-axis alignment is no longer a task constraint for the empty hand.
+    n.lift_phase["placement_withdrawal_support"]=dict(
+        pass_result=True,classification=result["classification"],
+        generation=n.native_generation,measured_hold_sim_s=result["measured_hold_sim_s"])
     start_point=point.copy();timing["stage"]="OPEN_CLAW_WITHDRAWAL"
     for index in range(100):
         u=(index+1)/100.;v=u*u*(3.-2.*u)

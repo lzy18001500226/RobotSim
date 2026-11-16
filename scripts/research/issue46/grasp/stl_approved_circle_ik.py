@@ -503,6 +503,42 @@ def refine_task_feasibility(residual, jacobian, seed, bounds, position_limit, ax
                          max_nfev=40,ftol=1e-10,xtol=1e-10,gtol=1e-10)
 
 
+def tracking_task_limits(reference, phase):
+    """Task accuracy, separate from unchanged source/physical safety limits.
+
+    The approved staged approach may use a one-degree directed-axis error
+    (1.92 mm at half of a 220 mm bottle). Position remains within 1 mm.
+    Runtime collision and bilateral/load gates still qualify the actual motion.
+    Other consumers retain their previous task accuracy.
+    """
+    position_limit=.001
+    angle=np.deg2rad(1.) if reference.get("approach_staging") else 2.*np.arcsin(.005)
+    if phase is not None and phase.get("placement_active"):
+        request=phase["placement_request"]
+        position_limit=float(request.get("placement_position_tolerance_m",.001))
+        angle=float(request.get("placement_axis_tolerance_rad",2.*np.arcsin(.005)))
+        if not .001<=position_limit<=.005 or not .001<=angle<=np.deg2rad(1.):
+            raise RuntimeError("PLACEMENT_IK_TASK_TOLERANCE")
+    return position_limit,.2*np.sin(angle/2.)
+
+
+def released_withdrawal_axis_free(row, phase):
+    """Only an actually open, independently placed gripper loses the grasp axis."""
+    if not phase or "placement_withdrawal_support" not in phase:
+        return False
+    proof=phase["placement_withdrawal_support"]
+    if (not phase.get("placement_active") or
+        phase.get("placement_execution_timing",{}).get("stage") not in
+            ("OPEN_CLAW_WITHDRAWAL","FINAL_RELEASED_SUPPORT") or
+        proof.get("pass_result") is not True or
+        proof.get("classification")!="RELEASED_BOTTLE_SUPPORTED_BY_DELIVERY_TABLE_NOT_GRIP" or
+        proof.get("generation")!=row["generation"] or
+        proof.get("measured_hold_sim_s",0.)<2. or
+        -float(row["joints"]["R_claw_joint"]["q"])<.95):
+        raise RuntimeError("EMPTY_CLAW_WITHDRAWAL_NOT_RELEASED")
+    return True
+
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -514,27 +550,32 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
     centre=np.array(reference.get('execution_grasp_frame',{}).get('center_m',reference['circle']['center_m']));target,bottle_axis=tracking_task(row,reference,phase);local_axis=np.asarray(reference.get('local_bottle_axis_in_hand',[1.,0.,0.]))
     ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=joint_planning_bounds(model,ik.ARM,reference.get("source_joint_limits_rad"));hand=ik.native.bid(model,'R_omnipicker_base_link')
-    def residual(q):
+    axis_free=released_withdrawal_axis_free(row,phase)
+    def raw_residual(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,bottle_axis,local_axis)
+    def residual(q):
+        error=raw_residual(q)
+        if axis_free:error[3:]=0.
+        return error
     dofs=np.array([model.jnt_dofadr[j] for j in ids])
     def jacobian(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         R=data.xmat[hand].reshape(3,3);point=data.xpos[hand]+R@centre
         linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
         mujoco.mj_jac(model,data,linear,angular,point,hand)
-        return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
+        angular_task=np.zeros((3,len(dofs))) if axis_free else .1*np.cross(angular[:,dofs].T,R@local_axis).T
+        return np.vstack([linear[:,dofs],angular_task])
     if reference.get("approach_staging"):
         tracking_margin=float(reference["approach_staging"].get("source_tracking_margin_rad",.01))
         if not .01<=tracking_margin<=.03:raise ValueError("invalid inward planning reserve")
         bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference),margin=tracking_margin)
     bounds=carry_tracking_bounds(bounds,ik.ARM,phase)
     bounds=placement_tracking_bounds(bounds,seed,phase)
-    position_limit=.001;axis_limit=.001;weights=np.ones(6)
-    if phase is not None and phase.get('placement_active'):
-        request=phase['placement_request'];position_limit=float(request.get('placement_position_tolerance_m',.001));angle=float(request.get('placement_axis_tolerance_rad',2.*np.arcsin(.005)))
-        if not .001<=position_limit<=.005 or not .001<=angle<=np.deg2rad(1.):raise RuntimeError('PLACEMENT_IK_TASK_TOLERANCE')
-        axis_limit=.2*np.sin(angle/2.);weights=np.r_[np.full(3,1./position_limit),np.full(3,1./axis_limit)]
+    position_limit,axis_limit=tracking_task_limits(reference,phase)
+    weights=np.ones(6)
+    if phase is not None and phase.get("placement_active"):
+        weights=np.r_[np.full(3,1./position_limit),np.full(3,1./axis_limit)]
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
@@ -570,7 +611,8 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     actual=np.array([row['joints'][n]['q'] for n in ik.ARM])
     actual_error=residual(actual);J=jacobian(actual)
     correction=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error)
-    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'refinement_evaluations':refinement_evaluations,'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
+    raw_error=raw_residual(q);actual_raw_error=raw_residual(actual)
+    return q,{'axis_constraint':'FREE_EMPTY_CLAW_AFTER_MEASURED_RELEASE' if axis_free else 'DIRECTED_BOTTLE_AXIS','position_tolerance_m':position_limit,'axis_tolerance_rad':None if axis_free else float(2.*np.arcsin(axis_limit/.2)),'raw_axis_residual':float(np.linalg.norm(raw_error[3:])),'actual_raw_axis_residual':float(np.linalg.norm(actual_raw_error[3:])),'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'refinement_evaluations':refinement_evaluations,'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
 
 
 def bounded_tracking_velocity(previous, target, dt, speed_limits):
