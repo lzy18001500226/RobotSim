@@ -58,6 +58,43 @@ class FilesystemGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNotNone(guard.command_reason(command))
 
+    def test_directory_changing_wrappers_invalidate_relative_scope(self) -> None:
+        wrappers = (
+            "wsl.exe -d Ubuntu-22.04 --cd /tmp --exec",
+            "wsl.exe --cd=/tmp --exec",
+            "env -C /tmp", "env -C/tmp", "env --chdir=/tmp",
+            "sudo -D /tmp", "sudo -D/tmp", "sudo --chdir=/tmp",
+            "env -iC /tmp", "env --chd=/tmp", "sudo -HD /tmp",
+            "sudo --chd=/tmp", "sudo -i", "sudo --login",
+            "command env -C /tmp sudo",
+        )
+        for wrapper in wrappers:
+            with self.subTest(wrapper=wrapper):
+                self.assertIsNotNone(guard.command_reason(f"{wrapper} rm -rf generated", str(self.root)))
+                self.assertIsNone(guard.command_reason(f"{wrapper} rm -rf '{self.root}/generated'", str(self.root)))
+        for wrapper in ("sudo", "env FLAG=1", "command", "wsl.exe --exec"):
+            self.assertIsNone(guard.command_reason(f"{wrapper} rm -rf generated", str(self.root)))
+
+    def test_escaped_and_concatenated_protected_operands_fail_closed(self) -> None:
+        for target in (r"revie\ws", 're"views"', './re""views', '"re"views', "'re'views", r"revi\ews/old", "'.g'it", "ref'erence'/vendor"):
+            with self.subTest(target=target):
+                self.assertIsNotNone(guard.command_reason(f"rm -rf {target}", str(self.root)))
+                self.assertIsNotNone(guard.command_reason(f"bash -c 'rm -rf {target}'", str(self.root)))
+        self.assertIsNone(guard.command_reason('rm -rf gen"erated"', str(self.root)))
+        self.assertIsNone(guard.command_reason('bash -c "rm -rf \'generated temp\'"', str(self.root)))
+
+    def test_escaped_supported_executable_names_remain_inspected(self) -> None:
+        for executable in (r"r\m", r"/usr/bin/r\m", 'r"m"'):
+            for target in ("reviews", "/tmp"):
+                with self.subTest(executable=executable, target=target):
+                    self.assertIsNotNone(guard.command_reason(f"{executable} -rf {target}", str(self.root)))
+        self.assertIsNone(guard.command_reason(r"r\m -rf generated", str(self.root)))
+
+    def test_hash_in_filename_cannot_hide_subsequent_commands(self) -> None:
+        self.assertIsNotNone(guard.command_reason("rm -rf generated#; rm -rf reviews", str(self.root)))
+        self.assertIsNone(guard.command_reason("rm -rf generated#", str(self.root)))
+        self.assertIsNone(guard.command_reason("echo '#; rm -rf reviews'", str(self.root)))
+
     def test_blocks_disk_commands(self) -> None:
         for command in ("mkfs.ext4 /dev/sda", "diskpart.exe /s commands.txt", "format.com C:", "dd if=image of=/dev/sda", "sudo wipefs -a /dev/sda"):
             with self.subTest(command=command):

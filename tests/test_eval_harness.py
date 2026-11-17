@@ -115,6 +115,35 @@ class EvalHarnessTests(unittest.TestCase):
         implementation.write_text(implementation.read_text().replace("STOP_DYNAMICS_AND_DIAGNOSE", "OFFLINE_REPLAN_FROM_CHECKPOINT"))
         self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
 
+    def test_recovery_grader_ignores_local_runner_shadows_and_pythonpath(self) -> None:
+        case, case_dir = self.prepare("engineering-recovery")
+        repo = case_dir / "repo"
+        harness._write(repo / "unittest.py", "pass\n")
+        for name in ("unittest/__init__.py", "test_recovery/__init__.py", "json.py", "sitecustomize.py"):
+            harness._write(repo / name, "raise RuntimeError('editable shadow was imported')\n")
+        with patch.dict(harness.os.environ, {"PYTHONPATH": str(repo)}):
+            self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
+            self.solve_recovery(case_dir)
+            self.assertEqual(harness.grade_case(case, case_dir)["status"], "PASS")
+
+    def test_recovery_grader_requires_decisions_after_zero_exit(self) -> None:
+        case, case_dir = self.prepare("engineering-recovery")
+        harness._write(case_dir / "repo" / "recovery.py", "import sys\nsys.exit(0)\n")
+        result = harness.grade_case(case, case_dir)
+        check = next(item for item in result["checks"] if item["id"] == "L1:recovery-decisions")
+        self.assertEqual(check["returncode"], 0)
+        self.assertEqual(check["status"], "FAIL")
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_recovery_grader_rejects_candidate_authored_completion_records(self) -> None:
+        case, case_dir = self.prepare("engineering-recovery")
+        for output in ("RECOVERY_TESTS_COMPLETED=2", "PASS", "[]", "[{}]"):
+            with self.subTest(output=output):
+                harness._write(case_dir / "repo" / "recovery.py", f"import sys\nprint({output!r})\nsys.exit(0)\n")
+                self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
+        harness._write(case_dir / "repo" / "recovery.py", "import sys\nprint(sys.argv[2])\nsys.exit(0)\n")
+        self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
+
     def test_recovery_grader_protects_evidence_budget_safety_and_test_contract(self) -> None:
         for name in harness._recovery_inputs():
             with self.subTest(name=name):

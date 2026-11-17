@@ -520,12 +520,15 @@ def _run_command(
     env: dict[str, str] | None = None,
     timeout: int = 1800,
     missing_deferred: bool = False,
+    input_text: str | None = None,
+    expected_json: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         result = subprocess.run(
             list(command),
             cwd=cwd,
             env=env,
+            input=input_text,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -536,10 +539,20 @@ def _run_command(
         return _check(check_id, status, "required command is unavailable", level=level, command=list(command), returncode=None)
     except subprocess.TimeoutExpired:
         return _check(check_id, "FAIL", f"command exceeded {timeout}s", level=level, command=list(command), returncode=None)
+    output_matches = True
+    if expected_json is not None:
+        try:
+            output_matches = json.loads(result.stdout) == expected_json
+        except (ValueError, TypeError):
+            output_matches = False
+    passed = result.returncode == 0 and output_matches
+    message = "command completed successfully" if passed else "command returned a non-zero exit code"
+    if result.returncode == 0 and not output_matches:
+        message = "candidate output did not match the grader-owned decisions"
     return _check(
         check_id,
-        "PASS" if result.returncode == 0 else "FAIL",
-        "command completed successfully" if result.returncode == 0 else "command returned a non-zero exit code",
+        "PASS" if passed else "FAIL",
+        message,
         level=level,
         command=list(command),
         returncode=result.returncode,
@@ -630,8 +643,29 @@ def _grade_recovery(case_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]
         checks.append(_check("L1:recovery-decisions", "NOT RUN", "protected inputs changed", level="L1"))
         return checks
     checks.append(_run_command("L0:diff-check", "L0", ["git", "diff", "--check", "HEAD"], repo))
+    # Only candidate execution happens in the child. Expected decisions and PASS
+    # evaluation stay in this process, outside candidate imports/early exits.
+    observations = [*RECOVERY_OBSERVATIONS.values(),
+                    {"failure_kind": "physical", "fresh": True, "valid_checkpoint": False, "remaining_trials": 0},
+                    {"failure_kind": "planner", "fresh": True, "valid_checkpoint": False, "remaining_trials": 0}]
+    expected = [{"task": "ACTIVE", "action": action, "new_physics": False} for action in (
+        "OFFLINE_REPLAN_FROM_CHECKPOINT", "STOP_DYNAMICS_AND_DIAGNOSE", "OFFLINE_ANALYSIS",
+        "REFRESH_TELEMETRY", "STOP_DYNAMICS_AND_DIAGNOSE", "OFFLINE_ANALYSIS")]
+    # -I excludes editable cwd, PYTHONPATH and local sitecustomize from imports.
+    runner = '''import importlib.util
+import json
+import sys
+
+observations = json.load(sys.stdin)
+spec = importlib.util.spec_from_file_location("recovery", "recovery.py")
+candidate = importlib.util.module_from_spec(spec)
+sys.modules["recovery"] = candidate
+spec.loader.exec_module(candidate)
+print(json.dumps([candidate.decide(observation) for observation in observations]))
+'''
     checks.append(_run_command("L1:recovery-decisions", "L1",
-                               [sys.executable, "-B", "-m", "unittest", "-v", "test_recovery"], repo))
+                               [sys.executable, "-I", "-B", "-c", runner], repo,
+                               input_text=json.dumps(observations), expected_json=expected))
     return checks
 
 

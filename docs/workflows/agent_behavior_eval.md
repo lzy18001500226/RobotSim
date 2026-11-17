@@ -36,6 +36,8 @@ python3 -m scripts.agent.eval_harness grade --case engineering-recovery --direct
 
 After preparation, the unmodified stub is expected to fail. Read `TASK.md` and implement `repo/recovery.py` before grading again. The grader requires unchanged observations, safety settings, trial budget and tests, then executes the decision function. Planner rejection continues offline replanning from a valid checkpoint; physical failure stops dynamics for diagnosis; exhausted permission allows offline analysis; stale observations require refreshing telemetry. None of these fixture actions runs physics or spends another trial. Fixture tests establish this synthetic decision contract only; evaluation of a running Agent still requires its actual action trace.
 
+The grader launches candidate execution with isolated Python imports and compares all six returned decisions against grader-owned expectations in the parent process. Local `unittest`/test modules, `PYTHONPATH`, a zero exit code or a candidate-authored completion marker cannot replace those results. This is an evaluation protocol, not OS isolation for hostile Python; execute only authorized fixture code.
+
 For a MuJoCo or ROS task, prepare the case prompt, work in the named RobotSim task checkout, and grade that checkout with its base ref:
 
 ```bash

@@ -15,15 +15,30 @@ DELETE_COMMANDS = {"rm", "rmdir", "rd", "remove-item", "del", "erase", "ri"}
 
 
 def _literal(token: str) -> str:
-    return token.strip("\"'")
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
 
 
 def _executable(token: str) -> str:
-    return _literal(token).replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe").removesuffix(".com")
+    value = _literal(token)
+    # Also recognize a supported POSIX command whose name contains escapes.
+    # Windows executable paths still use the normal separator handling below.
+    escaped_name = re.sub(r"\\(.)", r"\1", value.rsplit("/", 1)[-1]).casefold()
+    if escaped_name in SHELLS | DISK_COMMANDS | DELETE_COMMANDS | {"sudo", "env", "command", "wsl", "dd", "mkfs"} or escaped_name.startswith("mkfs."):
+        return escaped_name
+    return value.replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe").removesuffix(".com")
 
 
 def _tokens(command: str) -> list[str]:
-    lexer = shlex.shlex(command, posix=False, punctuation_chars=";&|<>\n")
+    # Join adjacent quoted fragments as a shell does. Keep backslashes literal:
+    # their POSIX/Windows meanings differ, so deletion operands containing them
+    # are rejected rather than resolved under the wrong shell's rules.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>\n")
+    lexer.escape = ""
+    # shlex treats even a word-internal # as a comment, unlike Bash. Retain it
+    # so a filename cannot hide later command separators from inspection.
+    lexer.commenters = ""
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     return list(lexer)
@@ -32,7 +47,7 @@ def _tokens(command: str) -> list[str]:
 def _scoped_path(token: str, cwd: str | None) -> Path | None:
     value = _literal(token)
     # Opaque expressions and glob expansion cannot establish a literal scope.
-    if not value or re.search(r"[$`*?{}\[\]\n\r]", value) or value.startswith("~"):
+    if not value or re.search(r"[$`*?{}\[\]\\\"'\n\r]", value) or value.startswith("~"):
         return None
     normalized = value.replace("\\", "/")
     if re.match(r"^[A-Za-z]:", normalized) or normalized.startswith("//"):
@@ -59,6 +74,23 @@ def _delete_reason(args: list[str], cwd: str | None) -> str | None:
     return None
 
 
+def _wrapper_changes_cwd(name: str, args: list[str]) -> bool:
+    flags = {"wsl": ("--cd", ""), "env": ("--chdir", "C"), "sudo": ("--chdir", "Di")}
+    if name not in flags:
+        return False
+    long_flag, short_flags = flags[name]
+    for arg in args:
+        option = arg.split("=", 1)[0]
+        # GNU long options permit unique abbreviations; short flags can cluster.
+        if option.startswith("--") and len(option) > 2 and long_flag.startswith(option):
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and any(flag in arg[1:] for flag in short_flags):
+            return True
+        if name == "sudo" and option.startswith("--") and len(option) > 2 and "--login".startswith(option):
+            return True
+    return False
+
+
 def command_reason(command: str, cwd: str | None = None, *, depth: int = 0) -> str | None:
     """Inspect direct commands and common shell wrappers; never execute input."""
     if depth > 4:
@@ -81,6 +113,10 @@ def command_reason(command: str, cwd: str | None = None, *, depth: int = 0) -> s
                 break
             name = _executable(token)
             args = segment[index + 1:]
+            # Wrapper directory options invalidate the inherited cwd. Absolute
+            # repository operands can still be checked without guessing it.
+            if _wrapper_changes_cwd(name, args):
+                cwd = None
             if name in DISK_COMMANDS or name == "mkfs" or name.startswith("mkfs."):
                 return "blocked a disk formatting/partitioning command; use a separately reviewed manual operation"
             if name == "dd" and any(re.match(r"of=/dev/", _literal(arg)) for arg in args):
