@@ -35,11 +35,13 @@ jobs:
           scripts/agent/notify_task.py
           scripts/agent/pre_tool_guard.py
           scripts/agent/eval_harness.py
+          scripts/agent/infra_healthcheck.py
           scripts/agent/check_governance.py
           tests/test_notify_task.py
           tests/test_closeout_gate.py
           tests/test_pre_tool_guard.py
           tests/test_eval_harness.py
+          tests/test_infra_healthcheck.py
           tests/test_governance_check.py
 
       - name: Check runtime and artifact governance

@@ -58,6 +58,7 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 
 - Inspect the smallest relevant source and documentation set before editing. Follow the applicable setup, workflow, skill, and checklist documents.
 - Make the smallest change that satisfies the task, then run focused checks relevant to the changed paths.
+- For engineering tasks, advance the requested end-to-end outcome using the accepted baseline and the next discriminating check. Before adding a stop gate or escalating a recoverable failure, apply [engineering progress and recovery](docs/workflows/goal_driven_development.md#engineering-progress-and-recovery); a rejected candidate is not automatically a blocked task.
 - Report which checks ran and their results. Distinguish static checks from environment, simulation, or hardware validation; do not claim checks that were not run.
 - If a required check or Git operation is blocked, preserve the work and report the specific blocker and remaining validation gap.
 
