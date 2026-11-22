@@ -20,9 +20,24 @@ RESET -> STAND -> NAVIGATE_TO_INTERACTION -> RECEIVE_REQUEST
       -> NAVIGATE_TO_DELIVERY -> PLACE -> REPORT_COMPLETE
 ```
 
-Every transition is fail-closed. A failed localization, stale frame transform,
-unreachable grasp, unsupported object, contact failure, or stability failure
-returns a reasoned failure state rather than moving to the next stage.
+Advance a stage only on its measured acceptance evidence. A rejected candidate
+keeps that stage unpassed; it does not automatically terminate the mission.
+The task executor owns recovery under [engineering progress and recovery](goal_driven_development.md#engineering-progress-and-recovery):
+
+- Reacquire stale perception/localization, refine the stance, or replan an
+  unreachable approach within the existing permissions and trial budget.
+- During carry/placement, verify that a qualified hold remains valid before
+  replanning a landing pose. If safe holding cannot be maintained, stop the
+  affected execution; a failed plan is not permission to release the object.
+- Treat docking and placement targets as feasible regions defined by task
+  geometry, reachability, contact and support, rather than one exact waypoint.
+  A planner-only angle cutoff is not itself a physical joint limit.
+- Preserve real stability, slip, collision, source-limit and numerical checks.
+  Recoverable planning must not advance through an actual physical failure.
+
+Validate generalization through the same pipeline at intermediate or sampled
+positions inside the accepted region. Separate per-position successes are useful
+evidence, but do not establish continuous-region or end-to-end success.
 
 ## Interface contracts
 

@@ -52,11 +52,15 @@ jobs:
           scripts/agent/notify_task.py
           scripts/agent/pre_tool_guard.py
           scripts/agent/eval_harness.py
+          scripts/agent/infra_healthcheck.py
+          scripts/agent/stage_checkpoint.py
           scripts/agent/check_governance.py
           tests/test_notify_task.py
           tests/test_closeout_gate.py
           tests/test_pre_tool_guard.py
           tests/test_eval_harness.py
+          tests/test_infra_healthcheck.py
+          tests/test_stage_checkpoint.py
           tests/test_governance_check.py
 
       - name: Check runtime and artifact governance
@@ -98,6 +102,9 @@ jobs:
               Path("scripts/research/README.md"),
               Path("docs/checklists/agent_infra_eval.md"),
               Path("docs/workflows/agent_behavior_eval.md"),
+              Path("docs/workflows/stage_checkpoint.md"),
+              Path("docs/workflows/storage_maintenance.md"),
+              Path("docs/checklists/simulation_batch_archive.md"),
           )
           missing = []
           for document in documents:

@@ -85,6 +85,7 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
 
 - Inspect the smallest relevant source and documentation set before editing. Follow the applicable setup, workflow, skill, and checklist documents.
 - Make the smallest change that satisfies the task, then run focused checks relevant to the changed paths.
+- For engineering tasks, advance the requested end-to-end outcome using the accepted baseline and the next discriminating check. Before adding a stop gate or escalating a recoverable failure, apply [engineering progress and recovery](docs/workflows/goal_driven_development.md#engineering-progress-and-recovery); a rejected candidate is not automatically a blocked task.
 - Report which checks ran and their results. Distinguish static checks from environment, simulation, or hardware validation; do not claim checks that were not run.
 - If a required check or Git operation is blocked, preserve the work and report the specific blocker and remaining validation gap.
 
@@ -149,6 +150,9 @@ Before proposing or changing robot/gripper mechanical geometry, links, joints, a
   stage only task-owned paths. Commit meaningful functional or reproducible
   checkpoints, not each probe or tool call. Preserve unrelated edits; never
   reset, clean or broadly stage them to force a clean status.
+- After accepting a reproducible stage, before changing its validated sources
+  or handing off the chat, follow [stage checkpoints](docs/workflows/stage_checkpoint.md)
+  to preserve a pushed source checkpoint or verified owner handoff packet.
 - For authorized publication, commit and push, then run
   scripts/agent/closeout_gate.py to verify the branch, exact local/remote HEAD
   and GitHub reference. A failed required publication/gate is CLOSEOUT BLOCKED,

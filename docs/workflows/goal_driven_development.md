@@ -52,6 +52,42 @@ Completion is evidence-based. Apply the minimum levels and status definitions in
 
 The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues if a durable backlog becomes useful. Do not build a supervisor or queue merely to imitate an issue tracker.
 
+### Engineering progress and recovery
+
+Use this policy for ordinary engineering tasks as well as Goals. Work toward the
+user's observable task outcome, reusing accepted models and existing evidence.
+Choose the smallest check that distinguishes the current hypotheses; once it
+passes, advance to integration instead of repeatedly requalifying the baseline.
+Research a specific unresolved question, then apply the finding.
+
+Before making a threshold task-blocking, identify its source, failure meaning,
+and recovery action in the existing configuration, test, or result:
+
+| Check | Response |
+| --- | --- |
+| Explicit user gate, approved model/source limit, or actual physical hazard | Preserve the boundary; stop the affected execution and diagnose the first failure. Continue independent authorized work. |
+| Task acceptance criterion | Keep the stage unpassed until measured evidence satisfies it; try an authorized alternative. |
+| Planner heuristic or experimental convenience threshold | Reject the candidate and replan within the approved model. Reassess the heuristic against task geometry and evidence rather than treating it as a manufacturer limit. |
+| Telemetry freshness or transport check | Recover fresh measurements and verify the current state before commanding further motion; never relabel stale data as fresh. |
+| Trial count, time, or resource budget | Respect the authorized budget. Offline diagnosis can continue, but a retry does not grant another physical episode. |
+
+A recoverable candidate failure requires a next action, not a new permission
+question: inspect the saved state, correct an in-scope software defect or select
+another supported plan, and run the next authorized check. Bound retries by the
+current authorization and evidence; change the hypothesis after repeated
+failures. Resume from checkpoints for diagnosis when useful, while reporting
+end-to-end qualification separately. If all safe actions require a new permission
+or external decision, name that exact requirement.
+
+Self-imposed planning tolerances may be revised with evidence within the task's
+permission. This does not authorize weakening explicit safety gates, changing
+frozen mechanics, or continuing through an actual unsafe condition. Add a new
+abort rule only with a concrete failure it detects and a recovery/stop action;
+otherwise keep an unvalidated heuristic diagnostic. Report the achieved task
+stage, first relevant failure, and next action rather than test counts or an
+unearned completion claim. A document or passing mock test does not prove that
+a running Agent or simulator has adopted this policy.
+
 ### Upstream research before an external blocker
 
 For debugging or integration Goals, before marking a problem `BLOCKED_HUMAN` or asking for a manufacturer/engineer, follow the [official-source-first rule](../../AGENTS.md#mandatory-official-source-first-troubleshooting). Proactively consult the relevant official manual, release-specific startup procedure, and example code when access is available; reproduce the smallest supported comparison, and distinguish documentation evidence from actual runtime proof. Keep the human/safety gates intact. For X2 MC/MuJoCo integration start with [the X2 source index](../skills/agibot_x2.md). A tool/network outage or incompatible release should be reported precisely rather than represented as an intrinsic vendor limitation.
@@ -66,7 +102,7 @@ Where the current Codex client exposes pause, resume, or clear/end controls, Rob
 
 Continue through ordinary test failures and safe alternatives. Stop for architecture acceptance, destructive operations, new credentials/authentication, irreversible dependency migrations, unsafe hardware actuation, or unresolved visual/manual assertions that affect correctness. Routine low-risk merge authorization and required checks/review follow [AGENTS.md](../../AGENTS.md); Goal continuation does not waive these meaningful gates or expand task scope.
 
-For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#closeout), including its explicit `ready_for_review`, `completed`, or `blocked` notifier call. A Goal status and a PR notification are separate records: use the notification that matches the actual task outcome and report deferred checks honestly.
+For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#durable-task-closeout). Local Codex emits one structured final closeout envelope for the Stop hook; Cloud explicitly calls `task-closeout` once. `ready_for_review` is a separate attention command, not an additional terminal closeout. A Goal status, GitHub publication and email delivery are separate records: report the actual outcome and deferred checks honestly.
 
 ## Long-running-agent evidence and future decision
 
