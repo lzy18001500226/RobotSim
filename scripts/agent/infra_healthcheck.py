@@ -20,8 +20,6 @@ except ImportError:
 
 HANDLERS = {
     "PreToolUse": "pre_tool_guard.py",
-    "UserPromptSubmit": "task_lifecycle.py",
-    "Interrupt": "task_lifecycle.py",
     "Stop": "agentmail_stop_hook.py",
 }
 MAIL_SETTINGS = ("AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "ROBOTSIM_NOTIFY_TO")
@@ -99,7 +97,7 @@ def _outbox(path: Path) -> dict:
             return {"status": "DEFERRED", "detail": "active WAL/journal; skipped to avoid stale counts or SQLite sidecar writes"}
         # immutable mode cannot create journals or shared-memory sidecars. Refuse
         # active journals and discard counts if the database changes during read.
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", timeout=1)) as connection:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1)) as connection:
             publication = {}
             for state, count in connection.execute("SELECT publication_state, COUNT(*) FROM outcomes GROUP BY publication_state"):
                 key = state if state in task_notifications.PUBLICATION_STATES else "UNKNOWN"

@@ -123,6 +123,13 @@ class InfraHealthcheckTests(unittest.TestCase):
         (self.repo / ".codex/hooks.json").unlink()
         self.assertEqual(health._hooks(self.repo)["status"], "FAIL")
 
+    def test_default_hooks_need_no_prompt_or_interrupt_recorders(self) -> None:
+        self.assertEqual(set(self.hooks), {"PreToolUse", "Stop"})
+        self.assertEqual(health._hooks(self.repo)["status"], "PASS")
+        del self.hooks["PreToolUse"]
+        self.write_hooks({"hooks": self.hooks})
+        self.assertEqual(health._hooks(self.repo)["status"], "FAIL")
+
     def test_missing_handler_or_drifted_command_is_not_reported_healthy(self) -> None:
         self.hooks["Stop"][0]["hooks"][0]["command"] = "synthetic unsafe command; not executed"
         self.write_hooks({"hooks": self.hooks})

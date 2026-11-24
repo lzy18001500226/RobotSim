@@ -91,7 +91,7 @@ class PreToolGuardTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop", "UserPromptSubmit", "Interrupt"})
+        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop"})
         stop_handler = config["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop_handler.get("type"), "command")
         self.assertIn("scripts/agent/agentmail_stop_hook.py", stop_handler.get("command", ""))
@@ -123,22 +123,17 @@ class PreToolGuardTests(unittest.TestCase):
 
         self.assertEqual(covered, tool_names)
 
-        for event_name, groups in config["hooks"].items():
-            handlers = [handler for group in groups for handler in group["hooks"]]
-            with self.subTest(event_name=event_name):
-                self.assertEqual(len(handlers), 1)
-                for handler in handlers:
-                    for platform_command in ("command", "commandWindows"):
-                        self.assertNotIn(
-                            "codex_hook_capability_probe.py",
-                            handler.get(platform_command, ""),
-                        )
+        all_handlers = [
+            handler for groups in config["hooks"].values()
+            for group in groups for handler in group["hooks"]
+        ]
+        self.assertFalse(any(
+            "scripts/research/" in handler.get(platform, "")
+            for handler in all_handlers
+            for platform in ("command", "commandWindows")
+        ))
+        self.assertEqual(len(config["hooks"]["Stop"]), 1)
 
-        lifecycle_handler = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handler.get("command", ""))
-        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handler.get("commandWindows", ""))
-        interrupt_handler = config["hooks"]["Interrupt"][0]["hooks"][0]
-        self.assertIn("scripts/agent/task_lifecycle.py", interrupt_handler.get("commandWindows", ""))
 
 
 if __name__ == "__main__":

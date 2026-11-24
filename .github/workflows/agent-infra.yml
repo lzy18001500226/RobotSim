@@ -11,6 +11,12 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
+
+# Supersede older checks without push/PR events cancelling one another.
+concurrency:
+  group: agent-infra-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   agent-infra:
@@ -22,13 +28,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Select checks for this event
+        id: scope
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { infrastructureChecksRequired } = require('./scripts/agent/ci_scope.js');
+            core.setOutput('run_checks', await infrastructureChecksRequired({ github, context, core }));
+
       - name: Run Python unit tests
+        if: steps.scope.outputs.run_checks == 'true'
         run: python3 -m unittest discover -s tests -v
 
       - name: Run mocked task PR workflow tests
-        run: node --test tests/auto_task_pr.test.js
+        if: steps.scope.outputs.run_checks == 'true'
+        run: node --test tests/auto_task_pr.test.js tests/ci_scope.test.js
 
       - name: Compile agent scripts and tests
+        if: steps.scope.outputs.run_checks == 'true'
         run: >-
           python3 -m py_compile
           scripts/agent/closeout_gate.py
@@ -36,21 +53,26 @@ jobs:
           scripts/agent/pre_tool_guard.py
           scripts/agent/eval_harness.py
           scripts/agent/infra_healthcheck.py
+          scripts/agent/stage_checkpoint.py
           scripts/agent/check_governance.py
           tests/test_notify_task.py
           tests/test_closeout_gate.py
           tests/test_pre_tool_guard.py
           tests/test_eval_harness.py
           tests/test_infra_healthcheck.py
+          tests/test_stage_checkpoint.py
           tests/test_governance_check.py
 
       - name: Check runtime and artifact governance
+        if: steps.scope.outputs.run_checks == 'true'
         run: python3 scripts/agent/check_governance.py
 
       - name: Parse Codex hook configuration
+        if: steps.scope.outputs.run_checks == 'true'
         run: python3 -m json.tool .codex/hooks.json > /dev/null
 
       - name: Check diff and local documentation links
+        if: steps.scope.outputs.run_checks == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -80,6 +102,9 @@ jobs:
               Path("scripts/research/README.md"),
               Path("docs/checklists/agent_infra_eval.md"),
               Path("docs/workflows/agent_behavior_eval.md"),
+              Path("docs/workflows/stage_checkpoint.md"),
+              Path("docs/workflows/storage_maintenance.md"),
+              Path("docs/checklists/simulation_batch_archive.md"),
           )
           missing = []
           for document in documents:

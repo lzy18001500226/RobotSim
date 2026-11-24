@@ -148,18 +148,20 @@ def _run_notifier(
     if dry_run:
         command.append("--dry-run")
     try:
-        subprocess.run(
+        result = subprocess.run(
             command,
             env=dict(environ),
             input=input_data,
-            timeout=NOTIFIER_TIMEOUT_SECONDS,
+            timeout=30 if dry_run else NOTIFIER_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        if not dry_run:
-            print("RobotSim Stop notification did not finish; turn completion remains unblocked.", file=sys.stderr)
+        if dry_run:
+            print("RobotSim Stop dry run did not finish.", file=sys.stderr)
+            return 2
+        print("RobotSim Stop notification did not finish; turn completion remains unblocked.", file=sys.stderr)
         return 0
-    return 0
+    return result.returncode if dry_run else 0
 
 
 def _presence_lines(bundle: Mapping[str, str], environ: Mapping[str, str]) -> str:
@@ -216,6 +218,24 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
 
     if args.dry_run:
         return _run_notifier(env, input_data, dry_run=True)
+
+    # The hook is not a per-turn task detector. Ordinary chat must not spawn
+    # another Python process, open the outbox or load credentials.
+    try:
+        payload = json.loads(input_data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return 0
+    if (
+        not isinstance(payload, dict)
+        or payload.get("hook_event_name") != "Stop"
+        or payload.get("stop_hook_active") is True
+    ):
+        return 0
+    present, _, _ = notify_task.extract_task_closeout_envelope(
+        payload.get("last_assistant_message")
+    )
+    if not present:
+        return 0
 
     if (
         env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() == "1"

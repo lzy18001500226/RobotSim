@@ -26,7 +26,7 @@ def _git(
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
-            ["git", "-C", str(root), *args],
+            ["git", "--no-optional-locks", "-C", str(root), *args],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -116,6 +116,47 @@ def _contains_inline_credentials(url: str) -> bool:
     if any(key.casefold() in credential_keys for key, _ in urllib.parse.parse_qsl(parts.query)):
         return True
     return False
+
+
+def find_closeout_worktree(anchor: Path, branch: str, head_sha: str) -> Path | None:
+    """Find an exact task checkout registered with the hook's repository."""
+    if not branch or branch in {"main", "master"} or not SHA.fullmatch(head_sha):
+        return None
+    try:
+        listing = _git(anchor, "worktree", "list", "--porcelain", "-z")
+        separator = b"\0"
+        if listing.returncode != 0:
+            # Ubuntu 22.04 ships Git 2.34, which has porcelain but no -z.
+            listing = _git(anchor, "-c", "core.quotePath=false", "worktree", "list", "--porcelain")
+            separator = b"\n"
+        if listing.returncode != 0:
+            return None
+        output = listing.stdout if separator == b"\0" else listing.stdout.replace(b"\r\n", b"\n")
+        candidates = []
+        for item in output.split(separator * 2):
+            fields = item.split(separator)
+            if not fields[0].startswith(b"worktree "):
+                continue
+            if any(field.startswith(b"prunable") for field in fields):
+                continue
+            if os.fsencode(f"branch refs/heads/{branch}") in fields and f"HEAD {head_sha}".encode() in fields:
+                candidates.append(Path(os.fsdecode(fields[0].removeprefix(b"worktree "))))
+        if len(candidates) != 1 or not candidates[0].is_absolute():
+            return None
+        candidate = candidates[0].resolve(strict=True)
+        common_args = ("rev-parse", "--path-format=absolute", "--git-common-dir")
+        common_dir = _git(anchor, *common_args)
+        candidate_common = _git(candidate, *common_args)
+        top = _git(candidate, "rev-parse", "--show-toplevel")
+        if any(result.returncode != 0 for result in (common_dir, candidate_common, top)):
+            return None
+        if Path(_text(top)).resolve() != candidate:
+            return None
+        if Path(_text(common_dir)).resolve() != Path(_text(candidate_common)).resolve():
+            return None
+    except (RuntimeError, OSError, ValueError):
+        return None
+    return candidate
 
 
 def check_closeout(

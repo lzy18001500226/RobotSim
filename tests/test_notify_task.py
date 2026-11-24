@@ -13,7 +13,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.agent import notify_task, path_governance
+from scripts.agent import closeout_gate, eval_harness, notify_task, path_governance
 
 
 class FakeResponse:
@@ -156,6 +156,7 @@ class NotifyTaskTests(unittest.TestCase):
         pr_repository: str = notify_task.ROBOTSIM_REPOSITORY,
         pr_body: str = "Closes #44",
         pr_branch: str = "issue/38-research-completion-event",
+        pr_head: str = "a" * 40,
         fail_comment_response_once: bool = False,
         race_read_barrier: threading.Barrier | None = None,
         race_post_barrier: threading.Barrier | None = None,
@@ -182,7 +183,7 @@ class NotifyTaskTests(unittest.TestCase):
                         return FakeResponse({
                             "number": number,
                             "base": {"repo": {"full_name": pr_repository}},
-                            "head": {"sha": "a" * 40, "ref": pr_branch},
+                            "head": {"sha": pr_head, "ref": pr_branch},
                             "body": pr_body,
                         }, 200)
                     if parsed.path.endswith("/issues/comments"):
@@ -813,6 +814,18 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(counts["github_post"], 1)
         self.assertEqual(counts["mail_post"], 1)
 
+    def test_conflicting_direct_retry_cannot_publish_over_a_pending_stop_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            event = self._closeout_event()
+            self.assertEqual(notify_task.process_stop_payload(self._closeout_stop_payload(event), environ=settings).state, "queued")
+            with patch.object(notify_task, "_open_request") as request:
+                result = notify_task.process_task_closeout(dict(event, summary="Changed under the same ID"), environ=settings)
+            self.assertEqual(result.exit_code, 2)
+            self.assertIn("different closeout payload", result.message)
+            request.assert_not_called()
+            self.assertEqual(notify_task.task_notifications.claim_publication(settings)["dispatch"], "stop")
+
     def test_different_workers_on_same_issue_are_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
@@ -905,7 +918,7 @@ class NotifyTaskTests(unittest.TestCase):
             self.assertEqual(queued["publications"][0]["state"], "pending")
             self.assertEqual(notify_task.task_notifications.delivery_state(
                 queued["outcomes"][0]["event_id"], "agentmail", settings
-            ), "pending")
+            ), "held")
             self.assertEqual(spawn.call_count, 2)
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 notify_task._run_notification_worker(environ=settings, quiet=True)
@@ -916,6 +929,82 @@ class NotifyTaskTests(unittest.TestCase):
         request_data = "\n".join(str(request.data) for request in requests if request.data)
         self.assertNotIn("Transcript tail", request_data)
         self.assertNotIn("Local Codex turn", request_data)
+
+    def test_stop_worker_publishes_from_linked_checkout_with_main_as_launch_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            linked = root / "task checkout"
+            origin = root / "origin.git"
+            head = eval_harness._init_repo(repo, {"README.md": "fixture\n"})
+            branch = "codex/linked-stop"
+            for command in (
+                ["git", "init", "--bare", str(origin)],
+                ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(linked)],
+                ["git", "-C", str(repo), "remote", "add", "origin", str(origin)],
+                ["git", "-C", str(linked), "push", "origin", branch],
+            ):
+                subprocess.run(command, check=True, capture_output=True)
+            settings = self._settings(directory)
+            event = self._closeout_event(branch=branch, head_sha=head)
+            payload = self._closeout_stop_payload(event)
+            payload["cwd"] = str(repo)
+            transport, requests, counts = self._mock_closeout_transport(pr_branch=branch, pr_head=head)
+            with (
+                patch.object(notify_task, "HOOK_REPOSITORY", repo),
+                patch.object(notify_task, "check_closeout", wraps=closeout_gate.check_closeout) as gate,
+                patch.object(Path, "cwd", return_value=repo),
+                patch.object(notify_task, "_open_request", side_effect=transport),
+            ):
+                direct = notify_task.process_task_closeout(event, cwd=repo, dry_run=True)
+                self.assertEqual(direct.state, "blocked")
+                self.assertEqual(notify_task.process_stop_payload(payload, environ=settings).state, "queued")
+                self.assertEqual(counts["github_post"], 0)
+                self.assertEqual(notify_task._run_notification_worker(environ=settings, quiet=True), 0)
+                gate.assert_called()
+                self.assertEqual(gate.call_args.args[0], linked.resolve())
+            self.assertEqual(counts["github_post"], 1)
+            comment = next(request for request in requests if request.get_method() == "POST" and "api.github.com" in request.full_url)
+            self.assertTrue(comment.full_url.endswith("/issues/42/comments"))
+            self.assertNotIn(str(root), json.loads(comment.data)["body"])
+
+    def test_stop_pr_closeout_blocks_when_no_unique_worktree_can_be_selected(self) -> None:
+        event = self._closeout_event(summary="x" * 2000)
+        with (
+            patch.object(notify_task, "find_closeout_worktree", return_value=None),
+            patch.object(notify_task, "check_closeout") as gate,
+        ):
+            result = notify_task.process_stop_payload(self._closeout_stop_payload(event), dry_run=True)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("no unique registered worktree", result.message)
+        self.assertEqual(json.loads(result.body)["branch"], event["branch"])
+        self.assertEqual(json.loads(result.body)["head_sha"], event["head_sha"])
+        gate.assert_not_called()
+
+    def test_worker_cannot_claim_a_direct_publication_during_its_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            transport, _, counts = self._mock_closeout_transport()
+
+            def verify_direct(*args, **kwargs):
+                self.assertIsNone(notify_task.task_notifications.claim_publication(settings))
+                self.assertIsNone(notify_task.task_notifications.next_publication_delay(settings))
+                self.assertIsNone(notify_task.task_notifications.claim_agentmail(settings))
+                stored = notify_task.task_notifications.snapshot(settings)
+                self.assertEqual(stored["publications"][0]["state"], "disabled")
+                stop = notify_task.process_stop_payload(self._closeout_stop_payload(self._closeout_event()), environ=settings)
+                self.assertEqual(stop.state, "skipped")
+                self.assertIn("explicit closeout owns", stop.message)
+                return {"ok": False, "blockers": ["direct checkout has the wrong branch"]}
+
+            with (
+                patch.object(notify_task, "check_closeout", side_effect=verify_direct),
+                patch.object(notify_task, "_open_request", side_effect=transport),
+            ):
+                result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
+            self.assertEqual(result.exit_code, 2)
+            self.assertEqual(result.publication_state, "blocked")
+            self.assertEqual(counts["github_post"], 1)
 
     def test_cloud_closeout_command_uses_same_path_without_local_hook_opt_in(self) -> None:
         transport, requests, counts = self._mock_closeout_transport()

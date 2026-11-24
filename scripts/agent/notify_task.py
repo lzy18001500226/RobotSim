@@ -26,11 +26,11 @@ from pathlib import Path
 from typing import Mapping
 
 try:
-    from .closeout_gate import check_closeout
+    from .closeout_gate import check_closeout, find_closeout_worktree
     from . import path_governance
     from . import task_notifications
 except ImportError:  # pragma: no cover - direct script execution
-    from closeout_gate import check_closeout
+    from closeout_gate import check_closeout, find_closeout_worktree
     import path_governance
     import task_notifications
 
@@ -49,6 +49,7 @@ REQUIRED_SETTINGS = ("AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "ROBOTSIM_NOTIFY
 AGENTMAIL_API_BASE = "https://api.agentmail.to"
 GITHUB_API_BASE = "https://api.github.com"
 ROBOTSIM_REPOSITORY = "lzy18001500226/RobotSim"
+HOOK_REPOSITORY = Path(__file__).resolve().parents[2]
 REQUEST_TIMEOUT_SECONDS = 8
 STALE_CLAIM_SECONDS = 3600
 TASK_CLOSEOUT_SCHEMA_VERSION = "robotsim.task-closeout.v1"
@@ -1016,6 +1017,7 @@ def _run_notification_worker(*, environ: Mapping[str, str] | None = None, quiet:
                 environ=environ,
                 notifications_enabled=True,
                 defer_delivery=True,
+                resolve_hook_worktree=publication["dispatch"] == "stop",
             )
             publication_state = outcome.publication_state or (
                 "failed" if outcome.state in {"blocked", "failed"} else "verified"
@@ -1127,6 +1129,7 @@ def process_task_closeout(
     cwd: str | os.PathLike[str] | None = None,
     notifications_enabled: bool | None = None,
     defer_delivery: bool = False,
+    resolve_hook_worktree: bool = False,
     session_id: str | None = None,
     turn_id: str | None = None,
 ) -> Outcome:
@@ -1151,29 +1154,45 @@ def process_task_closeout(
     outbox_error = ""
     if not dry_run:
         try:
-            task_notifications.record_terminal_outcome(
+            recorded = task_notifications.record_terminal_outcome(
                 event,
                 publication_state="pending",
                 notifications_enabled=notifications_enabled,
                 session_id=session_id,
                 turn_id=turn_id,
                 environ=environ,
+                publication_dispatch="stop" if resolve_hook_worktree else "direct",
             )
-        except (OSError, sqlite3.Error, task_notifications.EventConflict, ValueError) as exc:
+            if not recorded:
+                return Outcome("blocked", "CLOSEOUT BLOCKED: the Stop worker owns this event", exit_code=2)
+        except task_notifications.EventConflict:
+            return Outcome("blocked", "CLOSEOUT BLOCKED: attempt ID already exists with a different closeout payload", exit_code=2)
+        except (OSError, sqlite3.Error, ValueError) as exc:
             outbox_error = f"local notification state unavailable ({type(exc).__name__})"
 
     documented_unrelated = [
         item for item in event["validation"]
         if isinstance(item, str) and item.startswith("Unrelated repository path: ")
     ]
-    gate = check_closeout(
-        Path.cwd() if cwd is None else cwd,
-        task_id=str(event["task_id"]),
-        branch=str(event["branch"] or ""),
-        head_sha=str(event["head_sha"] or ""),
-        pr_number=event["pr_number"] if isinstance(event["pr_number"], int) else None,
-        documented_unrelated=documented_unrelated,
-    )
+    repo = Path.cwd() if cwd is None else cwd
+    branch = str(event["branch"] or "")
+    head_sha = str(event["head_sha"] or "")
+    pr_number = event["pr_number"] if isinstance(event["pr_number"], int) else None
+    if resolve_hook_worktree and pr_number is not None:
+        # The worker can drain jobs for several worktrees. Anchor discovery at
+        # its own checkout and resolve each job independently of the launch cwd.
+        repo = find_closeout_worktree(HOOK_REPOSITORY, branch, head_sha)
+    if repo is None:
+        gate = {"ok": False, "blockers": ["no unique registered worktree matches the reported task branch and HEAD"]}
+    else:
+        gate = check_closeout(
+            repo,
+            task_id=str(event["task_id"]),
+            branch=branch,
+            head_sha=head_sha,
+            pr_number=pr_number,
+            documented_unrelated=documented_unrelated,
+        )
     issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
     assert issue_match is not None
     issue_url = f"https://github.com/{ROBOTSIM_REPOSITORY}/issues/{issue_match.group(1)}"
@@ -1208,7 +1227,7 @@ def process_task_closeout(
         event["branch"] = actual_branch if actual_branch != "unavailable" else event["branch"]
         if local_head != "unavailable":
             event["head_sha"] = local_head
-        event["summary"] = f"CLOSEOUT BLOCKED after task result {original_status}: {event['summary']}"
+        event["summary"] = f"CLOSEOUT BLOCKED after task result {original_status}: {event['summary']}"[:2000]
         gate_detail = (
             f"Closeout verdict: BLOCKED; original task result={result_labels[original_status]}; "
             f"branch={actual_branch}; local_head={local_head}; remote_head={remote_head}; "
@@ -1289,24 +1308,15 @@ def process_task_closeout(
         return Outcome("dry_run", "no GitHub comment or AgentMail request was made", subject, body)
     persisted = persist_task_closeout(event, environ=environ)
     if persisted.state == "failed":
+        association_rejected = _is_untrusted_pr_association_error(persisted.message)
         if not outbox_error:
             try:
                 task_notifications.set_publication_state(
-                    str(event["event_id"]), "failed", persisted.message, environ=environ
+                    str(event["event_id"]), "failed", persisted.message, environ=environ,
+                    allow_agentmail=not association_rejected,
                 )
             except (OSError, sqlite3.Error):
                 outbox_error = "local publication state could not be updated"
-        association_rejected = _is_untrusted_pr_association_error(persisted.message)
-        if association_rejected and not outbox_error:
-            try:
-                task_notifications.finish_agentmail(
-                    str(event["event_id"]),
-                    "unavailable",
-                    "PR association validation failed; notification suppressed",
-                    environ=environ,
-                )
-            except (OSError, sqlite3.Error):
-                outbox_error = "local notification state could not be updated"
         mail = None if defer_delivery or outbox_error or association_rejected else _deliver_queued_agentmail(
             str(event["event_id"]), environ=environ
         )
@@ -1564,6 +1574,70 @@ def notify(
     )
 
 
+def notify_milestone(
+    task_id: str,
+    milestone_id: str,
+    summary: str,
+    evidence: list[str],
+    *,
+    worker: str = "Codex",
+    branch: str = "",
+    dry_run: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> Outcome:
+    """Explicit stage attention, independent of Git closeout and chat Stop."""
+    if not TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", milestone_id):
+        return Outcome("blocked", "milestone requires stable Issue task and milestone IDs", exit_code=2)
+    if not summary.strip() or not evidence or len(evidence) > 10:
+        return Outcome("blocked", "milestone requires a summary and 1..10 evidence references", exit_code=2)
+    references = []
+    try:
+        for item in evidence:
+            if item.startswith("https://"):
+                references.extend(_durable_evidence([item]))
+            else:
+                artifact = Path(item)
+                if not artifact.is_file() or artifact.stat().st_size == 0:
+                    raise ValueError("missing or empty evidence file")
+                location = path_governance.describe_output_path(artifact)
+                references.append(location["WSL_PATH"])
+    except (OSError, ValueError, TypeError) as exc:
+        return Outcome("blocked", "milestone evidence rejected (" + type(exc).__name__ + ")", exit_code=2)
+    title = _one_line(summary, 160)
+    subject = "[RobotSim] 阶段完成: " + title[:96]
+    body = "\n".join([
+        "RobotSim milestone notification / 阶段完成通知",
+        "Task: " + task_id,
+        "Milestone: " + milestone_id,
+        "Worker: " + _one_line(worker, 60),
+        "Branch: " + _one_line(branch, 120),
+        "Result: " + title,
+        "Evidence (references only; caller owns acceptance verification):",
+        *references,
+        "This stage notification does not close the overall task or claim a clean/published Git state.",
+        "",
+    ])
+    env = dict(os.environ if environ is None else environ)
+    if not dry_run and not all(env.get(name, "").strip() for name in REQUIRED_SETTINGS):
+        try:
+            if __package__:
+                from .agentmail_stop_hook import _read_bundle, CredentialBridgeError
+            else:
+                from agentmail_stop_hook import _read_bundle, CredentialBridgeError
+            env.update(_read_bundle())
+        except (CredentialBridgeError, ImportError):
+            return Outcome("skipped", "milestone mail credentials unavailable; no request made", exit_code=2)
+    # Worker and attempt are intentionally excluded: wrappers reporting the same
+    # accepted stage must not generate another email.
+    digest = hashlib.sha256(("milestone\0" + ROBOTSIM_REPOSITORY + "\0" + task_id + "\0" + milestone_id).encode()).hexdigest()
+    outcome = _deliver(subject, body, digest, dry_run=dry_run, environ=env)
+    if outcome.state == "sent":
+        return Outcome("sent", "AgentMail accepted the request; recipient delivery is not yet confirmed", subject, body)
+    if outcome.state in {"failed", "skipped"}:
+        return Outcome(outcome.state, outcome.message, subject, body, exit_code=2)
+    return outcome
+
+
 def _branch_at(cwd: object) -> str:
     if not isinstance(cwd, str) or not cwd:
         return ""
@@ -1646,23 +1720,26 @@ def process_stop_payload(
                 return Outcome("skipped", f"local Stop notifications are disabled; terminal state not saved ({type(exc).__name__})")
             return Outcome("skipped", "terminal task outcome saved locally; notifications and GitHub publication remain disabled")
         if dry_run:
-            return process_task_closeout(closeout_payload, dry_run=True, environ=environ)
+            return process_task_closeout(closeout_payload, dry_run=True, environ=environ, resolve_hook_worktree=True)
         try:
             if isinstance(closeout_payload, dict) and closeout_payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
                 event = normalize_research_event(closeout_payload)
             else:
                 event = normalize_task_closeout(closeout_payload)
-            task_notifications.record_terminal_outcome(
+            recorded = task_notifications.record_terminal_outcome(
                 event,
                 publication_state="pending",
                 publication_detail="queued for background GitHub publication and notification delivery",
                 notifications_enabled=True,
+                publication_dispatch="stop",
                 session_id=_bounded_event_id(payload.get("session_id")),
                 turn_id=_bounded_event_id(payload.get("turn_id")),
                 environ=environ,
             )
         except (OSError, sqlite3.Error, ValueError, TypeError, task_notifications.EventConflict) as exc:
             return Outcome("blocked", f"terminal outcome could not be queued ({type(exc).__name__})", exit_code=2)
+        if not recorded:
+            return Outcome("skipped", "the explicit closeout owns this event")
         return Outcome("queued", "terminal outcome recorded for background publication and notification delivery")
 
     return Outcome(
@@ -1675,7 +1752,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=("ready_for_review", "task-closeout", "research-completion", "stop", "notification-worker"),
+        choices=("milestone", "ready_for_review", "task-closeout", "research-completion", "stop", "notification-worker"),
         help="attention notification, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
@@ -1686,6 +1763,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--issue", help="issue number, when available")
     parser.add_argument("--dry-run", action="store_true", help="format the message without sending mail")
     parser.add_argument("--quiet", action="store_true", help="suppress notification-worker status output")
+    parser.add_argument("--milestone-id", help="stable accepted stage, independent of turn/attempt/worker")
+    parser.add_argument("--evidence", action="append", default=[], help="milestone evidence: nonempty governed local file or public HTTPS reference")
     return parser
 
 
@@ -1716,6 +1795,14 @@ def main(argv: list[str] | None = None) -> int:
             outcome = Outcome("blocked", "CLOSEOUT BLOCKED: input is not valid JSON", exit_code=2)
         else:
             outcome = process_task_closeout(payload, dry_run=args.dry_run, cwd=Path.cwd())
+    elif args.event == "milestone":
+        if not args.task_id or not args.milestone_id or not args.summary:
+            _parser().error("milestone requires --task-id, --milestone-id, --summary and --evidence")
+        outcome = notify_milestone(
+            args.task_id, args.milestone_id, args.summary, args.evidence,
+            worker=args.worker, branch=args.branch or _branch_at(os.getcwd()),
+            dry_run=args.dry_run,
+        )
     elif not args.task_id or not args.summary:
         _parser().error("Cloud outcome events require --task-id and --summary")
     else:
@@ -1745,7 +1832,7 @@ def main(argv: list[str] | None = None) -> int:
     # when canonical GitHub persistence failed, but AgentMail remains best-effort.
     if args.event == "stop" and not args.dry_run:
         return 0
-    if args.event in {"task-closeout", "research-completion"}:
+    if args.event in {"stop", "milestone", "task-closeout", "research-completion"}:
         return outcome.exit_code
     return 0
 
