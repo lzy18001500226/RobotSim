@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,6 +107,22 @@ class TaskNotificationStateTests(unittest.TestCase):
                 notifications_enabled=True,
                 environ=self.environ,
             )
+
+    def test_existing_publication_jobs_retain_legacy_dispatch_on_schema_upgrade(self) -> None:
+        event = self.event()
+        task_notifications.record_terminal_outcome(event, publication_state="pending", environ=self.environ)
+        with closing(sqlite3.connect(self.database)) as conn, conn:
+            conn.execute("DROP TABLE publication_jobs")
+            conn.execute(
+                "CREATE TABLE publication_jobs (event_id TEXT PRIMARY KEY, state TEXT NOT NULL, "
+                "attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL, lease_until REAL, "
+                "last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO publication_jobs(event_id,state,updated_at) VALUES(?,?,?)",
+                         (event["event_id"], "pending", "2026-10-10"))
+        job = task_notifications.claim_publication(self.environ)
+        self.assertEqual(job["dispatch"], "legacy")
+        self.assertEqual(job["event"], event)
 
     def test_publication_and_email_claims_are_single_use_with_bounded_backoff(self) -> None:
         event = self.event()

@@ -17,7 +17,7 @@ from typing import Mapping
 TASK_STATES = {"RUNNING", "PAUSED", "RESUMED", "COMPLETED", "FAILED", "BLOCKED", "CANCELLED", "UNCERTAIN"}
 TURN_STATES = {"RUNNING", "PAUSED", "ENDED"}
 PUBLICATION_STATES = {"pending", "verified", "blocked", "not_attempted", "failed"}
-DELIVERY_STATES = {"disabled", "pending", "sending", "sent", "failed", "uncertain", "unavailable"}
+DELIVERY_STATES = {"disabled", "held", "pending", "sending", "sent", "failed", "uncertain", "unavailable"}
 EMAIL_MAX_ATTEMPTS = 4
 EMAIL_RETRY_SECONDS = (60, 300, 1800)
 EMAIL_LEASE_SECONDS = 3605
@@ -94,8 +94,15 @@ def _connect(environ: Mapping[str, str] | None = None) -> sqlite3.Connection:
         "CREATE TABLE IF NOT EXISTS publication_jobs ("
         "event_id TEXT PRIMARY KEY REFERENCES outcomes(event_id), state TEXT NOT NULL, "
         "attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL, lease_until REAL, "
-        "last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);"
+        "last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, "
+        "dispatch TEXT NOT NULL DEFAULT 'legacy');"
     )
+    if "dispatch" not in {row["name"] for row in connection.execute("PRAGMA table_info(publication_jobs)")}:
+        # Serialize schema upgrades if two Stop workers start together.
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if "dispatch" not in {row["name"] for row in connection.execute("PRAGMA table_info(publication_jobs)")}:
+                connection.execute("ALTER TABLE publication_jobs ADD COLUMN dispatch TEXT NOT NULL DEFAULT 'legacy'")
     turn_columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)")}
     for name, definition in (
         ("cwd_present", "INTEGER NOT NULL DEFAULT 0"),
@@ -222,8 +229,11 @@ def record_terminal_outcome(
     session_id: str | None = None,
     turn_id: str | None = None,
     environ: Mapping[str, str] | None = None,
+    publication_dispatch: str = "legacy",
 ) -> bool:
     """Persist one normalized closeout separately from publication and channels."""
+    if publication_dispatch not in {"legacy", "stop", "direct"}:
+        raise ValueError("unsupported publication dispatch")
     if publication_state not in PUBLICATION_STATES:
         raise ValueError("unsupported publication state")
     event_data = dict(event)
@@ -238,6 +248,8 @@ def record_terminal_outcome(
     mail_state = "pending" if notifications_enabled and email_configured else (
         "disabled" if not notifications_enabled else "unavailable"
     )
+    if publication_dispatch in {"direct", "stop"} and publication_state == "pending" and mail_state == "pending":
+        mail_state = "held"
     safe_detail = _safe_detail(publication_detail)
 
     with _connect(environ) as conn:
@@ -277,13 +289,16 @@ def record_terminal_outcome(
             "INSERT OR IGNORE INTO deliveries(event_id,channel,state,updated_at) VALUES(?,?,?,?)",
             (event_id, "telephone", "unavailable", now),
         )
-        publication_job_state = "pending" if publication_state == "pending" else (
-            "disabled" if publication_state == "not_attempted" else publication_state
-        )
+        publication_job_state = publication_state
+        if publication_state == "not_attempted" or (publication_state == "pending" and publication_dispatch == "direct"):
+            publication_job_state = "disabled"
         conn.execute(
-            "INSERT OR IGNORE INTO publication_jobs(event_id,state,updated_at) VALUES(?,?,?)",
-            (event_id, publication_job_state, now),
+            "INSERT OR IGNORE INTO publication_jobs(event_id,state,updated_at,dispatch) VALUES(?,?,?,?)",
+            (event_id, publication_job_state, now, publication_dispatch),
         )
+        dispatch = conn.execute("SELECT dispatch FROM publication_jobs WHERE event_id=?", (event_id,)).fetchone()
+        if {publication_dispatch, dispatch["dispatch"]} == {"direct", "stop"}:
+            return False
         if session_id and turn_id:
             conn.execute(
                 "UPDATE turns SET task_state=?,updated_at=? WHERE session_id=? AND turn_id=?",
@@ -298,6 +313,7 @@ def set_publication_state(
     detail: str = "",
     *,
     environ: Mapping[str, str] | None = None,
+    allow_agentmail: bool = True,
 ) -> None:
     if state not in PUBLICATION_STATES:
         raise ValueError("unsupported publication state")
@@ -313,6 +329,14 @@ def set_publication_state(
             "WHERE event_id=? AND state!='sending'",
             (job_state, safe_detail, _now(), event_id),
         )
+        if state != "pending":
+            states = ("held",) if allow_agentmail else ("held", "pending")
+            placeholders = ",".join("?" for _ in states)
+            conn.execute(
+                f"UPDATE deliveries SET state=?,updated_at=? WHERE event_id=? AND channel='agentmail' "
+                f"AND state IN ({placeholders})",
+                ("pending" if allow_agentmail else "unavailable", _now(), event_id, *states),
+            )
 
 
 def claim_publication(
@@ -335,8 +359,8 @@ def claim_publication(
             (_now(), current, PUBLICATION_MAX_ATTEMPTS),
         )
         row = conn.execute(
-            "SELECT o.*,j.attempts FROM outcomes o JOIN publication_jobs j USING(event_id) "
-            "WHERE j.state='pending' AND j.attempts<? AND COALESCE(j.next_attempt,0)<=? "
+            "SELECT o.*,j.attempts,j.dispatch FROM outcomes o JOIN publication_jobs j USING(event_id) "
+            "WHERE j.state='pending' AND j.dispatch!='direct' AND j.attempts<? AND COALESCE(j.next_attempt,0)<=? "
             "ORDER BY o.created_at LIMIT 1",
             (PUBLICATION_MAX_ATTEMPTS, current),
         ).fetchone()
@@ -351,6 +375,7 @@ def claim_publication(
         return {
             "event_id": row["event_id"],
             "event": json.loads(row["event_json"]),
+            "dispatch": row["dispatch"],
             "attempt": attempt,
         }
 
@@ -392,6 +417,12 @@ def finish_publication(
             "UPDATE outcomes SET publication_state=?,publication_detail=?,updated_at=? WHERE event_id=?",
             (outcome_state, error, _now(), event_id),
         )
+        if job_state != "pending":
+            conn.execute(
+                "UPDATE deliveries SET state='unavailable',updated_at=?,last_error=? "
+                "WHERE event_id=? AND channel='agentmail' AND state='held'",
+                (_now(), "publication ended before email eligibility was determined", event_id),
+            )
 
 
 def claim_agentmail(
@@ -515,7 +546,7 @@ def next_publication_delay(
     with _connect(environ) as conn:
         row = conn.execute(
             "SELECT MIN(COALESCE(next_attempt,0)) AS due FROM publication_jobs "
-            "WHERE state='pending' AND attempts<?",
+            "WHERE state='pending' AND dispatch!='direct' AND attempts<?",
             (PUBLICATION_MAX_ATTEMPTS,),
         ).fetchone()
     if row is None or row["due"] is None:

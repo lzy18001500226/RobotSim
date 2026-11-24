@@ -346,6 +346,35 @@ AgentMail is secondary attention/retrieval with independent delivery state. A pu
 
 ### Local Codex
 
+For a queued PR closeout, the Stop worker uses Git's worktree list from the
+checkout containing the notifier. It selects the one registered checkout
+matching both the reported task branch and full HEAD. It then checks that
+checkout's status and the push ref as usual. The worker resolves each job
+separately, including retries. Only jobs recorded by the Stop handler use
+this lookup. Explicit commands retain ownership of their own publication.
+Older queued jobs keep their original checkout behavior. The App's working
+directory can remain on main when the branch is in a linked WSL worktree. The event supplies no
+filesystem path for worktree selection. A missing, stale or unregistered
+checkout still fails the gate. Issue-only closeouts and explicit
+`task-closeout` commands use their current checkout.
+
+To verify this setup without posting a comment or sending mail, pipe a
+synthetic Stop payload containing a valid closeout envelope into
+`python3 -B scripts/agent/agentmail_stop_hook.py --dry-run`. For the WSL
+linked-worktree check, run the updated hook from main with the envelope's
+actual task branch, full HEAD and PR number. Exit 0 with a dry-run PASS means
+the Git gate passed. Exit 2 reports a blocked gate. The dry run reads the
+push ref, but does not check live client invocation or delivery.
+
+When deploying this update, let any older notification workers drain and
+exit before invoking the updated Stop hook against the same outbox. An older
+worker can still claim a newly queued Stop job using the old directory rules.
+Confirm the updated hook is the one loaded in the target checkout.
+
+Record the task closeout while its branch and push ref still exist, before
+merging with automatic branch deletion. After merge, use the PR's merge
+record to verify main. Branch deletion leaves the earlier closeout intact.
+
 Put exactly one marked JSON envelope in the final assistant message. The Stop hook persists it instead of sending the generic completion, so one turn cannot notify through both paths:
 
 ```html

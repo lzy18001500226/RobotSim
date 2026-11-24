@@ -148,18 +148,20 @@ def _run_notifier(
     if dry_run:
         command.append("--dry-run")
     try:
-        subprocess.run(
+        result = subprocess.run(
             command,
             env=dict(environ),
             input=input_data,
-            timeout=NOTIFIER_TIMEOUT_SECONDS,
+            timeout=30 if dry_run else NOTIFIER_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        if not dry_run:
-            print("RobotSim Stop notification did not finish; turn completion remains unblocked.", file=sys.stderr)
+        if dry_run:
+            print("RobotSim Stop dry run did not finish.", file=sys.stderr)
+            return 2
+        print("RobotSim Stop notification did not finish; turn completion remains unblocked.", file=sys.stderr)
         return 0
-    return 0
+    return result.returncode if dry_run else 0
 
 
 def _presence_lines(bundle: Mapping[str, str], environ: Mapping[str, str]) -> str:

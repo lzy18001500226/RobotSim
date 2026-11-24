@@ -5,6 +5,7 @@ import io
 import json
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from scripts.agent import agentmail_stop_hook
@@ -128,6 +129,16 @@ class AgentMailStopHookTests(unittest.TestCase):
                     0,
                 )
                 load.assert_not_called()
+
+    def test_dry_run_propagates_a_blocked_gate_without_loading_credentials(self) -> None:
+        with (
+            patch.object(agentmail_stop_hook, "_read_bundle") as load,
+            patch.object(agentmail_stop_hook.subprocess, "run", return_value=CompletedProcess([], 2)),
+            patch("sys.stdin", io.StringIO(stop_payload())),
+        ):
+            status = agentmail_stop_hook.main(["--dry-run"], environ={"ROBOTSIM_LOCAL_STOP_HOOK": "1"})
+        self.assertEqual(status, 2)
+        load.assert_not_called()
 
     def test_presence_check_never_prints_secret_values(self) -> None:
         output = io.StringIO()

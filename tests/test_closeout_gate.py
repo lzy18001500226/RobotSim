@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.agent.closeout_gate import check_closeout
+from scripts.agent.closeout_gate import check_closeout, find_closeout_worktree
 
 
 class CloseoutGateTests(unittest.TestCase):
@@ -134,6 +134,23 @@ class CloseoutGateTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["blockers"])
         self.assertEqual(report["dirty_paths"], [])
         self.assertEqual(unrelated.read_text(encoding="utf-8"), "preserve me\n")
+
+
+    def test_stop_lookup_uses_exact_branch_and_head_in_linked_worktree(self) -> None:
+        branch = "codex/closeout-fixture"
+        head = self._git("rev-parse", "HEAD")
+        checkout = Path(self.temp.name) / "linked task with spaces"
+        self._git("switch", "-c", "main")
+        self._git("worktree", "add", str(checkout), branch)
+        self.assertIsNone(find_closeout_worktree(self.repo, branch, "a" * 40))
+        self.assertIsNone(find_closeout_worktree(self.repo, "main", head))
+        self.assertEqual(find_closeout_worktree(self.repo, branch, head), checkout.resolve())
+
+        args = dict(task_id="issue-900-closeout-fixture", branch=branch, head_sha=head, pr_number=17)
+        self.assertFalse(check_closeout(self.repo, **args)["ok"])
+        self.assertTrue(check_closeout(checkout, **args)["ok"])
+        (checkout / "dirty.txt").write_text("unfinished stage\n", encoding="utf-8")
+        self.assertIn("working tree has uncommitted task changes", check_closeout(checkout, **args)["blockers"])
 
 
 if __name__ == "__main__":
